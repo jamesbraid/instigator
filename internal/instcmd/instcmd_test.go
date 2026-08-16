@@ -2,8 +2,11 @@ package instcmd
 
 import (
 	"bytes"
+	"hash/fnv"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeFS struct {
@@ -19,12 +22,66 @@ func (f *fakeFS) Open(path string) (File, error) {
 	return &memFile{bytes.NewReader(b), int64(len(b))}, nil
 }
 
+// ReadDir special-cases the root ("", from a leading-slash path with
+// nothing after it): a fixture never lists it explicitly, but the real
+// vfs.Tree always treats the root as a directory of its top-level
+// names, so a shell test starting its cwd at "/" needs the same here.
 func (f *fakeFS) ReadDir(path string) ([]string, error) {
+	if path == "" {
+		return f.topLevel(), nil
+	}
 	names, ok := f.dirs[path]
 	if !ok {
 		return nil, ErrNotFound
 	}
 	return names, nil
+}
+
+func (f *fakeFS) topLevel() []string {
+	seen := map[string]bool{}
+	var names []string
+	add := func(p string) {
+		seg := strings.SplitN(p, "/", 2)[0]
+		if !seen[seg] {
+			seen[seg] = true
+			names = append(names, seg)
+		}
+	}
+	for p := range f.files {
+		add(p)
+	}
+	for p := range f.dirs {
+		add(p)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// Stat synthesizes plausible metadata from the same files/dirs maps
+// Open/ReadDir already use: real values aren't the point of this test
+// double, a stable inode and correct IsDir are.
+func (f *fakeFS) Stat(path string) (FileInfo, error) {
+	if path == "" {
+		return FileInfo{Ino: 2, IsDir: true, Perm: 0o755, Nlink: 2, Size: 512, Mtime: fakeMtime}, nil
+	}
+	if _, ok := f.dirs[path]; ok {
+		return FileInfo{Ino: fakeIno(path), IsDir: true, Perm: 0o755, Nlink: 2, Size: 512, Mtime: fakeMtime}, nil
+	}
+	if b, ok := f.files[path]; ok {
+		return FileInfo{Ino: fakeIno(path), IsDir: false, Perm: 0o644, Nlink: 1, Size: int64(len(b)), Mtime: fakeMtime}, nil
+	}
+	return FileInfo{}, ErrNotFound
+}
+
+var fakeMtime = time.Date(2026, time.January, 2, 15, 4, 0, 0, time.UTC)
+
+// fakeIno derives a stable, non-zero, path-distinct inode number so
+// tests can assert "an inode was reported" and "two different paths
+// don't collide" without a fixture having to assign one by hand.
+func fakeIno(path string) uint64 {
+	h := fnv.New32a()
+	h.Write([]byte(path))
+	return uint64(h.Sum32())%1_000_000 + 1
 }
 
 type memFile struct {
