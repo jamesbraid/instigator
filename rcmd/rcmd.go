@@ -212,12 +212,32 @@ func (s *Server) handle(c net.Conn) {
 // reserved local source port: classic rcmd clients verify the stderr
 // connection originates below 1024. Binding there needs privilege, so
 // an ephemeral port is the fallback.
+//
+// Timed and counted under Verbose because a burst of concurrent
+// dial-backs - inst opens several shell sessions together to read more
+// than one distribution's product descriptions - was a suspect for
+// dropped connections. Measured (rcmd_test.go's
+// TestConcurrentStderrDialbackDoesNotDegrade): at the concurrency a real
+// burst actually reaches (a handful of sessions inside the same
+// second), the scan resolves in well under a millisecond; even stressed
+// to 100 simultaneous dial-backs, far past anything observed in the
+// field, it stays under 100ms with zero failures. That doesn't match a
+// multi-second "Lost connection" - this logging exists so a real
+// recurrence, captured with -v, can either confirm or rule this out
+// with actual numbers instead of another guess.
 func (s *Server) dialStderr(ip net.IP, port int) (net.Conn, error) {
 	dst := &net.TCPAddr{IP: ip, Port: port}
+	t0 := time.Now()
+	attempts := 0
 	for local := 1023; local >= 512; local-- {
+		attempts++
 		d := net.Dialer{LocalAddr: &net.TCPAddr{Port: local}}
 		c, err := d.Dial("tcp", dst.String())
 		if err == nil {
+			if s.Verbose {
+				s.logf("rcmd: stderr dial-back to %s: local=%d attempts=%d took=%v",
+					dst, local, attempts, time.Since(t0))
+			}
 			return c, nil
 		}
 		if isAddrInUse(err) || isPermission(err) {
@@ -227,6 +247,10 @@ func (s *Server) dialStderr(ip net.IP, port int) (net.Conn, error) {
 			continue
 		}
 		return nil, err
+	}
+	if s.Verbose {
+		s.logf("rcmd: stderr dial-back to %s: reserved range exhausted, attempts=%d took=%v, falling back to ephemeral",
+			dst, attempts, time.Since(t0))
 	}
 	return net.Dial("tcp", dst.String())
 }
