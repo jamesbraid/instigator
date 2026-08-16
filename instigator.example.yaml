@@ -1,0 +1,36 @@
+# instigator configuration. Addresses here are RFC 5737 documentation
+# ranges; replace them with your own.
+
+# The server's own address on the client's segment, advertised in BOOTP
+# replies as the address the PROM tftps from.
+server_ip: 192.0.2.10
+
+# Offered to the client in the BOOTP reply's vendor area.
+netmask: 192.0.2.0/24
+
+# BOOTP answers only these MACs. Read the MAC from the PROM with
+# `printenv eaddr`. Everything else on the segment is ignored, so the
+# LAN's real DHCP server is untouched.
+clients:
+  - name: octane
+    mac: "08:00:69:0e:af:12"
+    ip: 192.0.2.30
+
+# Each media set is a directory of CD images, served as-is. Disc serve
+# names are slugged from the filenames; override any of them here.
+media:
+  - name: "6.5.30"
+    discs: /media/6.5.30
+    # disc_names:
+    #   "IRIX 6.5.30 Installation Tools.iso": tools
+
+services:
+  bootp: true
+  tftp:
+    # SGI PROMs ignore tftp transfers from high source ports; keep the
+    # transfer sockets low.
+    port_range: [2048, 32767]
+  rsh: true
+  # NFS is an alternative to rsh for the distribution. Off until proven
+  # against your miniroot.
+  nfs: false
