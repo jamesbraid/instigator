@@ -97,6 +97,56 @@ func TestStderrDialback(t *testing.T) {
 	}
 }
 
+// TestStderrCallbackBeforeFields models the real rcmd protocol: the client
+// sends the stderr port, waits for the server to connect back to it, and
+// only then sends the user and command fields. A server that reads all
+// fields before dialing stderr deadlocks such a client (IRIX inst).
+func TestStderrCallbackBeforeFields(t *testing.T) {
+	el, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer el.Close()
+	errPort := el.Addr().(*net.TCPAddr).Port
+
+	addr := startServer(t, &rcmd.Server{Handler: echoHandler, AllowHighPorts: true})
+	c, err := net.Dial("tcp", addr.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// send only the stderr port, then wait for the server's callback
+	fmt.Fprintf(c, "%d\x00", errPort)
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		ec, err := el.Accept()
+		if err == nil {
+			accepted <- ec
+		}
+	}()
+	select {
+	case ec := <-accepted:
+		defer ec.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("server never connected back to the stderr port (deadlock)")
+	}
+
+	// only now send the rest, as a real client does
+	fmt.Fprintf(c, "guest\x00guest\x00echo hi\x00")
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	r := bufio.NewReader(c)
+	ack, err := r.ReadByte()
+	if err != nil || ack != 0 {
+		t.Fatalf("ack=%d err=%v", ack, err)
+	}
+	out, _ := io.ReadAll(r)
+	if string(out) != "cmd=echo hi user=guest" {
+		t.Fatalf("out=%q", out)
+	}
+}
+
 func TestHandlerErrorReported(t *testing.T) {
 	// rshd accepts (zero byte) before the command runs; a runtime
 	// failure arrives as stderr text, which without a stderr channel

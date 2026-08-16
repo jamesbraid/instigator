@@ -111,36 +111,34 @@ func (s *Server) handle(c net.Conn) {
 	}
 
 	r := bufio.NewReaderSize(io.LimitReader(c, maxRequest), maxRequest)
-	fields := make([]string, 4)
-	for i := range fields {
+	readField := func() (string, error) {
 		f, err := r.ReadString(0)
 		if err != nil {
-			s.logf("rcmd: %s: short request: %v", tcp, err)
-			refuse(c, "malformed request")
-			return
+			return "", err
 		}
-		fields[i] = f[:len(f)-1]
+		return f[:len(f)-1], nil
 	}
-	errPort, err := strconv.Atoi(fields[0])
+
+	// Field 1 is the stderr port. The rcmd protocol requires the server to
+	// connect BACK to that port before the client sends the user and
+	// command fields - a real client (IRIX inst) blocks waiting for the
+	// stderr callback, so reading all four fields up front deadlocks it.
+	// Read the port, dial the stderr channel, then read the rest.
+	portField, err := readField()
+	if err != nil {
+		s.logf("rcmd: %s: short request (stderr port): %v", tcp, err)
+		refuse(c, "malformed request")
+		return
+	}
+	errPort, err := strconv.Atoi(portField)
 	if err != nil || errPort < 0 || errPort > 65535 {
 		refuse(c, "bad stderr port")
 		return
 	}
-	if s.Verbose {
-		s.logf("rcmd: %s: stderr-port=%d remuser=%q locuser=%q command=%q",
-			tcp, errPort, fields[1], fields[2], fields[3])
-	}
 
 	// Without a stderr channel, stderr shares the primary connection,
 	// as rshd's dup2 onto the socket does.
-	req := &Request{
-		RemoteUser: fields[1],
-		LocalUser:  fields[2],
-		Command:    fields[3],
-		Addr:       ip,
-		Stdout:     c,
-		Stderr:     c,
-	}
+	req := &Request{Addr: ip, Stdout: c, Stderr: c}
 	if errPort != 0 {
 		ec, err := s.dialStderr(tcp.IP, errPort)
 		if err != nil {
@@ -150,6 +148,20 @@ func (s *Server) handle(c net.Conn) {
 		}
 		defer ec.Close()
 		req.Stderr = ec
+	}
+
+	remuser, err1 := readField()
+	locuser, err2 := readField()
+	command, err3 := readField()
+	if err1 != nil || err2 != nil || err3 != nil {
+		s.logf("rcmd: %s: short request (fields): %v %v %v", tcp, err1, err2, err3)
+		refuse(c, "malformed request")
+		return
+	}
+	req.RemoteUser, req.LocalUser, req.Command = remuser, locuser, command
+	if s.Verbose {
+		s.logf("rcmd: %s: stderr-port=%d remuser=%q locuser=%q command=%q",
+			tcp, errPort, remuser, locuser, command)
 	}
 
 	s.logf("rcmd: %s: user=%s/%s command=%q", tcp, req.RemoteUser, req.LocalUser, req.Command)
