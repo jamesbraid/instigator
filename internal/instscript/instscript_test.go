@@ -8,7 +8,9 @@ import (
 func testParams() Params {
 	return Params{
 		ServerIP: "192.0.2.10",
-		DistPath: "/irix6.5.30/dist",
+		// the primary disc's own dist, the path AddCombined returns and
+		// serve passes in - not a union across the set
+		DistPath: "/irix6.5.30/tools/dist",
 		Release:  "6.5.30",
 		Stream:   "feature",
 	}
@@ -74,6 +76,40 @@ func TestGenerateFeatureStream(t *testing.T) {
 	got := Generate(p)
 
 	inOrder(t, got, "2. Place me on the feature stream", "Enter 2")
+}
+
+// One "from" opens the whole set: instigator serves each disc whole and
+// synthesizes a .related_dists on the primary that names the rest, which
+// inst opens itself. The runbook has to say so. An operator who sees
+// eleven discs served under one name and no explanation reaches for a
+// per-disc "open" for each of the other ten - the very thing the
+// synthesized .related_dists exists to avoid.
+func TestGenerateSaysOneFromOpensTheWholeSet(t *testing.T) {
+	p := testParams()
+	got := Generate(p)
+
+	inOrder(t, got, "from "+p.ServerIP+":"+p.DistPath, ".related_dists")
+
+	if n := strings.Count(got, "from "+p.ServerIP+":"); n != 1 {
+		t.Errorf("runbook has %d \"from\" commands, want exactly 1 for a combined set, got:\n%s", n, got)
+	}
+	if strings.Contains(got, "open "+p.ServerIP+":") {
+		t.Errorf("runbook tells the operator to \"open\" a disc by hand; inst opens the rest itself, got:\n%s", got)
+	}
+}
+
+// The runbook's PROM line and the one serve prints at startup are the
+// same command derived from the same path; if they ever disagree the
+// operator has two answers and no way to pick.
+func TestGeneratePROMBootLineMatchesStartupLog(t *testing.T) {
+	p := testParams()
+	const want = "boot -f bootp():/irix6.5.30/tools/stand/fx.64"
+	if got := promBootLine(p.DistPath); got != want {
+		t.Errorf("promBootLine(%q) = %q, want %q", p.DistPath, got, want)
+	}
+	if got := Generate(p); !strings.Contains(got, want) {
+		t.Errorf("runbook missing the primary disc's PROM boot line, got:\n%s", got)
+	}
 }
 
 func TestGeneratePROMBootLine(t *testing.T) {
