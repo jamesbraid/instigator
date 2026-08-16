@@ -38,13 +38,24 @@ var errReadOnly = errors.New("read-only filesystem")
 // own builtin - see its comment for why), so every handler resolves a
 // path against this cwd itself rather than against the interpreter's
 // own Dir, which this shell never updates.
+//
+// logger carries the same distinction throughout every handler: ERROR
+// for a command or operand this shell refuses as a matter of policy
+// (not in the whitelist, a write attempt, an operand we don't
+// understand at all) - a capability gap worth knowing about even when
+// inst's own marker protocol quietly absorbs the failure and moves on,
+// which is exactly how instcmd refusing fgrep went unnoticed on our
+// side until it broke a live install. WARN is for a request that
+// simply didn't pan out (a missing file, a malformed value) - routine,
+// not a sign this shell is missing something it should have.
 type shellEnv struct {
-	fsys FileSystem
-	cwd  string // always an absolute, path.Clean'd vfs path
+	fsys   FileSystem
+	cwd    string // always an absolute, path.Clean'd vfs path
+	logger *logging.Logger
 }
 
-func newShellEnv(fsys FileSystem) *shellEnv {
-	return &shellEnv{fsys: fsys, cwd: "/"}
+func newShellEnv(fsys FileSystem, logger *logging.Logger) *shellEnv {
+	return &shellEnv{fsys: fsys, cwd: "/", logger: logger}
 }
 
 // resolve turns a possibly-relative path into an absolute vfs path
@@ -87,13 +98,14 @@ func baseName(cmd string) string {
 // mvdan/sh Runner for the life of the connection, fed one line at a time
 // so state (variables, trap registrations, $?) persists across lines the
 // way a real shell's does. logger, when set, records every line at
-// DEBUG for observability, and a runner-level failure at WARN/ERROR.
+// DEBUG for observability and ERROR/WARN for anything a leaf command
+// refuses or fails - see shellEnv's own comment for that distinction.
 // A command that fails writes its own diagnostic to stderr and the
 // shell keeps going - a real shell continues past a ';'-separated
 // failure - matching inst's expectation that the trailing marker
 // wrapper always still runs.
 func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, logger *logging.Logger) error {
-	env := newShellEnv(fsys)
+	env := newShellEnv(fsys, logger)
 	runner, err := interp.New(
 		interp.StdIO(nil, stdout, stderr),
 		interp.Env(expand.ListEnviron("PATH=", "HOME=/", "IFS= \t\n")),
@@ -210,6 +222,7 @@ func callHandler(env *shellEnv) interp.CallHandlerFunc {
 			info, err := env.fsys.Stat(strings.TrimPrefix(abs, "/"))
 			if err != nil || !info.IsDir {
 				fmt.Fprintf(hc.Stderr, "cd: %s: not a directory\n", target)
+				env.logger.Warnf("instcmd: cd: %s: not a directory", target)
 				return []string{"false"}, nil
 			}
 			env.cwd = abs
@@ -221,6 +234,7 @@ func callHandler(env *shellEnv) interp.CallHandlerFunc {
 			// either; refuse outright rather than accept that probe as
 			// a side effect.
 			fmt.Fprintf(hc.Stderr, "%s: not supported\n", args[0])
+			env.logger.Errorf("instcmd: %s: not supported", args[0])
 			return []string{"false"}, nil
 		default:
 			return args, nil
@@ -424,6 +438,7 @@ func execHandler(env *shellEnv) interp.ExecHandlerFunc {
 			return shGrep(env, hc, baseName(args[0]), args[1:])
 		default:
 			fmt.Fprintf(hc.Stderr, "%s: not supported\n", args[0])
+			env.logger.Errorf("instcmd: %s: not supported", args[0])
 			return interp.ExitStatus(1)
 		}
 	}
@@ -476,6 +491,7 @@ func shGrep(env *shellEnv, hc interp.HandlerContext, name string, args []string)
 	}
 	if !havePattern {
 		fmt.Fprintf(hc.Stderr, "%s: no pattern\n", name)
+		env.logger.Warnf("instcmd: %s: no pattern", name)
 		return interp.ExitStatus(2)
 	}
 
@@ -499,6 +515,7 @@ func shGrep(env *shellEnv, hc interp.HandlerContext, name string, args []string)
 		re, err := regexp.Compile(expr)
 		if err != nil {
 			fmt.Fprintf(hc.Stderr, "%s: bad pattern %q: %v\n", name, pattern, err)
+			env.logger.Warnf("instcmd: %s: bad pattern %q: %v", name, pattern, err)
 			return interp.ExitStatus(2)
 		}
 		match = re.MatchString
@@ -520,6 +537,7 @@ func shGrep(env *shellEnv, hc interp.HandlerContext, name string, args []string)
 			f, err := env.fsys.Open(env.fsPath(p))
 			if err != nil {
 				fmt.Fprintf(hc.Stderr, "%s: %s: %v\n", name, p, err)
+				env.logger.Warnf("instcmd: %s: %s: %v", name, p, err)
 				continue
 			}
 			sources = append(sources, source{p, io.NewSectionReader(f, 0, f.Size())})
@@ -600,6 +618,7 @@ func shLs(env *shellEnv, hc interp.HandlerContext, args []string) error {
 	info, err := env.fsys.Stat(fsPath)
 	if err != nil {
 		fmt.Fprintf(hc.Stderr, "ls: %s: %v\n", target, err)
+		env.logger.Warnf("instcmd: ls: %s: %v", target, err)
 		return interp.ExitStatus(1)
 	}
 
@@ -610,6 +629,7 @@ func shLs(env *shellEnv, hc interp.HandlerContext, args []string) error {
 	names, err := env.fsys.ReadDir(fsPath)
 	if err != nil {
 		fmt.Fprintf(hc.Stderr, "ls: %s: %v\n", target, err)
+		env.logger.Warnf("instcmd: ls: %s: %v", target, err)
 		return interp.ExitStatus(1)
 	}
 	if !flagL {
@@ -699,6 +719,7 @@ func shCat(env *shellEnv, hc interp.HandlerContext, args []string) error {
 		f, err := env.fsys.Open(env.fsPath(p))
 		if err != nil {
 			fmt.Fprintf(hc.Stderr, "cat: %s: %v\n", p, err)
+			env.logger.Warnf("instcmd: cat: %s: %v", p, err)
 			return interp.ExitStatus(1)
 		}
 		if _, err := io.Copy(hc.Stdout, io.NewSectionReader(f, 0, f.Size())); err != nil {
@@ -725,6 +746,7 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 		k, v, ok := strings.Cut(a, "=")
 		if !ok {
 			fmt.Fprintf(hc.Stderr, "dd: bad operand %q\n", a)
+			env.logger.Warnf("instcmd: dd: bad operand %q", a)
 			return interp.ExitStatus(1)
 		}
 		switch k {
@@ -732,11 +754,13 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 			file = v
 		case "of":
 			fmt.Fprintln(hc.Stderr, "dd: of=: not supported (read-only)")
+			env.logger.Errorf("instcmd: dd: of=: not supported (read-only)")
 			return interp.ExitStatus(1)
 		case "bs":
 			n, err := parseSize(v)
 			if err != nil {
 				fmt.Fprintf(hc.Stderr, "dd: bs: %v\n", err)
+				env.logger.Warnf("instcmd: dd: bs: %v", err)
 				return interp.ExitStatus(1)
 			}
 			bs = n
@@ -744,35 +768,41 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 			n, err := parseSize(v)
 			if err != nil {
 				fmt.Fprintf(hc.Stderr, "dd: ibs: %v\n", err)
+				env.logger.Warnf("instcmd: dd: ibs: %v", err)
 				return interp.ExitStatus(1)
 			}
 			ibs = n
 		case "obs":
 			if _, err := parseSize(v); err != nil {
 				fmt.Fprintf(hc.Stderr, "dd: obs: %v\n", err)
+				env.logger.Warnf("instcmd: dd: obs: %v", err)
 				return interp.ExitStatus(1)
 			}
 		case "skip", "iseek":
 			n, err := strconv.ParseInt(v, 10, 64)
 			if err != nil || n < 0 {
 				fmt.Fprintf(hc.Stderr, "dd: %s: bad value %q\n", k, v)
+				env.logger.Warnf("instcmd: dd: %s: bad value %q", k, v)
 				return interp.ExitStatus(1)
 			}
 			skip = n
 		case "seek", "oseek":
 			if n, err := strconv.ParseInt(v, 10, 64); err != nil || n < 0 {
 				fmt.Fprintf(hc.Stderr, "dd: %s: bad value %q\n", k, v)
+				env.logger.Warnf("instcmd: dd: %s: bad value %q", k, v)
 				return interp.ExitStatus(1)
 			}
 		case "count":
 			n, err := strconv.ParseInt(v, 10, 64)
 			if err != nil || n < 0 {
 				fmt.Fprintf(hc.Stderr, "dd: count: bad value %q\n", v)
+				env.logger.Warnf("instcmd: dd: count: bad value %q", v)
 				return interp.ExitStatus(1)
 			}
 			count, haveCount = n, true
 		default:
 			fmt.Fprintf(hc.Stderr, "dd: operand %q not supported\n", k)
+			env.logger.Errorf("instcmd: dd: operand %q not supported", k)
 			return interp.ExitStatus(1)
 		}
 	}
@@ -786,6 +816,7 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 		f, err := env.fsys.Open(env.fsPath(file))
 		if err != nil {
 			fmt.Fprintf(hc.Stderr, "dd: %s: %v\n", file, err)
+			env.logger.Warnf("instcmd: dd: %s: %v", file, err)
 			return interp.ExitStatus(1)
 		}
 		off := skip * ibs
@@ -802,6 +833,7 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 		if skip > 0 {
 			if _, err := io.CopyN(io.Discard, in, skip*ibs); err != nil && err != io.EOF {
 				fmt.Fprintf(hc.Stderr, "dd: skip: %v\n", err)
+				env.logger.Errorf("instcmd: dd: skip: %v", err)
 				return interp.ExitStatus(1)
 			}
 		}
@@ -830,6 +862,7 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 		}
 		if err != nil {
 			fmt.Fprintf(hc.Stderr, "dd: read: %v\n", err)
+			env.logger.Errorf("instcmd: dd: read: %v", err)
 			return interp.ExitStatus(1)
 		}
 	}
@@ -852,10 +885,12 @@ func openHandler(env *shellEnv) interp.OpenHandlerFunc {
 			return devNull{}, nil
 		}
 		if flag&(os.O_WRONLY|os.O_RDWR|os.O_CREATE|os.O_APPEND|os.O_TRUNC|os.O_EXCL) != 0 {
+			env.logger.Errorf("instcmd: redirect: %s: not supported (read-only)", path)
 			return nil, &os.PathError{Op: "open", Path: path, Err: errReadOnly}
 		}
 		f, err := env.fsys.Open(env.fsPath(path))
 		if err != nil {
+			env.logger.Warnf("instcmd: redirect: %s: %v", path, err)
 			return nil, &os.PathError{Op: "open", Path: path, Err: err}
 		}
 		return &roFile{r: io.NewSectionReader(f, 0, f.Size())}, nil

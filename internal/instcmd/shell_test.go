@@ -2,6 +2,7 @@ package instcmd
 
 import (
 	"bytes"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -284,5 +285,47 @@ func TestShellLsPlainStaysNameOnly(t *testing.T) {
 	}
 	if strings.ContainsAny(out, "0123456789") {
 		t.Fatalf("plain ls (no -l) printed something numeric, expected bare names only: %q", out)
+	}
+}
+
+// logLineRE matches one leveled log line: an ISO8601 timestamp, a
+// level word, then the message - the same shape internal/logging's own
+// tests check.
+var logLineRE = regexp.MustCompile(`(?m)^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2} +(DEBUG|INFO|WARN|ERROR) +(.*)$`)
+
+// TestShellRefusedCommandLogsErrorOnServerSide is the headline fix this
+// package's logging overhaul exists for: instcmd refusing fgrep went
+// only to inst's own stderr, never to serve.log, and that silence was
+// why a live install failure took a real capture to diagnose instead of
+// a log line. A command this shell refuses must now show up in the
+// server's own log at ERROR - even at the default (non-verbose) level,
+// where DEBUG's per-command trace is off - not just on the client.
+func TestShellRefusedCommandLogsErrorOnServerSide(t *testing.T) {
+	var out, errb, logbuf strings.Builder
+	logger := logging.New(&logbuf, logging.LevelInfo) // default level: no -v
+	script := "not-a-real-command foo\n"
+	if err := RunShell(shellTestFS(), strings.NewReader(script), &out, &errb, logger); err != nil {
+		t.Fatal(err)
+	}
+
+	// the client still sees the refusal on its own stderr, unchanged
+	if !strings.Contains(errb.String(), "not supported") {
+		t.Fatalf("client stderr missing the refusal: %q", errb.String())
+	}
+
+	// and now it also reached our own log, as an ERROR line in the
+	// <ISO8601> <LEVEL> <message> shape
+	var found string
+	for _, m := range logLineRE.FindAllStringSubmatch(logbuf.String(), -1) {
+		if m[1] == "ERROR" && strings.Contains(m[2], "not-a-real-command") {
+			found = m[0]
+			break
+		}
+	}
+	if found == "" {
+		t.Fatalf("no ERROR line for the refused command in the server log:\n%s", logbuf.String())
+	}
+	if !strings.Contains(found, "not supported") {
+		t.Fatalf("ERROR line missing %q: %q", "not supported", found)
 	}
 }

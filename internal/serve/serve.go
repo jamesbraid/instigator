@@ -7,6 +7,7 @@ package serve
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"sort"
@@ -93,6 +94,7 @@ type Option func(*options)
 type options struct {
 	bootpReplyAddr net.Addr
 	rshHighPorts   bool
+	instructions   io.Writer
 }
 
 // WithBootpReplyAddr redirects bootp replies away from the broadcast
@@ -107,6 +109,14 @@ func WithRSHHighPorts() Option {
 	return func(o *options) { o.rshHighPorts = true }
 }
 
+// WithInstructions directs the operator's PROM/inst commands - "type
+// this to boot" - to w instead of discarding them. These are console
+// UX for a human at the PROM, never part of the leveled server log: no
+// timestamp, no level, and never written unless a caller asks for them.
+func WithInstructions(w io.Writer) Option {
+	return func(o *options) { o.instructions = w }
+}
+
 // Start opens the media, binds the enabled services on the configured
 // ports, and serves until Close. logger receives leveled server output;
 // nil is silent, exactly like an unset Logf used to be. -v maps to a
@@ -114,7 +124,7 @@ func WithRSHHighPorts() Option {
 // here: verbosity is a property of the logger a caller builds, not a
 // separate flag threaded through every service.
 func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers, error) {
-	var o options
+	o := options{instructions: io.Discard}
 	for _, opt := range opts {
 		opt(&o)
 	}
@@ -159,7 +169,7 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 	}
 	allow := func(a netip.Addr) bool { return allowed[a] }
 
-	logStartup(cfg, tree, primaryDists, logger)
+	logStartup(cfg, tree, primaryDists, logger, o.instructions)
 
 	if cfg.Services.BOOTP {
 		var clients []bootp.Client
@@ -289,11 +299,16 @@ func combinedFxPath(primaryDist string) string {
 }
 
 // logStartup logs the serve map - media and combined sets available -
-// and, per client, the commands to type. primaryDists is one primary
+// at INFO, and separately writes the operator's commands (what to type
+// at the PROM and at the Inst> prompt) to instructions. The two are
+// different audiences: the serve map is what this server is doing, the
+// PROM/Inst> lines are what a human does next, and the latter were
+// never server log content - they went to the logger only because
+// nothing else was wired up to carry them. primaryDists is one primary
 // dist path per combined set, in config order: a combined set is
 // opened with a single "from", so its whole recipe fits on two lines
 // and belongs next to the client it is for.
-func logStartup(cfg *config.Config, tree *vfs.Tree, primaryDists []string, logger *logging.Logger) {
+func logStartup(cfg *config.Config, tree *vfs.Tree, primaryDists []string, logger *logging.Logger, instructions io.Writer) {
 	dm := tree.DiscMap()
 	medias := make([]string, 0, len(dm))
 	for m := range dm {
@@ -312,20 +327,20 @@ func logStartup(cfg *config.Config, tree *vfs.Tree, primaryDists []string, logge
 	}
 	for _, c := range cfg.Clients {
 		logger.Infof("client %s: mac=%s ip=%s", c.Name, c.MAC, c.IP)
-		logger.Infof("  PROM: setenv netaddr %s", c.IP)
+		fmt.Fprintf(instructions, "  PROM: setenv netaddr %s\n", c.IP)
 		for _, m := range medias {
 			for s := range dm[m] {
 				if _, err := tree.Open(fmt.Sprintf("%s/%s/stand/fx.64", m, s)); err == nil {
-					logger.Infof("  PROM: boot -f bootp():/%s/%s/stand/fx.64", m, s)
+					fmt.Fprintf(instructions, "  PROM: boot -f bootp():/%s/%s/stand/fx.64\n", m, s)
 				}
 			}
 		}
 		for _, p := range primaryDists {
 			fx := combinedFxPath(p)
 			if _, err := tree.Open(fx); err == nil {
-				logger.Infof("  PROM: boot -f bootp():/%s", fx)
+				fmt.Fprintf(instructions, "  PROM: boot -f bootp():/%s\n", fx)
 			}
-			logger.Infof("  Inst>: from %s:%s", cfg.ServerIP, p)
+			fmt.Fprintf(instructions, "  Inst>: from %s:%s\n", cfg.ServerIP, p)
 		}
 	}
 }
