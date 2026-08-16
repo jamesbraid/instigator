@@ -1,6 +1,8 @@
 package vfs
 
 import (
+	"errors"
+	"io"
 	"sort"
 	"strings"
 
@@ -121,8 +123,11 @@ func (e *nfsExport) ReadDir(dir nfs.Node) ([]nfs.DirEntry, error) {
 func (e *nfsExport) ReadAt(n nfs.Node, p []byte, off int64) (int, error) {
 	nn := n.(nfsNode)
 	got, err := e.discs[nn.disc].FS().ReadAt(nn.ino, p, off)
-	if err != nil && got == 0 {
-		return 0, nfs.ErrIO
+	// io.EOF is the normal end-of-file signal, not a failure: a read at
+	// or past the end is a legitimate zero-length read the NFS client
+	// reads as EOF.
+	if err != nil && !errors.Is(err, io.EOF) {
+		return got, nfs.ErrIO
 	}
 	return got, nil
 }
