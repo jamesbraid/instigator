@@ -93,7 +93,7 @@ func TestCombinedSynthesizesRelatedDists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "../foundation1/dist\n../nfs/dist/dist6.5\n"
+	want := "../../foundation1/dist\n../../nfs/dist/dist6.5\n"
 	if c := read(t, f); c != want {
 		t.Fatalf(".related_dists = %q, want %q", c, want)
 	}
@@ -169,7 +169,7 @@ func TestCombinedListsAndStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantSize := int64(len("../foundation1/dist\n../nfs/dist/dist6.5\n"))
+	wantSize := int64(len("../../foundation1/dist\n../../nfs/dist/dist6.5\n"))
 	if info.IsDir || info.Size != wantSize {
 		t.Fatalf("stat .related_dists = %+v, want size %d file", info, wantSize)
 	}
@@ -205,7 +205,7 @@ func TestCombinedDiscNamesOverrideSlugs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "../foundation1/dist\n../nfs/dist/dist6.5\n"
+	want := "../../foundation1/dist\n../../nfs/dist/dist6.5\n"
 	if c := read(t, f); c != want {
 		t.Fatalf(".related_dists = %q, want %q", c, want)
 	}
@@ -264,14 +264,14 @@ func TestCombinedNeverLeaksRedirectIntoPrimary(t *testing.T) {
 	related := read(t, f)
 	var nfsLine string
 	for _, line := range strings.Split(strings.TrimRight(related, "\n"), "\n") {
-		if strings.HasPrefix(line, "../nfs/") {
+		if strings.HasPrefix(line, "../../nfs/") {
 			nfsLine = line
 		}
 	}
 	if nfsLine == "" {
 		t.Fatalf(".related_dists has no entry for the redirect disc: %q", related)
 	}
-	if nfsLine == "../nfs/dist" {
+	if nfsLine == "../../nfs/dist" {
 		t.Fatal(".related_dists points the redirect disc at its bare dist - that's only the .redirect stub")
 	}
 	if !strings.HasSuffix(nfsLine, "/dist/dist6.5") {
