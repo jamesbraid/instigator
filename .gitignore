@@ -4,3 +4,8 @@
 
 # local runtime config (real MAC) - never commit
 /instigator.yaml
+
+# local capture/debug artifacts (contain real addresses)
+/cap.*
+*.pcap
+/serve*.log
