@@ -15,8 +15,9 @@ import (
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  instigator serve <config.yaml>   serve IRIX netinstalls from CD images
-  instigator ls <image> [path]     list an SGI CD image (volume header + EFS)`)
+  instigator serve <config.yaml>          serve IRIX netinstalls from CD images
+  instigator ls <image> [path]            list an SGI CD image (volume header + EFS)
+  instigator dump <image> <src> <outdir>  extract an EFS subtree to a host directory`)
 	os.Exit(2)
 }
 
@@ -42,6 +43,14 @@ func main() {
 			path = os.Args[3]
 		}
 		if err := runLs(os.Stdout, os.Args[2], path); err != nil {
+			fmt.Fprintln(os.Stderr, "instigator:", err)
+			os.Exit(1)
+		}
+	case "dump":
+		if len(os.Args) != 5 {
+			usage()
+		}
+		if err := runDump(os.Stdout, os.Args[2], os.Args[3], os.Args[4]); err != nil {
 			fmt.Fprintln(os.Stderr, "instigator:", err)
 			os.Exit(1)
 		}
