@@ -7,12 +7,12 @@ import (
 
 // NFSv2 status codes (RFC 1094).
 const (
-	nfsOK       = 0
-	nfsErrNoent = 2
-	nfsErrIO    = 5
+	nfsOK        = 0
+	nfsErrNoent  = 2
+	nfsErrIO     = 5
 	nfsErrNotdir = 20
-	nfsErrROFS  = 30
-	nfsErrStale = 70
+	nfsErrROFS   = 30
+	nfsErrStale  = 70
 )
 
 // NFSv2 file types.
@@ -82,11 +82,11 @@ func writeFattr(w *xdrWriter, n Node) {
 	w.uint32(0) // uid (served as root; media ownership is irrelevant to install)
 	w.uint32(0) // gid
 	w.uint32(size)
-	w.uint32(512)                 // blocksize
-	w.uint32(0)                   // rdev
-	w.uint32((size + 511) / 512)  // blocks
-	w.uint32(1)                   // fsid
-	w.uint32(uint32(n.ID()))      // fileid
+	w.uint32(512)                // blocksize
+	w.uint32(0)                  // rdev
+	w.uint32((size + 511) / 512) // blocks
+	w.uint32(1)                  // fsid
+	w.uint32(uint32(n.ID()))     // fileid
 	mt := n.Mtime()
 	w.uint32(mt)
 	w.uint32(0) // atime usec
@@ -239,7 +239,7 @@ func (s *Server) nfsReaddir(_ net.Addr, r *xdrReader) []byte {
 	i := int(cookie)
 	for ; i < len(ents); i++ {
 		e := ents[i]
-		entrySize := 4 + 4 + 4 + ((len(e.Name)+3)&^3) + 4
+		entrySize := 4 + 4 + 4 + ((len(e.Name) + 3) &^ 3) + 4
 		if budget-entrySize < 0 && i > int(cookie) {
 			break
 		}

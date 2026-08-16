@@ -26,7 +26,7 @@ type MediaSet struct {
 // Tree is the assembled serve tree: /<media>/<disc>/<efs path>. All
 // protocol servers read through it.
 type Tree struct {
-	medias map[string]map[string]*Disc // media -> disc slug -> disc
+	medias map[string]map[string]*Disc  // media -> disc slug -> disc
 	files  map[string]map[string]string // media -> disc slug -> image filename
 }
 

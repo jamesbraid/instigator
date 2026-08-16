@@ -106,11 +106,11 @@ func (s *Server) handle(req []byte) []byte {
 
 	rep := make([]byte, packetLen)
 	copy(rep, req[:packetLen])
-	rep[0] = 2 // BOOTREPLY
-	rep[3] = 0 // hops
-	copy(rep[16:20], client.IP.AsSlice())   // yiaddr
-	copy(rep[20:24], s.ServerIP.AsSlice())  // siaddr
-	for i := 44; i < 108; i++ {             // sname: clear
+	rep[0] = 2                             // BOOTREPLY
+	rep[3] = 0                             // hops
+	copy(rep[16:20], client.IP.AsSlice())  // yiaddr
+	copy(rep[20:24], s.ServerIP.AsSlice()) // siaddr
+	for i := 44; i < 108; i++ {            // sname: clear
 		rep[i] = 0
 	}
 	// file: echo the request's path (the PROM chose it)

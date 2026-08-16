@@ -14,7 +14,7 @@ const (
 	msgAccepted = 0
 
 	// accept_stat
-	success    = 0
+	success     = 0
 	progUnavail = 1
 	procUnavail = 3
 	garbageArgs = 4

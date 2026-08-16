@@ -28,8 +28,8 @@ func (n *memNode) Size() int64   { return n.size }
 func (n *memNode) Mtime() uint32 { return n.mtime }
 
 type memFS struct {
-	root  *memNode
-	byID  map[uint64]*memNode
+	root *memNode
+	byID map[uint64]*memNode
 }
 
 func (f *memFS) MountRoot(path string) (nfs.Node, error) {
