@@ -60,6 +60,9 @@ type Server struct {
 	// Logf, when set, receives one line per call.
 	Logf func(format string, args ...any)
 
+	// Verbose logs every RPC call: program, procedure, and caller.
+	Verbose bool
+
 	// Ports portmap hands out. Atomic because SetPorts can race the
 	// serve goroutines when tests bind ephemeral ports after Serve.
 	mountPort, nfsPort atomic.Uint32

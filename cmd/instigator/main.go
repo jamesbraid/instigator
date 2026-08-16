@@ -15,7 +15,7 @@ import (
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  instigator serve <config.yaml>          serve IRIX netinstalls from CD images
+  instigator serve [-v] <config.yaml>     serve IRIX netinstalls from CD images (-v: decode every packet)
   instigator ls <image> [path]            list an SGI CD image (volume header + EFS)
   instigator dump <image> <src> <outdir>  extract an EFS subtree to a host directory`)
 	os.Exit(2)
@@ -27,10 +27,16 @@ func main() {
 	}
 	switch os.Args[1] {
 	case "serve":
-		if len(os.Args) != 3 {
+		args := os.Args[2:]
+		verbose := false
+		if len(args) > 0 && (args[0] == "-v" || args[0] == "--verbose") {
+			verbose = true
+			args = args[1:]
+		}
+		if len(args) != 1 {
 			usage()
 		}
-		if err := runServe(os.Args[2]); err != nil {
+		if err := runServe(args[0], verbose); err != nil {
 			fmt.Fprintln(os.Stderr, "instigator:", err)
 			os.Exit(1)
 		}
@@ -59,7 +65,7 @@ func main() {
 	}
 }
 
-func runServe(configPath string) error {
+func runServe(configPath string, verbose bool) error {
 	b, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
@@ -69,7 +75,11 @@ func runServe(configPath string) error {
 		return err
 	}
 	logger := log.New(os.Stdout, "", log.LstdFlags)
-	s, err := serve.Start(cfg, logger.Printf)
+	var opts []serve.Option
+	if verbose {
+		opts = append(opts, serve.WithVerbose())
+	}
+	s, err := serve.Start(cfg, logger.Printf, opts...)
 	if err != nil {
 		return err
 	}
