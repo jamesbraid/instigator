@@ -3,6 +3,7 @@ package vfs
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jamesbraid/instigator/efs/efstest"
@@ -207,6 +208,74 @@ func TestCombinedDiscNamesOverrideSlugs(t *testing.T) {
 	want := "../foundation1/dist\n../nfs/dist/dist6.5\n"
 	if c := read(t, f); c != want {
 		t.Fatalf(".related_dists = %q, want %q", c, want)
+	}
+}
+
+// TestCombinedNeverLeaksRedirectIntoPrimary is a regression guard for the
+// infinite-reopen bug this package's split from a flat union fixed: the
+// old flat union merged every disc's dist/ into one shared directory,
+// which pulled a redirect disc's dist/.redirect stub into the primary's
+// dist alongside it. inst checks dist/.redirect first when it opens a
+// distribution, so it followed that leaked redirect, failed to resolve
+// it, and reopened the rsh session forever. This fails under either way
+// that bug comes back: flattening leaking .redirect into the primary, or
+// a redirect disc ever being referenced at its bare dist - which is only
+// the stub - instead of past it at dist/dist6.5.
+func TestCombinedNeverLeaksRedirectIntoPrimary(t *testing.T) {
+	dir := t.TempDir()
+	found := combImage(t, dir, "foundation1.iso", foundationDist)
+	primary := combImage(t, dir, "tools.image", primaryDist)
+	nfs := combImage(t, dir, "nfs.iso", redirectDist)
+
+	tree, err := BuildTree(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tree.Close()
+	if _, err := tree.AddCombined("full", []string{found, primary, nfs}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// (1) the path inst actually opens - the primary's own dist - must
+	// never carry a .redirect, from a flattened merge or any other means.
+	if _, err := tree.Open("full/tools/dist/.redirect"); err == nil {
+		t.Fatal("full/tools/dist/.redirect opened: a redirect leaked into the path inst opens")
+	}
+	primaryNames, err := tree.ReadDir("full/tools/dist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(primaryNames, ".redirect") {
+		t.Fatalf("primary dist listing carries .redirect: %v", primaryNames)
+	}
+
+	// (2) the redirect disc is reachable past its stub, at dist/dist6.5.
+	if _, err := tree.Open("full/nfs/dist/dist6.5/nfs.sw"); err != nil {
+		t.Fatalf("redirect disc not reachable past its stub: %v", err)
+	}
+
+	// and the synthesized .related_dists - what inst actually follows to
+	// find it - must reference the redirect disc past its stub, never at
+	// its bare dist, which is only the .redirect file again.
+	f, err := tree.Open("full/tools/dist/.related_dists")
+	if err != nil {
+		t.Fatal(err)
+	}
+	related := read(t, f)
+	var nfsLine string
+	for _, line := range strings.Split(strings.TrimRight(related, "\n"), "\n") {
+		if strings.HasPrefix(line, "../nfs/") {
+			nfsLine = line
+		}
+	}
+	if nfsLine == "" {
+		t.Fatalf(".related_dists has no entry for the redirect disc: %q", related)
+	}
+	if nfsLine == "../nfs/dist" {
+		t.Fatal(".related_dists points the redirect disc at its bare dist - that's only the .redirect stub")
+	}
+	if !strings.HasSuffix(nfsLine, "/dist/dist6.5") {
+		t.Fatalf(".related_dists points the redirect disc at %q, want it to end in /dist/dist6.5", nfsLine)
 	}
 }
 
