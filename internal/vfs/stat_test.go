@@ -73,7 +73,7 @@ func TestCombinedStat(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tree.Close()
-	if _, err := tree.AddCombined("full", []string{primary, found}); err != nil {
+	if _, err := tree.AddCombined("full", []string{primary, found}, nil); err != nil {
 		t.Fatal(err)
 	}
 

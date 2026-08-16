@@ -129,7 +129,7 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 	}
 	var firstPrimaryDist string
 	for i, cb := range cfg.Combined {
-		primaryDist, err := tree.AddCombined(cb.Name, cb.Layers)
+		primaryDist, err := tree.AddCombined(cb.Name, cb.Layers, cb.DiscNames)
 		if err != nil {
 			tree.Close()
 			return nil, err

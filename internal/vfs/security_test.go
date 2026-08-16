@@ -92,7 +92,7 @@ func buildEscapeTree(t *testing.T) *Tree {
 	}
 	t.Cleanup(func() { tree.Close() })
 
-	if _, err := tree.AddCombined("combined", []string{img}); err != nil {
+	if _, err := tree.AddCombined("combined", []string{img}, nil); err != nil {
 		t.Fatal(err)
 	}
 	return tree

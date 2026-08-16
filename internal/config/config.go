@@ -53,10 +53,12 @@ type Ports struct {
 // /<Name>/, each disc kept whole at /<Name>/<slug>/. The primary disc
 // (the one carrying dist/.related_dists) gets a synthesized .related_dists
 // that chains the rest, so inst auto-opens the whole set from one path.
-// Layers is the disc images, in the order they are chained.
+// Layers is the disc images, in the order they are chained; DiscNames
+// overrides a disc's serve slug per image filename, as a media set's does.
 type Combined struct {
-	Name   string
-	Layers []string
+	Name      string
+	Layers    []string
+	DiscNames map[string]string
 }
 
 // Config is a validated instigator configuration.
@@ -85,8 +87,9 @@ type raw struct {
 		DiscNames map[string]string `yaml:"disc_names"`
 	} `yaml:"media"`
 	Combined []struct {
-		Name   string   `yaml:"name"`
-		Layers []string `yaml:"layers"`
+		Name      string            `yaml:"name"`
+		Layers    []string          `yaml:"layers"`
+		DiscNames map[string]string `yaml:"disc_names"`
 	} `yaml:"combined"`
 	Services *struct {
 		BOOTP *bool `yaml:"bootp"`
@@ -170,7 +173,7 @@ func Parse(b []byte) (*Config, error) {
 		if rc.Name == "" || len(rc.Layers) == 0 {
 			return nil, fmt.Errorf("config: combined[%d]: name and at least one layer are required", i)
 		}
-		c.Combined = append(c.Combined, Combined{Name: rc.Name, Layers: rc.Layers})
+		c.Combined = append(c.Combined, Combined{Name: rc.Name, Layers: rc.Layers, DiscNames: rc.DiscNames})
 	}
 
 	if r.Services != nil {

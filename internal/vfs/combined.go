@@ -39,9 +39,12 @@ const relatedDistsName = ".related_dists"
 
 // AddCombined opens the given CD images as a combined distribution set
 // served under /<name>/. Each disc keeps its own dist; the primary disc's
-// .related_dists is synthesized to chain the rest. It returns the serve
-// path of the primary's dist - the single path an operator points inst at.
-func (t *Tree) AddCombined(name string, imagePaths []string) (string, error) {
+// .related_dists is synthesized to chain the rest. discNames overrides a
+// disc's serve slug per image filename, like a media set's, keeping the
+// paths short and readable; a filename with no override falls back to the
+// slugged name. It returns the serve path of the primary's dist - the
+// single path an operator points inst at.
+func (t *Tree) AddCombined(name string, imagePaths []string, discNames map[string]string) (string, error) {
 	if _, dup := t.medias[name]; dup {
 		return "", fmt.Errorf("combined %q clashes with a media set", name)
 	}
@@ -57,7 +60,10 @@ func (t *Tree) AddCombined(name string, imagePaths []string) (string, error) {
 			c.close()
 			return "", fmt.Errorf("combined %q: %s: %w", name, p, err)
 		}
-		s := slug(filepath.Base(p))
+		s := discNames[filepath.Base(p)]
+		if s == "" {
+			s = slug(filepath.Base(p))
+		}
 		if _, dup := c.discs[s]; dup {
 			d.Close()
 			c.close()
