@@ -16,6 +16,7 @@ import (
 	"github.com/jamesbraid/instigator/internal/instcmd"
 	"github.com/jamesbraid/instigator/internal/tftp"
 	"github.com/jamesbraid/instigator/internal/vfs"
+	"github.com/jamesbraid/instigator/nfs"
 	"github.com/jamesbraid/instigator/rcmd"
 )
 
@@ -27,6 +28,10 @@ type Servers struct {
 	bootpConn net.PacketConn
 	tftpConn  net.PacketConn
 	rshLn     net.Listener
+
+	pmapConn  net.PacketConn
+	mountConn net.PacketConn
+	nfsConn   net.PacketConn
 }
 
 // treeFS adapts the vfs tree to the protocol servers' filesystem
@@ -160,7 +165,45 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 		go srv.Serve(ln)
 	}
 
+	if cfg.Services.NFS {
+		if err := s.startNFS(cfg, allow, logf); err != nil {
+			s.Close()
+			return nil, err
+		}
+	}
+
 	return s, nil
+}
+
+// startNFS binds portmap, mountd, and nfsd and registers the assigned
+// ports with portmap.
+func (s *Servers) startNFS(cfg *config.Config, allow func(netip.Addr) bool, logf func(string, ...any)) error {
+	srv := &nfs.Server{FS: s.tree.NFSExport(), AllowIP: allow, Logf: logf}
+
+	pmap, err := net.ListenPacket("udp4", fmt.Sprintf(":%d", cfg.Ports.Portmap))
+	if err != nil {
+		return fmt.Errorf("portmap: %w", err)
+	}
+	s.pmapConn = pmap
+	mnt, err := net.ListenPacket("udp4", fmt.Sprintf(":%d", cfg.Ports.Mount))
+	if err != nil {
+		return fmt.Errorf("mountd: %w", err)
+	}
+	s.mountConn = mnt
+	nfsc, err := net.ListenPacket("udp4", fmt.Sprintf(":%d", cfg.Ports.NFS))
+	if err != nil {
+		return fmt.Errorf("nfsd: %w", err)
+	}
+	s.nfsConn = nfsc
+
+	srv.SetPorts(
+		uint32(mnt.LocalAddr().(*net.UDPAddr).Port),
+		uint32(nfsc.LocalAddr().(*net.UDPAddr).Port),
+	)
+	go srv.ServePortmap(pmap)
+	go srv.ServeMount(mnt)
+	go srv.ServeNFS(nfsc)
+	return nil
 }
 
 func logStartup(cfg *config.Config, tree *vfs.Tree, logf func(string, ...any)) {
@@ -216,5 +259,13 @@ func (s *Servers) Close() error {
 	if s.rshLn != nil {
 		s.rshLn.Close()
 	}
+	for _, c := range []net.PacketConn{s.pmapConn, s.mountConn, s.nfsConn} {
+		if c != nil {
+			c.Close()
+		}
+	}
 	return s.tree.Close()
 }
+
+// PortmapAddr returns the portmap socket address.
+func (s *Servers) PortmapAddr() net.Addr { return s.pmapConn.LocalAddr() }

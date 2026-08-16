@@ -41,9 +41,12 @@ type Services struct {
 
 // Ports holds the listening ports, overridable for unprivileged runs.
 type Ports struct {
-	BOOTP int
-	TFTP  int
-	RSH   int
+	BOOTP   int
+	TFTP    int
+	RSH     int
+	Portmap int
+	Mount   int
+	NFS     int
 }
 
 // Config is a validated instigator configuration.
@@ -80,9 +83,12 @@ type raw struct {
 		NFS *bool `yaml:"nfs"`
 	} `yaml:"services"`
 	Ports *struct {
-		BOOTP int `yaml:"bootp"`
-		TFTP  int `yaml:"tftp"`
-		RSH   int `yaml:"rsh"`
+		BOOTP   int `yaml:"bootp"`
+		TFTP    int `yaml:"tftp"`
+		RSH     int `yaml:"rsh"`
+		Portmap int `yaml:"portmap"`
+		Mount   int `yaml:"mount"`
+		NFS     int `yaml:"nfs"`
 	} `yaml:"ports"`
 }
 
@@ -100,7 +106,7 @@ func Parse(b []byte) (*Config, error) {
 			TFTP:  TFTPService{Enabled: true, PortRange: [2]int{2048, 32767}},
 			RSH:   true,
 		},
-		Ports: Ports{BOOTP: 67, TFTP: 69, RSH: 514},
+		Ports: Ports{BOOTP: 67, TFTP: 69, RSH: 514, Portmap: 111, Mount: 635, NFS: 2049},
 	}
 
 	if r.ServerIP == "" {
@@ -173,6 +179,15 @@ func Parse(b []byte) (*Config, error) {
 		}
 		if r.Ports.RSH != 0 {
 			c.Ports.RSH = r.Ports.RSH
+		}
+		if r.Ports.Portmap != 0 {
+			c.Ports.Portmap = r.Ports.Portmap
+		}
+		if r.Ports.Mount != 0 {
+			c.Ports.Mount = r.Ports.Mount
+		}
+		if r.Ports.NFS != 0 {
+			c.Ports.NFS = r.Ports.NFS
 		}
 	}
 	return c, nil

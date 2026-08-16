@@ -36,9 +36,13 @@ type DirEntry struct {
 	Node Node
 }
 
-// FS is the tree the server exports. All methods are read-only.
+// FS is the tree the server exports. All methods are read-only. Node
+// IDs must be unique across everything the FS can mount, since the ID is
+// the filehandle the client keeps.
 type FS interface {
-	Root() (Node, error)
+	// MountRoot resolves a mount path to its root node. A client mounts
+	// one export; the path chooses which.
+	MountRoot(path string) (Node, error)
 	NodeByID(id uint64) (Node, error)
 	Lookup(dir Node, name string) (Node, error)
 	ReadDir(dir Node) ([]DirEntry, error)

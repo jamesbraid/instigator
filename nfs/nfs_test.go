@@ -32,7 +32,12 @@ type memFS struct {
 	byID  map[uint64]*memNode
 }
 
-func (f *memFS) Root() (nfs.Node, error) { return f.root, nil }
+func (f *memFS) MountRoot(path string) (nfs.Node, error) {
+	if path != "/" {
+		return nil, nfs.ErrNotFound
+	}
+	return f.root, nil
+}
 
 func (f *memFS) NodeByID(id uint64) (nfs.Node, error) {
 	n, ok := f.byID[id]

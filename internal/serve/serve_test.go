@@ -47,6 +47,7 @@ ports: {bootp: 0, tftp: 0, rsh: 0}
 	}
 	// port 0 = kernel-assigned, for unprivileged tests
 	c.Ports = config.Ports{}
+	c.Services.NFS = true
 	return c
 }
 
@@ -118,6 +119,117 @@ func TestRSHServesDD(t *testing.T) {
 	if !bytes.Contains(payload, []byte("records out")) {
 		t.Fatal("records summary missing")
 	}
+}
+
+func TestNFSMountAndRead(t *testing.T) {
+	s, _ := startAll(t)
+	pm := s.PortmapAddr().(*net.UDPAddr)
+
+	// portmap GETPORT(mount) -> mountd, MNT(/6.5.30/overlay-1of3) -> fh
+	mountPort := getport(t, pm, 100005, 1)
+	fh := mountRoot(t, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: mountPort}, "/6.5.30/overlay-1of3")
+
+	// portmap GETPORT(nfs), LOOKUP dist -> sa, READ
+	nfsPort := getport(t, pm, 100003, 2)
+	na := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: nfsPort}
+	dist := nfsLookup(t, na, fh, "dist")
+	sa := nfsLookup(t, na, dist, "sa")
+	data := nfsRead(t, na, sa, 0, 1024)
+	if len(data) != 1024 || data[0] != 'S' {
+		t.Fatalf("read %d bytes of dist/sa", len(data))
+	}
+}
+
+func getport(t *testing.T, pm *net.UDPAddr, prog, vers uint32) int {
+	t.Helper()
+	var a bytes.Buffer
+	binary.Write(&a, binary.BigEndian, prog)
+	binary.Write(&a, binary.BigEndian, vers)
+	binary.Write(&a, binary.BigEndian, uint32(17))
+	binary.Write(&a, binary.BigEndian, uint32(0))
+	rep := rpcCall(t, pm, 100000, 2, 3, a.Bytes())
+	return int(binary.BigEndian.Uint32(rep))
+}
+
+func mountRoot(t *testing.T, mnt *net.UDPAddr, path string) []byte {
+	t.Helper()
+	var a bytes.Buffer
+	binary.Write(&a, binary.BigEndian, uint32(len(path)))
+	a.WriteString(path)
+	for a.Len()%4 != 0 {
+		a.WriteByte(0)
+	}
+	rep := rpcCall(t, mnt, 100005, 1, 1, a.Bytes())
+	if st := binary.BigEndian.Uint32(rep); st != 0 {
+		t.Fatalf("MNT status %d", st)
+	}
+	return rep[4:36]
+}
+
+func nfsLookup(t *testing.T, na *net.UDPAddr, fh []byte, name string) []byte {
+	t.Helper()
+	var a bytes.Buffer
+	a.Write(fh)
+	binary.Write(&a, binary.BigEndian, uint32(len(name)))
+	a.WriteString(name)
+	for a.Len()%4 != 0 {
+		a.WriteByte(0)
+	}
+	rep := rpcCall(t, na, 100003, 2, 4, a.Bytes())
+	if st := binary.BigEndian.Uint32(rep); st != 0 {
+		t.Fatalf("LOOKUP %q status %d", name, st)
+	}
+	return rep[4:36]
+}
+
+func nfsRead(t *testing.T, na *net.UDPAddr, fh []byte, off, count uint32) []byte {
+	t.Helper()
+	var a bytes.Buffer
+	a.Write(fh)
+	binary.Write(&a, binary.BigEndian, off)
+	binary.Write(&a, binary.BigEndian, count)
+	binary.Write(&a, binary.BigEndian, uint32(0))
+	rep := rpcCall(t, na, 100003, 2, 6, a.Bytes())
+	if st := binary.BigEndian.Uint32(rep); st != 0 {
+		t.Fatalf("READ status %d", st)
+	}
+	// after status(4) + fattr(68): opaque data
+	dlen := binary.BigEndian.Uint32(rep[72:])
+	return rep[76 : 76+dlen]
+}
+
+// rpcCall sends one ONC-RPC/UDP call and returns the body after the
+// accepted-reply header.
+func rpcCall(t *testing.T, addr *net.UDPAddr, prog, vers, proc uint32, args []byte) []byte {
+	t.Helper()
+	c, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var b bytes.Buffer
+	w := func(v uint32) { binary.Write(&b, binary.BigEndian, v) }
+	w(0x33445566)
+	w(0)
+	w(2)
+	w(prog)
+	w(vers)
+	w(proc)
+	w(0)
+	w(0)
+	w(0)
+	w(0)
+	b.Write(args)
+	if _, err := c.WriteTo(b.Bytes(), addr); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 65536)
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, _, err := c.ReadFrom(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return buf[24:n]
 }
 
 func TestBOOTPAnswersConfiguredMAC(t *testing.T) {
