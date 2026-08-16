@@ -38,24 +38,31 @@ func escapeDisc(t *testing.T, dir, filename string) string {
 	if product != 3 {
 		t.Fatalf("efstest inode allocation changed (product=%d, want 3); update the hardcoded . / .. entries below", product)
 	}
+	// .related_dists makes this disc a valid combined primary (AddCombined
+	// requires exactly one); its content is irrelevant to a traversal test.
+	related := img.AddFile(0o555, []byte("CD\n"))
+	if related != 4 {
+		t.Fatalf("efstest inode allocation changed (related=%d, want 4); update the hardcoded . / .. entries below", related)
+	}
 	// A directory's own inode number has to be known before it's built,
 	// to write its "." (and its children's "..") entries. efstest
 	// allocates inode numbers sequentially as each Add* call is made, so
 	// with the call order fixed here, sub's own inode (this call) and
 	// dist's (the next AddDir call) are both predictable; the two
 	// Fatalf checks below catch it if that ever stops being true.
-	sub := img.AddDir(map[string]uint32{".": 4, "..": 5}) // sub=4 (self), dist=5 (next)
-	if sub != 4 {
-		t.Fatalf("efstest inode allocation changed (sub=%d, want 4); update the hardcoded . / .. entries below", sub)
+	sub := img.AddDir(map[string]uint32{".": 5, "..": 6}) // sub=5 (self), dist=6 (next)
+	if sub != 5 {
+		t.Fatalf("efstest inode allocation changed (sub=%d, want 5); update the hardcoded . / .. entries below", sub)
 	}
 	dist := img.AddDir(map[string]uint32{
-		".":          5,
-		"..":         efs.RootIno,
-		"product.sw": product,
-		"sub":        sub,
+		".":              6,
+		"..":             efs.RootIno,
+		"product.sw":     product,
+		"sub":            sub,
+		".related_dists": related,
 	})
-	if dist != 5 {
-		t.Fatalf("efstest inode allocation changed (dist=%d, want 5); update the hardcoded . / .. entries below", dist)
+	if dist != 6 {
+		t.Fatalf("efstest inode allocation changed (dist=%d, want 6); update the hardcoded . / .. entries below", dist)
 	}
 	img.SetRoot(map[string]uint32{".": efs.RootIno, "..": efs.RootIno, "dist": dist})
 
@@ -67,9 +74,9 @@ func escapeDisc(t *testing.T, dir, filename string) string {
 }
 
 // buildEscapeTree serves escapeDisc's image two ways at once: as an
-// ordinary media/disc (media="media", disc="disc") and as a union
-// (name="union"), so both addressing paths through Tree can be
-// exercised against the same synthetic content.
+// ordinary media/disc (media="media", disc="disc") and as a combined set
+// (name="combined", disc slug "escape"), so both addressing paths through
+// Tree can be exercised against the same synthetic content.
 func buildEscapeTree(t *testing.T) *Tree {
 	t.Helper()
 	dir := t.TempDir()
@@ -85,19 +92,19 @@ func buildEscapeTree(t *testing.T) *Tree {
 	}
 	t.Cleanup(func() { tree.Close() })
 
-	if err := tree.AddUnion("union", []string{img}); err != nil {
+	if _, err := tree.AddCombined("combined", []string{img}); err != nil {
 		t.Fatal(err)
 	}
 	return tree
 }
 
-// TestOpenCannotEscapeMediaOrUnion is the traversal-bounding regression
-// test: every one of these paths tries to climb out of the served image
-// to a host path that is never actually present anywhere in the tree
-// (there is no "etc" or "shadow" entry in any synthetic image built by
-// this file). Tree.Open must refuse every one - never fall through to a
-// host filesystem read, and never resolve to any file at all.
-func TestOpenCannotEscapeMediaOrUnion(t *testing.T) {
+// TestOpenCannotEscapeMediaOrCombined is the traversal-bounding
+// regression test: every one of these paths tries to climb out of the
+// served image to a host path that is never actually present anywhere in
+// the tree (there is no "etc" or "shadow" entry in any synthetic image
+// built by this file). Tree.Open must refuse every one - never fall
+// through to a host filesystem read, and never resolve to any file at all.
+func TestOpenCannotEscapeMediaOrCombined(t *testing.T) {
 	tree := buildEscapeTree(t)
 
 	cases := []struct {
@@ -106,7 +113,7 @@ func TestOpenCannotEscapeMediaOrUnion(t *testing.T) {
 	}{
 		{"climb from disc level", "media/disc/../../../../etc/passwd"},
 		{"climb from inside dist", "media/disc/dist/../../../../etc/passwd"},
-		{"climb through a union", "union/dist/../../../../etc/passwd"},
+		{"climb through a combined set", "combined/escape/dist/../../../../etc/passwd"},
 		{"doubled leading slash", "//etc/passwd"},
 		{"leading .. after slash-trim", "/../etc/shadow"},
 		{"NUL byte in a component", "media/disc/dist/product.sw\x00/../../../../etc/passwd"},
@@ -121,9 +128,9 @@ func TestOpenCannotEscapeMediaOrUnion(t *testing.T) {
 	}
 }
 
-// TestReadDirCannotEscapeMediaOrUnion is ReadDir's half of the same
+// TestReadDirCannotEscapeMediaOrCombined is ReadDir's half of the same
 // invariant.
-func TestReadDirCannotEscapeMediaOrUnion(t *testing.T) {
+func TestReadDirCannotEscapeMediaOrCombined(t *testing.T) {
 	tree := buildEscapeTree(t)
 
 	cases := []struct {
@@ -131,7 +138,7 @@ func TestReadDirCannotEscapeMediaOrUnion(t *testing.T) {
 		path string
 	}{
 		{"climb from disc level", "media/disc/../../../../etc"},
-		{"climb through a union", "union/dist/../../../../etc"},
+		{"climb through a combined set", "combined/escape/dist/../../../../etc"},
 		{"doubled leading slash", "//etc"},
 		{"leading .. after slash-trim", "/../etc"},
 	}
@@ -147,7 +154,7 @@ func TestReadDirCannotEscapeMediaOrUnion(t *testing.T) {
 // TestBoundedPathsStillResolve proves the guard is a real boundary, not
 // a blanket rejection of anything unusual: a plain in-image path, and a
 // ".." that stays inside the image (sub/.. back to dist), both still
-// resolve normally through media and union addressing alike.
+// resolve normally through media and combined addressing alike.
 func TestBoundedPathsStillResolve(t *testing.T) {
 	tree := buildEscapeTree(t)
 
@@ -156,7 +163,7 @@ func TestBoundedPathsStillResolve(t *testing.T) {
 		path string
 	}{
 		{"plain media path", "media/disc/dist/product.sw"},
-		{"plain union path", "union/dist/product.sw"},
+		{"plain combined path", "combined/escape/dist/product.sw"},
 		{"in-bounds .. stays inside the image", "media/disc/dist/sub/../product.sw"},
 	}
 	for _, c := range cases {

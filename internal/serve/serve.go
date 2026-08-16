@@ -127,28 +127,35 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 	if err != nil {
 		return nil, err
 	}
-	for _, cb := range cfg.Combined {
-		if err := tree.AddUnion(cb.Name, cb.Layers); err != nil {
+	var firstPrimaryDist string
+	for i, cb := range cfg.Combined {
+		primaryDist, err := tree.AddCombined(cb.Name, cb.Layers)
+		if err != nil {
 			tree.Close()
 			return nil, err
 		}
+		if i == 0 {
+			firstPrimaryDist = primaryDist
+		}
 		if logf != nil {
-			logf("union: /%s/dist  <-  %d discs merged", cb.Name, len(cb.Layers))
+			logf("combined: /%s  <-  %d discs, open %s:%s", cb.Name, len(cb.Layers), cfg.ServerIP, primaryDist)
 		}
 	}
 
 	// Serve a generated install runbook at /install, filled in with this
-	// server's address and the first union's dist path when there is one.
+	// server's address and the first combined set's primary dist path -
+	// the single distribution inst opens, from which its synthesized
+	// .related_dists auto-opens the rest.
 	if len(cfg.Combined) > 0 {
 		script := instscript.Generate(instscript.Params{
 			ServerIP: cfg.ServerIP.String(),
-			DistPath: "/" + cfg.Combined[0].Name + "/dist",
+			DistPath: firstPrimaryDist,
 			Release:  cfg.Combined[0].Name,
 			Stream:   "feature",
 		})
 		tree.AddSynthetic("install", []byte(script))
 		if logf != nil {
-			logf("runbook: /install  (from %s:/%s/dist)", cfg.ServerIP, cfg.Combined[0].Name)
+			logf("runbook: /install  (from %s:%s)", cfg.ServerIP, firstPrimaryDist)
 		}
 	}
 	s := &Servers{tree: tree}
