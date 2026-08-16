@@ -31,14 +31,18 @@
 // pre-written command file instead of manually performing all needed
 // software selection steps."
 //
-// The Main Menu sequence for a complete install from a remote/unified
-// distribution:
+// The Main Menu sequence for a complete install from a remote
+// distribution set:
 //
-//  1. from <server>:<distpath>       — point inst at the distribution
-//     (the official manual and the Fuel walkthrough both instead use
-//     "open" for CD-by-CD reading of several separate distributions;
-//     instigator serves one already-unified dist tree, so a single
-//     "from" covers it and no further "open" commands are needed)
+//  1. from <server>:<distpath>       — point inst at the distribution.
+//     The official manual and the Fuel walkthrough both instead use
+//     "open" for CD-by-CD reading of several separate distributions.
+//     instigator serves each disc whole and synthesizes a
+//     .related_dists on the disc this command names, listing the
+//     others; inst follows it and opens them itself, so one "from"
+//     covers the set and no "open" commands are needed. See
+//     internal/vfs/combined.go for why the discs stay separate rather
+//     than being flattened into one dist.
 //  2. release-stream choice, first install only:
 //     "1. Place me on the maintenance stream." / "2. Place me on the
 //     feature stream." — feature is a strict superset of maintenance
@@ -114,8 +118,10 @@ type Params struct {
 	// ServerIP is the netinstall server's address, used as the "from"
 	// command's remote host.
 	ServerIP string
-	// DistPath is the unified distribution path instigator serves,
-	// e.g. "/irix6.5.30/dist".
+	// DistPath is the served path of the one distribution inst is
+	// pointed at: a combined set's primary disc's own dist, e.g.
+	// "/irix6.5.30/tools/dist". The rest of the set is reached through
+	// that disc's synthesized .related_dists, not through this path.
 	DistPath string
 	// Release is the IRIX release being installed, e.g. "6.5.30".
 	Release string
@@ -143,9 +149,9 @@ func streamMenu(stream string) (number, name string) {
 // the disk partitioner, over the network. This follows the bootp()
 // convention instigator already announces at startup
 // (internal/serve/serve.go logStartup: "boot -f bootp():/<media>/<disc
-// slug>/stand/fx.64") and documents in README.md. DistPath is the
-// unified distribution's "<name>/dist" leaf; fx.64 lives alongside it
-// under "stand/", so a trailing "/dist" is trimmed before appending
+// slug>/stand/fx.64") and documents in README.md. DistPath ends in the
+// primary disc's own "dist"; that disc carries the miniroot beside it
+// under "stand/", so the trailing "/dist" is trimmed before appending
 // "stand/fx.64".
 func promBootLine(distPath string) string {
 	base := strings.TrimSuffix(distPath, "/")
@@ -181,6 +187,10 @@ func Generate(p Params) string {
 
 	b.WriteString("2. At the Inst> prompt, point inst at the distribution:\n\n")
 	fmt.Fprintf(&b, "     from %s:%s\n\n", p.ServerIP, p.DistPath)
+	b.WriteString("   That one command covers every disc. The disc it names carries a\n")
+	b.WriteString("   .related_dists listing the others, and inst opens each of them\n")
+	b.WriteString("   itself — expect it to report several distributions opened, not one.\n")
+	b.WriteString("   There is no per-disc \"open\" step.\n\n")
 
 	b.WriteString("3. First install only: choose a release stream.\n\n")
 	b.WriteString("     1. Place me on the maintenance stream.\n")
