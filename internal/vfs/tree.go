@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -26,9 +27,10 @@ type MediaSet struct {
 // Tree is the assembled serve tree: /<media>/<disc>/<efs path>. All
 // protocol servers read through it.
 type Tree struct {
-	medias map[string]map[string]*Disc  // media -> disc slug -> disc
-	files  map[string]map[string]string // media -> disc slug -> image filename
-	unions map[string]*union            // union name -> merged dist layers
+	medias    map[string]map[string]*Disc  // media -> disc slug -> disc
+	files     map[string]map[string]string // media -> disc slug -> image filename
+	unions    map[string]*union            // union name -> merged dist layers
+	synthetic map[string][]byte            // top-level generated files (the runbook)
 }
 
 // File is an open random-access file from the tree.
@@ -149,6 +151,9 @@ func (t *Tree) resolve(path string) (*Disc, string, error) {
 
 // Open opens a file by tree path, following symlinks within the disc.
 func (t *Tree) Open(path string) (File, error) {
+	if c, ok := t.synthetic[strings.Trim(path, "/")]; ok {
+		return &bytesFile{r: bytes.NewReader(c), size: int64(len(c))}, nil
+	}
 	parts := strings.SplitN(strings.Trim(path, "/"), "/", 2)
 	if u, ok := t.unions[parts[0]]; ok {
 		rest := ""
@@ -182,6 +187,9 @@ func (t *Tree) ReadDir(path string) ([]string, error) {
 	if trimmed == "" {
 		names := sortedKeys(t.medias)
 		names = append(names, sortedKeys(t.unions)...)
+		for n := range t.synthetic {
+			names = append(names, n)
+		}
 		sort.Strings(names)
 		return names, nil
 	}
