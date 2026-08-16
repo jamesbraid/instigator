@@ -18,6 +18,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -402,8 +403,11 @@ func binaryTest(a, op, b string) (bool, error) {
 
 // execHandler runs for any simple command that is neither a shell
 // function nor a builtin - the vfs-backed leaf commands, and a refusal
-// for everything else. This is the whitelist: dd, ls, and cat are the
-// only external-looking programs this shell can run.
+// for everything else. This is the whitelist: dd, ls, cat, and the grep
+// family are the only external-looking programs this shell can run. grep
+// is here because inst reads a product's machine-conditional lines by
+// piping its .idb through `fgrep ' mach('`; without it those products
+// read as "No valid products in distribution".
 func execHandler(env *shellEnv) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
 		hc := interp.HandlerCtx(ctx)
@@ -414,11 +418,152 @@ func execHandler(env *shellEnv) interp.ExecHandlerFunc {
 			return shLs(env, hc, args[1:])
 		case "cat":
 			return shCat(env, hc, args[1:])
+		case "grep", "fgrep", "egrep":
+			return shGrep(env, hc, baseName(args[0]), args[1:])
 		default:
 			fmt.Fprintf(hc.Stderr, "%s: not supported\n", args[0])
 			return interp.ExitStatus(1)
 		}
 	}
+}
+
+// shGrep implements the grep family inst pipes .idb reads through, most
+// importantly `fgrep ' mach('` to find a product's machine-conditional
+// lines. It filters lines from stdin (or, given file operands, from the
+// vfs like cat) and follows grep's exit status: 0 if any line matched,
+// 1 if none, 2 on a usage/pattern error - inst keys on that status. Only
+// the flags inst is known to use are honored (-v, -i, -c, -l, -q, -e);
+// fgrep matches a fixed string, grep/egrep a regexp.
+func shGrep(env *shellEnv, hc interp.HandlerContext, name string, args []string) error {
+	var (
+		invert, ignoreCase, countOnly, listOnly, quiet bool
+		pattern                                        string
+		havePattern                                    bool
+		files                                          []string
+	)
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if !havePattern && strings.HasPrefix(a, "-") && len(a) > 1 {
+			for _, c := range a[1:] {
+				switch c {
+				case 'v':
+					invert = true
+				case 'i':
+					ignoreCase = true
+				case 'c':
+					countOnly = true
+				case 'l':
+					listOnly = true
+				case 'q':
+					quiet = true
+				case 'e':
+					// -e PATTERN: the pattern is the next argument
+					if i+1 < len(args) {
+						i++
+						pattern, havePattern = args[i], true
+					}
+				}
+			}
+			continue
+		}
+		if !havePattern {
+			pattern, havePattern = a, true
+			continue
+		}
+		files = append(files, a)
+	}
+	if !havePattern {
+		fmt.Fprintf(hc.Stderr, "%s: no pattern\n", name)
+		return interp.ExitStatus(2)
+	}
+
+	var match func(string) bool
+	if name == "fgrep" {
+		needle := pattern
+		if ignoreCase {
+			needle = strings.ToLower(needle)
+		}
+		match = func(line string) bool {
+			if ignoreCase {
+				line = strings.ToLower(line)
+			}
+			return strings.Contains(line, needle)
+		}
+	} else {
+		expr := pattern
+		if ignoreCase {
+			expr = "(?i)" + expr
+		}
+		re, err := regexp.Compile(expr)
+		if err != nil {
+			fmt.Fprintf(hc.Stderr, "%s: bad pattern %q: %v\n", name, pattern, err)
+			return interp.ExitStatus(2)
+		}
+		match = re.MatchString
+	}
+
+	type source struct {
+		name string
+		r    io.Reader
+	}
+	var sources []source
+	if len(files) == 0 {
+		in := hc.Stdin
+		if in == nil {
+			in = strings.NewReader("")
+		}
+		sources = append(sources, source{"(standard input)", in})
+	} else {
+		for _, p := range files {
+			f, err := env.fsys.Open(env.fsPath(p))
+			if err != nil {
+				fmt.Fprintf(hc.Stderr, "%s: %s: %v\n", name, p, err)
+				continue
+			}
+			sources = append(sources, source{p, io.NewSectionReader(f, 0, f.Size())})
+		}
+	}
+
+	found := false
+	for _, s := range sources {
+		count := 0
+		sc := bufio.NewScanner(s.r)
+		sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
+		for sc.Scan() {
+			line := sc.Text()
+			m := match(line)
+			if invert {
+				m = !m
+			}
+			if !m {
+				continue
+			}
+			found = true
+			count++
+			if quiet || listOnly || countOnly {
+				continue
+			}
+			if len(files) > 1 {
+				fmt.Fprintf(hc.Stdout, "%s:%s\n", s.name, line)
+			} else {
+				fmt.Fprintln(hc.Stdout, line)
+			}
+		}
+		if listOnly && count > 0 {
+			fmt.Fprintln(hc.Stdout, s.name)
+		}
+		if countOnly {
+			if len(files) > 1 {
+				fmt.Fprintf(hc.Stdout, "%s:%d\n", s.name, count)
+			} else {
+				fmt.Fprintln(hc.Stdout, count)
+			}
+		}
+	}
+	if found {
+		return nil
+	}
+	return interp.ExitStatus(1)
 }
 
 // shLs implements the ls forms inst is known to send: -i (inode), -n

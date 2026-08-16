@@ -244,6 +244,43 @@ func TestRunShellMarkerProtocol(t *testing.T) {
 	}
 }
 
+func TestShellFgrepFiltersMachLines(t *testing.T) {
+	// inst reads a product's machine-conditional lines with
+	// `dd if=<idb> | fgrep ' mach('`; without fgrep the pipe is empty and
+	// inst reports "No valid products in distribution".
+	var out, errb strings.Builder
+	stdin := strings.NewReader("echo 'x mach(IP30) y\\nplain line\\nz mach(IP32)' | fgrep ' mach('\n")
+	if err := RunShell(testFS(), stdin, &out, &errb, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "x mach(IP30) y") || !strings.Contains(got, "z mach(IP32)") {
+		t.Fatalf("fgrep dropped matching lines: %q", got)
+	}
+	if strings.Contains(got, "plain line") {
+		t.Fatalf("fgrep kept a non-matching line: %q", got)
+	}
+}
+
+func TestShellGrepExitStatus(t *testing.T) {
+	// inst keys on the pipe's exit status: fgrep exits 1 when nothing
+	// matched, 0 when something did.
+	var out, errb strings.Builder
+	stdin := strings.NewReader(
+		"echo 'nothing here' | fgrep ' mach(' ; echo \"miss=$?\"\n" +
+			"echo 'has mach( in it' | fgrep ' mach(' ; echo \"hit=$?\"\n")
+	if err := RunShell(testFS(), stdin, &out, &errb, nil); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "miss=1") {
+		t.Fatalf("fgrep with no match must exit 1: %q", got)
+	}
+	if !strings.Contains(got, "hit=0") {
+		t.Fatalf("fgrep with a match must exit 0: %q", got)
+	}
+}
+
 func TestSplitMarkerFirstProbe(t *testing.T) {
 	// the first probe has no real command before the wrapper
 	var out, errb strings.Builder
