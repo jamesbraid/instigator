@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"sort"
+	"strings"
 
 	"github.com/jamesbraid/instigator/internal/bootp"
 	"github.com/jamesbraid/instigator/internal/config"
@@ -187,6 +188,16 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 			Logf:           logf,
 			Verbose:        o.verbose,
 			Handler: func(req *rcmd.Request) error {
+				// inst drives the install by opening a shell over rsh
+				// (exec /bin/sh) and streaming commands to it, rather than
+				// issuing each as its own rsh command.
+				if isShell(req.Command) {
+					var log func(string)
+					if logf != nil {
+						log = func(line string) { logf("rsh-sh: %q", line) }
+					}
+					return instcmd.RunShell(cmdFS{tree}, req.Stdin, req.Stdout, req.Stderr, log)
+				}
 				return instcmd.Run(cmdFS{tree}, req.Command, req.Stdout, req.Stderr)
 			},
 		}
@@ -207,6 +218,21 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 	}
 
 	return s, nil
+}
+
+// isShell reports whether a command is inst asking for an interactive
+// shell rather than a single command.
+func isShell(command string) bool {
+	f := strings.Fields(command)
+	if len(f) == 0 {
+		return false
+	}
+	last := f[len(f)-1] // "exec /bin/sh" -> "/bin/sh"
+	switch last {
+	case "sh", "/bin/sh", "/sbin/sh", "/usr/bin/sh":
+		return true
+	}
+	return false
 }
 
 // startNFS binds portmap, mountd, and nfsd and registers the assigned
