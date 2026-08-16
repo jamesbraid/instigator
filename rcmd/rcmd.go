@@ -37,6 +37,11 @@ type Request struct {
 	// connection when the client asked for one, io.Discard otherwise.
 	Stdout io.Writer
 	Stderr io.Writer
+
+	// Stdin is the rest of the primary connection after the command,
+	// which a shell command (rsh exec /bin/sh) reads its command stream
+	// from. It carries only what the client sends next, unbounded.
+	Stdin io.Reader
 }
 
 // Handler executes one command. A returned error is reported to the
@@ -110,13 +115,23 @@ func (s *Server) handle(c net.Conn) {
 		return
 	}
 
-	r := bufio.NewReaderSize(io.LimitReader(c, maxRequest), maxRequest)
+	// bufio over the raw connection, not a LimitReader: a shell command
+	// streams its input here after the request head, so stdin must stay
+	// unbounded. Each field is still capped so the head cannot run away.
+	r := bufio.NewReader(c)
 	readField := func() (string, error) {
-		f, err := r.ReadString(0)
-		if err != nil {
-			return "", err
+		var b []byte
+		for len(b) <= maxRequest {
+			ch, err := r.ReadByte()
+			if err != nil {
+				return "", err
+			}
+			if ch == 0 {
+				return string(b), nil
+			}
+			b = append(b, ch)
 		}
-		return f[:len(f)-1], nil
+		return "", fmt.Errorf("field exceeds %d bytes", maxRequest)
 	}
 
 	// Field 1 is the stderr port. The rcmd protocol requires the server to
@@ -159,6 +174,7 @@ func (s *Server) handle(c net.Conn) {
 		return
 	}
 	req.RemoteUser, req.LocalUser, req.Command = remuser, locuser, command
+	req.Stdin = r // the rest of the connection, for a shell command
 	if s.Verbose {
 		s.logf("rcmd: %s: stderr-port=%d remuser=%q locuser=%q command=%q",
 			tcp, errPort, remuser, locuser, command)

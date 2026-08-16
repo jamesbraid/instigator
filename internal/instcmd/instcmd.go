@@ -7,6 +7,7 @@
 package instcmd
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,30 @@ type FileSystem interface {
 type File interface {
 	io.ReaderAt
 	Size() int64
+}
+
+// RunShell serves the shell inst opens over rsh with "exec /bin/sh": it
+// reads a command per line from stdin and runs each, so inst can pipe its
+// whole command stream through one connection. log, when set, records
+// every line for observation while the command table is still being
+// fitted to what inst actually sends. A command that fails writes its
+// error to stderr and the shell keeps going, as a real shell does.
+func RunShell(fs FileSystem, stdin io.Reader, stdout, stderr io.Writer, log func(string)) error {
+	sc := bufio.NewScanner(stdin)
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		line := strings.TrimRight(sc.Text(), "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if log != nil {
+			log(line)
+		}
+		if err := Run(fs, line, stdout, stderr); err != nil {
+			fmt.Fprintf(stderr, "%v\n", err)
+		}
+	}
+	return sc.Err()
 }
 
 // Run executes one rsh command line against fs, writing command output

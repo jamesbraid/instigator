@@ -127,3 +127,35 @@ func TestUnknownCommandRejected(t *testing.T) {
 		t.Fatal("unknown command accepted")
 	}
 }
+
+func TestRunShellStreamsCommands(t *testing.T) {
+	var out, errb strings.Builder
+	var logged []string
+	stdin := strings.NewReader("echo hello\nls /6.5.30/disc1/dist\ndd if=/6.5.30/disc1/dist/sa bs=512 count=1\n\ntrap \"\" 2 3\n")
+	if err := RunShell(testFS(), stdin, &out, &errb, func(l string) { logged = append(logged, l) }); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(out.String(), "hello\n") {
+		t.Fatalf("echo output missing: %q", out.String())
+	}
+	if !strings.Contains(out.String(), "sa") {
+		t.Fatalf("ls output missing sa: %q", out.String())
+	}
+	if len(logged) != 4 { // echo, ls, dd, trap (blank line skipped)
+		t.Fatalf("logged %d commands, want 4: %v", len(logged), logged)
+	}
+}
+
+func TestRunShellContinuesPastUnknownCommand(t *testing.T) {
+	var out, errb strings.Builder
+	stdin := strings.NewReader("rm -rf /\necho survived\n")
+	if err := RunShell(testFS(), stdin, &out, &errb, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "survived") {
+		t.Fatalf("shell aborted on unknown command; out=%q err=%q", out.String(), errb.String())
+	}
+	if !strings.Contains(errb.String(), "not supported") {
+		t.Fatalf("unknown command not reported to stderr: %q", errb.String())
+	}
+}
