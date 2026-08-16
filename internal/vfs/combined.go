@@ -97,15 +97,19 @@ func (t *Tree) AddCombined(name string, imagePaths []string, discNames map[strin
 	}
 
 	// The synthesized .related_dists names every OTHER disc by a path
-	// relative to the primary disc's own directory - the base inst
-	// resolves a .related_dists entry against - matching the field recipe
-	// (../<disc>/dist, redirect discs ../<disc>/dist/dist6.5).
+	// relative to the primary's own dist directory: inst resolves each
+	// entry by appending it to the distribution path it read the file
+	// from (observed live - inst offered "<server>:/<name>/<primary>/dist/
+	// ../<entry>"), so the base is the dist dir, not the disc dir. Two
+	// "../" climb out of "dist" and the primary's own slug to reach a
+	// sibling disc: ../../<slug>/dist, or ../../<slug>/dist/dist6.5 for a
+	// redirect disc.
 	var b strings.Builder
 	for _, e := range entries {
 		if e.slug == c.primary {
 			continue
 		}
-		fmt.Fprintf(&b, "../%s/%s\n", e.slug, e.distPath)
+		fmt.Fprintf(&b, "../../%s/%s\n", e.slug, e.distPath)
 	}
 	c.related = []byte(b.String())
 
