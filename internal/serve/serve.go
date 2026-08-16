@@ -105,6 +105,15 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 	if err != nil {
 		return nil, err
 	}
+	for _, cb := range cfg.Combined {
+		if err := tree.AddUnion(cb.Name, cb.Layers); err != nil {
+			tree.Close()
+			return nil, err
+		}
+		if logf != nil {
+			logf("union: /%s/dist  <-  %d discs merged", cb.Name, len(cb.Layers))
+		}
+	}
 	s := &Servers{tree: tree}
 
 	allowed := make(map[netip.Addr]bool, len(cfg.Clients))

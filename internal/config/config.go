@@ -49,12 +49,20 @@ type Ports struct {
 	NFS     int
 }
 
+// Combined merges several disc images' dist directories into one union
+// served at /<Name>/dist. Layers are lowest precedence first.
+type Combined struct {
+	Name   string
+	Layers []string
+}
+
 // Config is a validated instigator configuration.
 type Config struct {
 	ServerIP netip.Addr
 	Netmask  netip.Prefix
 	Clients  []Client
 	Media    []Media
+	Combined []Combined
 	Services Services
 	Ports    Ports
 }
@@ -73,6 +81,10 @@ type raw struct {
 		Discs     string            `yaml:"discs"`
 		DiscNames map[string]string `yaml:"disc_names"`
 	} `yaml:"media"`
+	Combined []struct {
+		Name   string   `yaml:"name"`
+		Layers []string `yaml:"layers"`
+	} `yaml:"combined"`
 	Services *struct {
 		BOOTP *bool `yaml:"bootp"`
 		TFTP  *struct {
@@ -149,6 +161,13 @@ func Parse(b []byte) (*Config, error) {
 			return nil, fmt.Errorf("config: media[%d]: name and discs are required", i)
 		}
 		c.Media = append(c.Media, Media{Name: rm.Name, Dir: rm.Discs, DiscNames: rm.DiscNames})
+	}
+
+	for i, rc := range r.Combined {
+		if rc.Name == "" || len(rc.Layers) == 0 {
+			return nil, fmt.Errorf("config: combined[%d]: name and at least one layer are required", i)
+		}
+		c.Combined = append(c.Combined, Combined{Name: rc.Name, Layers: rc.Layers})
 	}
 
 	if r.Services != nil {
