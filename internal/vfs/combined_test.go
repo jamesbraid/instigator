@@ -77,7 +77,7 @@ func TestCombinedSynthesizesRelatedDists(t *testing.T) {
 
 	// config order is [foundation1, tools, nfs]; tools is auto-detected
 	// primary because it carries .related_dists.
-	got, err := tree.AddCombined("full", []string{found, primary, nfs})
+	got, err := tree.AddCombined("full", []string{found, primary, nfs}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestCombinedServesEachDiscWhole(t *testing.T) {
 
 	tree, _ := BuildTree(nil)
 	defer tree.Close()
-	if _, err := tree.AddCombined("full", []string{found, primary, nfs}); err != nil {
+	if _, err := tree.AddCombined("full", []string{found, primary, nfs}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -140,7 +140,7 @@ func TestCombinedListsAndStats(t *testing.T) {
 
 	tree, _ := BuildTree(nil)
 	defer tree.Close()
-	tree.AddCombined("full", []string{found, primary, nfs})
+	tree.AddCombined("full", []string{found, primary, nfs}, nil)
 
 	// the combined root lists the disc slugs
 	roots, err := tree.ReadDir("full")
@@ -174,6 +174,42 @@ func TestCombinedListsAndStats(t *testing.T) {
 	}
 }
 
+func TestCombinedDiscNamesOverrideSlugs(t *testing.T) {
+	dir := t.TempDir()
+	found := combImage(t, dir, "irix6.5_foundation1.iso", foundationDist)
+	primary := combImage(t, dir, "Instalation_Tools.image", primaryDist)
+	nfs := combImage(t, dir, "irix6.5_nfs.iso", redirectDist)
+
+	tree, _ := BuildTree(nil)
+	defer tree.Close()
+	names := map[string]string{
+		"irix6.5_foundation1.iso": "foundation1",
+		"Instalation_Tools.image": "tools",
+		"irix6.5_nfs.iso":         "nfs",
+	}
+	got, err := tree.AddCombined("full", []string{found, primary, nfs}, names)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the primary path and every mount use the override slug, not the
+	// raw-filename slug (irix6-5-foundation1)
+	if got != "/full/tools/dist" {
+		t.Fatalf("primary dist = %q, want /full/tools/dist", got)
+	}
+	if _, err := tree.Open("full/foundation1/dist/foundation.sw"); err != nil {
+		t.Fatalf("override-slug mount not reachable: %v", err)
+	}
+	// and the synthesized .related_dists names them by the override slug
+	f, err := tree.Open("full/tools/dist/.related_dists")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "../foundation1/dist\n../nfs/dist/dist6.5\n"
+	if c := read(t, f); c != want {
+		t.Fatalf(".related_dists = %q, want %q", c, want)
+	}
+}
+
 func TestCombinedRequiresExactlyOnePrimary(t *testing.T) {
 	dir := t.TempDir()
 	a := combImage(t, dir, "a.iso", foundationDist) // .iscd only, no primary marker
@@ -181,14 +217,14 @@ func TestCombinedRequiresExactlyOnePrimary(t *testing.T) {
 
 	tree, _ := BuildTree(nil)
 	defer tree.Close()
-	if _, err := tree.AddCombined("x", []string{a, b}); err == nil {
+	if _, err := tree.AddCombined("x", []string{a, b}, nil); err == nil {
 		t.Fatal("combined with no .related_dists disc should fail, got nil")
 	}
 
 	// two primaries is equally ambiguous
 	p1 := combImage(t, dir, "p1.image", primaryDist)
 	p2 := combImage(t, dir, "p2.image", primaryDist)
-	if _, err := tree.AddCombined("y", []string{p1, p2}); err == nil {
+	if _, err := tree.AddCombined("y", []string{p1, p2}, nil); err == nil {
 		t.Fatal("combined with two .related_dists discs should fail, got nil")
 	}
 }
