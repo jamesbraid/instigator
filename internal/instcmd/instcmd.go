@@ -1,17 +1,16 @@
-// Package instcmd implements the constrained command table instigator's
-// rshd exposes to IRIX inst. The vocabulary - dd, ls, echo, and a
-// leading trap to strip - is what inst is known to issue over rsh (the
-// love netboot server implements exactly this set); the first live run
-// logs every command verbatim so the table can be corrected from
-// observation. Nothing here is a shell: unknown commands are refused.
+// Package instcmd implements instigator's rsh command execution for IRIX
+// inst. Run is a constrained command table (dd, ls, echo) for a single
+// rsh command line, the shape inst uses outside a shell session. Real
+// shell grammar - pipes, subshells, redirects, trap, $? - only shows up
+// when inst opens /bin/sh over rsh and streams commands to it; RunShell
+// (shell.go) serves that with an actual POSIX interpreter rather than
+// pattern-matching the grammar it's expected to send.
 package instcmd
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
 	"strconv"
 	"strings"
 )
@@ -29,71 +28,6 @@ type FileSystem interface {
 type File interface {
 	io.ReaderAt
 	Size() int64
-}
-
-// RunShell serves the shell inst opens over rsh with "exec /bin/sh": it
-// reads a command per line from stdin and runs each, so inst can pipe its
-// whole command stream through one connection. log, when set, records
-// every line for observation while the command table is still being
-// fitted to what inst actually sends. A command that fails writes its
-// error to stderr and the shell keeps going, as a real shell does.
-func RunShell(fs FileSystem, stdin io.Reader, stdout, stderr io.Writer, log func(string)) error {
-	sc := bufio.NewScanner(stdin)
-	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	lastStatus := 0
-	for sc.Scan() {
-		line := strings.TrimRight(sc.Text(), "\r")
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		if log != nil {
-			log(line)
-		}
-		// inst brackets each command with a marker wrapper: it echoes a
-		// unique token (no newline) to stdout and the same token plus the
-		// command's exit status to stderr, so it can find the end of the
-		// output and read $?. Honour that instead of running the wrapper's
-		// shell grammar (subshells, traps, redirects).
-		if marker, prefix, ok := splitMarker(line); ok {
-			if strings.TrimSpace(prefix) != "" {
-				lastStatus = runReport(fs, prefix, stdout, stderr)
-			}
-			fmt.Fprint(stdout, marker)
-			fmt.Fprintf(stderr, "%s%d", marker, lastStatus)
-			continue
-		}
-		lastStatus = runReport(fs, line, stdout, stderr)
-	}
-	return sc.Err()
-}
-
-// runReport runs a command, writes any error to stderr as a shell would,
-// and returns the exit status inst reads through its marker.
-func runReport(fs FileSystem, cmd string, stdout, stderr io.Writer) int {
-	if err := Run(fs, cmd, stdout, stderr); err != nil {
-		fmt.Fprintf(stderr, "%v\n", err)
-		return 1
-	}
-	return 0
-}
-
-// markerEcho matches the token in inst's `echo 'TOKEN\c'`.
-var markerEcho = regexp.MustCompile(`echo '([^']*)\\c'`)
-
-// splitMarker recognises inst's per-command marker wrapper. It returns the
-// marker token and the real command that precedes it (empty for the first
-// probe), or ok=false when the line is an ordinary command.
-func splitMarker(line string) (marker, prefix string, ok bool) {
-	i := strings.Index(line, "trap : 2")
-	if i < 0 || !strings.Contains(line, "IsDone") || !strings.Contains(line, "1>&2") {
-		return "", "", false
-	}
-	m := markerEcho.FindStringSubmatch(line[i:])
-	if m == nil {
-		return "", "", false
-	}
-	prefix = strings.TrimRight(strings.TrimSpace(line[:i]), ";")
-	return m[1], prefix, true
 }
 
 // Run executes one rsh command line against fs, writing command output
