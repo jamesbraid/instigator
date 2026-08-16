@@ -121,10 +121,16 @@ func TestCommandsContainsSelectionDirectivesInOrder(t *testing.T) {
 		t.Fatal("Commands returned empty string")
 	}
 
+	// admin source replays these lines in the plain Inst> vocabulary
+	// (from/keep/install), not the -F selections-file directive
+	// grammar (don't install/don't remove) — see the package doc
+	// comment, confirmed against the field-tested walkthrough.
 	inOrder(t, got,
 		"from "+p.ServerIP+":"+p.DistPath,
+		"keep *",
 		"install standard",
 		"install prereqs",
+		"keep incompleteoverlays",
 	)
 }
 
@@ -155,6 +161,19 @@ func TestCommandsOneCommandPerLine(t *testing.T) {
 		if line == "" {
 			t.Error("Commands output has a blank line; expected one bare command per line")
 		}
+	}
+}
+
+func TestGenerateMentionsAdminSource(t *testing.T) {
+	p := testParams()
+	got := Generate(p)
+
+	// admin source <host>:<path> is the confirmed, field-tested way to
+	// load Commands()'s output into a running Inst session; the
+	// runbook should point operators at it rather than leave them to
+	// discover it separately.
+	if !strings.Contains(got, "admin source") {
+		t.Errorf("Generate output should mention the \"admin source\" file-loading mechanism, got:\n%s", got)
 	}
 }
 
