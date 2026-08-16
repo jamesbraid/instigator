@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -39,6 +40,7 @@ type File interface {
 func RunShell(fs FileSystem, stdin io.Reader, stdout, stderr io.Writer, log func(string)) error {
 	sc := bufio.NewScanner(stdin)
 	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	lastStatus := 0
 	for sc.Scan() {
 		line := strings.TrimRight(sc.Text(), "\r")
 		if strings.TrimSpace(line) == "" {
@@ -47,11 +49,51 @@ func RunShell(fs FileSystem, stdin io.Reader, stdout, stderr io.Writer, log func
 		if log != nil {
 			log(line)
 		}
-		if err := Run(fs, line, stdout, stderr); err != nil {
-			fmt.Fprintf(stderr, "%v\n", err)
+		// inst brackets each command with a marker wrapper: it echoes a
+		// unique token (no newline) to stdout and the same token plus the
+		// command's exit status to stderr, so it can find the end of the
+		// output and read $?. Honour that instead of running the wrapper's
+		// shell grammar (subshells, traps, redirects).
+		if marker, prefix, ok := splitMarker(line); ok {
+			if strings.TrimSpace(prefix) != "" {
+				lastStatus = runReport(fs, prefix, stdout, stderr)
+			}
+			fmt.Fprint(stdout, marker)
+			fmt.Fprintf(stderr, "%s%d", marker, lastStatus)
+			continue
 		}
+		lastStatus = runReport(fs, line, stdout, stderr)
 	}
 	return sc.Err()
+}
+
+// runReport runs a command, writes any error to stderr as a shell would,
+// and returns the exit status inst reads through its marker.
+func runReport(fs FileSystem, cmd string, stdout, stderr io.Writer) int {
+	if err := Run(fs, cmd, stdout, stderr); err != nil {
+		fmt.Fprintf(stderr, "%v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// markerEcho matches the token in inst's `echo 'TOKEN\c'`.
+var markerEcho = regexp.MustCompile(`echo '([^']*)\\c'`)
+
+// splitMarker recognises inst's per-command marker wrapper. It returns the
+// marker token and the real command that precedes it (empty for the first
+// probe), or ok=false when the line is an ordinary command.
+func splitMarker(line string) (marker, prefix string, ok bool) {
+	i := strings.Index(line, "trap : 2")
+	if i < 0 || !strings.Contains(line, "IsDone") || !strings.Contains(line, "1>&2") {
+		return "", "", false
+	}
+	m := markerEcho.FindStringSubmatch(line[i:])
+	if m == nil {
+		return "", "", false
+	}
+	prefix = strings.TrimRight(strings.TrimSpace(line[:i]), ";")
+	return m[1], prefix, true
 }
 
 // Run executes one rsh command line against fs, writing command output
