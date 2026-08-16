@@ -159,3 +159,43 @@ func TestRunShellContinuesPastUnknownCommand(t *testing.T) {
 		t.Fatalf("unknown command not reported to stderr: %q", errb.String())
 	}
 }
+
+func TestRunShellMarkerProtocol(t *testing.T) {
+	var out, errb strings.Builder
+	// a real command, then inst's marker wrapper referencing its status
+	stdin := strings.NewReader(
+		"dd if=/6.5.30/disc1/dist/sa bs=512 count=1\n" +
+			"trap : 2 ; ( status=$? ; trap '' 2 ; echo 'o?_InstProc9IsDone\\c' ; echo 'o?_InstProc9IsDone'$status'\\c' 1>&2 )\n")
+	if err := RunShell(testFS(), stdin, &out, &errb, nil); err != nil {
+		t.Fatal(err)
+	}
+	// stdout: the dd data (512 bytes of 'S') then the marker with no newline
+	if !strings.HasSuffix(out.String(), "o?_InstProc9IsDone") {
+		t.Fatalf("stdout missing trailing marker: ...%q", out.String()[max(0, out.Len()-40):])
+	}
+	if strings.HasSuffix(out.String(), "\n") {
+		t.Fatal("marker must not be newline-terminated (\\c)")
+	}
+	// stderr: dd's records summary, then the marker + status 0 with no
+	// trailing newline - inst scans stderr for the marker, so preceding
+	// diagnostics are fine as long as marker+status ends the stream.
+	if !strings.HasSuffix(errb.String(), "o?_InstProc9IsDone0") {
+		t.Fatalf("stderr missing trailing marker+status: %q", errb.String())
+	}
+	if strings.HasSuffix(errb.String(), "\n") {
+		t.Fatal("stderr marker must not be newline-terminated")
+	}
+}
+
+func TestSplitMarkerFirstProbe(t *testing.T) {
+	// the first probe has no real command before the wrapper
+	var out, errb strings.Builder
+	stdin := strings.NewReader(
+		"trap : 2 ; ( status=$? ; trap '' 2 ; echo 'o?_InstProc1IsDone\\c' ; echo 'o?_InstProc1IsDone'$status'\\c' 1>&2 )\n")
+	if err := RunShell(testFS(), stdin, &out, &errb, nil); err != nil {
+		t.Fatal(err)
+	}
+	if out.String() != "o?_InstProc1IsDone" || errb.String() != "o?_InstProc1IsDone0" {
+		t.Fatalf("probe out=%q err=%q", out.String(), errb.String())
+	}
+}
