@@ -49,7 +49,7 @@ func TestGenerateContainsRealParamsInOrder(t *testing.T) {
 		p.DistPath,
 		"from "+p.ServerIP+":"+p.DistPath,
 		"feature",
-		"install standard",
+		"install feature",
 		"go",
 		"conflicts",
 		"go",
@@ -57,6 +57,13 @@ func TestGenerateContainsRealParamsInOrder(t *testing.T) {
 	)
 }
 
+// The stream choice is scriptable: "install maint"/"install feature" sets
+// it without waiting for Inst's interactive first-install prompt (SGI
+// IRIX Admin: Software Installation and Licensing, 007-1364-140, ch.7
+// "Maintenance Tips" > "Switching Streams" - "use the Inst commands
+// install feature or install maintenance when the Inst prompt first
+// appears"). The runbook must instruct that command, not "enter 1/2" at
+// a menu it never has to wait for.
 func TestGenerateMaintenanceStream(t *testing.T) {
 	p := testParams()
 	p.Stream = "maintenance"
@@ -65,9 +72,10 @@ func TestGenerateMaintenanceStream(t *testing.T) {
 	if !strings.Contains(got, "maintenance") {
 		t.Errorf("Generate with Stream=maintenance should mention \"maintenance\", got:\n%s", got)
 	}
-	// The maintenance-stream menu entry ("1") must be the one called
-	// out, not the feature entry.
-	inOrder(t, got, "1. Place me on the maintenance stream", "Enter 1")
+	// The interactive menu is still shown for orientation (what the
+	// command answers), the maintenance entry named correctly, but the
+	// instructed action is the scripted command.
+	inOrder(t, got, "1. Place me on the maintenance stream", "install maint")
 }
 
 func TestGenerateFeatureStream(t *testing.T) {
@@ -75,7 +83,7 @@ func TestGenerateFeatureStream(t *testing.T) {
 	p.Stream = "feature"
 	got := Generate(p)
 
-	inOrder(t, got, "2. Place me on the feature stream", "Enter 2")
+	inOrder(t, got, "2. Place me on the feature stream", "install feature")
 }
 
 // One "from" opens the whole set: instigator serves each disc whole and
@@ -158,24 +166,25 @@ func TestCommandsContainsSelectionDirectivesInOrder(t *testing.T) {
 	}
 
 	// admin source replays these lines in the plain Inst> vocabulary
-	// (from/keep/install), not the -F selections-file directive
-	// grammar (don't install/don't remove) — see the package doc
-	// comment, confirmed against the field-tested walkthrough.
+	// (from/install), not the -F selections-file directive grammar
+	// (don't install/don't remove) — see the package doc comment,
+	// confirmed against the field-tested walkthrough. "install feature"
+	// both sets the stream and does the "keep * ; install standard"
+	// product selection in one command (007-1364-140 ch.7).
 	inOrder(t, got,
 		"from "+p.ServerIP+":"+p.DistPath,
-		"keep *",
-		"install standard",
+		"install feature",
 		"install prereqs",
 		"keep incompleteoverlays",
 	)
 }
 
-// Commands feeds inst's -F selections-file, whose directive grammar
-// (from / install / don't install / remove / don't remove / set) has no
-// primitive for the release-stream prompt or for conflict resolution —
-// see the package doc comment for the research this reflects. Commands
-// must therefore NOT emit go/quit/conflicts: a caller that did would be
-// promising non-interactive behavior inst does not have.
+// Commands must NOT emit go/quit/conflicts: neither the "admin source"
+// vocabulary nor inst's -F selections-file grammar has a way to trigger
+// the install or resolve a conflict from a file, so a caller that
+// included them would be promising non-interactive behavior inst does
+// not have. The release-stream prompt used to be excluded here too,
+// wrongly - see TestCommandsSetsStreamNonInteractively.
 func TestCommandsOmitsInteractiveOnlySteps(t *testing.T) {
 	p := testParams()
 	got := Commands(p)
@@ -184,6 +193,30 @@ func TestCommandsOmitsInteractiveOnlySteps(t *testing.T) {
 		if strings.Contains(got, tok) {
 			t.Errorf("Commands output must not contain interactive-only step %q (inst's -F selections-file has no directive for it), got:\n%s", tok, got)
 		}
+	}
+}
+
+// TestCommandsSetsStreamNonInteractively is the fix: the release-stream
+// prompt DOES have a scripted equivalent, "install maint"/"install
+// feature" (007-1364-140 ch.7, "Switching Streams" - "use the Inst
+// commands install feature or install maintenance when the Inst prompt
+// first appears"), so Commands must include it rather than leave stream
+// selection as a step only Generate's human runbook covers.
+func TestCommandsSetsStreamNonInteractively(t *testing.T) {
+	feature := testParams()
+	feature.Stream = "feature"
+	if got := Commands(feature); !strings.Contains(got, "install feature") {
+		t.Errorf("Commands with Stream=feature should contain \"install feature\", got:\n%s", got)
+	}
+
+	maint := testParams()
+	maint.Stream = "maintenance"
+	got := Commands(maint)
+	if !strings.Contains(got, "install maint") {
+		t.Errorf("Commands with Stream=maintenance should contain \"install maint\", got:\n%s", got)
+	}
+	if strings.Contains(got, "install feature") {
+		t.Errorf("Commands with Stream=maintenance should not also contain \"install feature\", got:\n%s", got)
 	}
 }
 
@@ -210,6 +243,28 @@ func TestGenerateMentionsAdminSource(t *testing.T) {
 	// discover it separately.
 	if !strings.Contains(got, "admin source") {
 		t.Errorf("Generate output should mention the \"admin source\" file-loading mechanism, got:\n%s", got)
+	}
+}
+
+// TestGenerateDoesNotClaimStreamIsUnscriptable is the other half of the
+// fix: the runbook used to tell operators the release-stream prompt
+// needed a human present. That was wrong - "install maint"/"install
+// feature" answers it - and the wrong claim must not still be in the
+// text next to the right command.
+func TestGenerateDoesNotClaimStreamIsUnscriptable(t *testing.T) {
+	p := testParams()
+	got := Generate(p)
+
+	if !strings.Contains(got, "install feature") {
+		t.Errorf("Generate output should instruct \"install feature\" to set the stream, got:\n%s", got)
+	}
+	for _, wrong := range []string{
+		"no way to answer the release-stream",
+		"release-stream prompt or resolve",
+	} {
+		if strings.Contains(got, wrong) {
+			t.Errorf("Generate output still contains the retired claim %q that the stream choice can't be scripted, got:\n%s", wrong, got)
+		}
 	}
 }
 

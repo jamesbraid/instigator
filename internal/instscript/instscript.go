@@ -43,26 +43,33 @@
 //     covers the set and no "open" commands are needed. See
 //     internal/vfs/combined.go for why the discs stay separate rather
 //     than being flattened into one dist.
-//  2. release-stream choice, first install only:
-//     "1. Place me on the maintenance stream." / "2. Place me on the
-//     feature stream." — feature is a strict superset of maintenance
-//     (bug fixes + new hardware support, plus new software features)
-//     and is the common recommendation because installing from the
-//     smaller maintenance stream first and switching later generates
-//     far more package conflicts than starting on feature. (Not shown
-//     in the Fuel walkthrough — that install was already stream-
-//     committed from a prior release — but is in both the official
-//     manual and the man page's "-u" discussion; sourced from the
-//     manual, "Choosing Release Streams".)
-//  3. keep * ; install standard ; install prereqs — the standard
-//     product set plus whatever it prerequires; "keep *" first clears
-//     any marks left over from opening each distribution. The Fuel
-//     walkthrough's command file uses this exact "keep *" / "install
-//     standard" pair (plus per-product install/keep lines specific to
-//     its own product list). "keep incompleteoverlays" is added after
-//     (confirmed by forums.irixnet.org/thread-92 and the hcoop.net
-//     worked example) to stop inst from trying to install placeholder
-//     stubs for overlay products that were never opened.
+//  2. release-stream choice: interactively, first install only, Inst
+//     presents "1. Place me on the maintenance stream." / "2. Place me
+//     on the feature stream." — feature is a strict superset of
+//     maintenance (bug fixes + new hardware support, plus new software
+//     features) and is the common recommendation because installing
+//     from the smaller maintenance stream first and switching later
+//     generates far more package conflicts than starting on feature.
+//     But this prompt does NOT require a human at the console: the
+//     Inst commands "install feature" and "install maint" set the
+//     stream without waiting for it, given "when the Inst prompt first
+//     appears" (SGI IRIX Admin: Software Installation and Licensing,
+//     doc 007-1364-140, ch. 7 "Maintenance Tips" > "Switching
+//     Streams"). That same command also does the work of step 3 below
+//     — "This clears any existing selections, selects [stream] stream
+//     upgrades, selects products required by these upgrades, and sets
+//     the release stream preference to [stream]" — so it replaces
+//     "keep * ; install standard", not just the menu answer.
+//  3. install prereqs — whatever the stream selection didn't already
+//     pull in as a direct prerequisite. The Fuel walkthrough's command
+//     file uses "keep *" / "install standard" instead of "install
+//     <stream>" (its install was already stream-committed from a prior
+//     release, so there was no prompt left to answer), but otherwise
+//     confirms the same "install prereqs" follow-up. "keep
+//     incompleteoverlays" is added after (confirmed by
+//     forums.irixnet.org/thread-92 and the hcoop.net worked example) to
+//     stop inst from trying to install placeholder stubs for overlay
+//     products that were never opened.
 //  4. go — triggers the preinstallation/conflict check.
 //  5. conflicts <n><choice> <n><choice> ... — e.g. "conflicts 1a 2b"
 //     (abbreviation "c"). Both the official manual and the hcoop.net
@@ -85,27 +92,29 @@
 // prompt, "admin source <host>:<path>" loads a remote text file and
 // replays each line as if typed at the prompt. The file uses the exact
 // same interactive vocabulary as the Main Menu above — "from", "open",
-// "keep", "install" — not a distinct file syntax. (inst(1)'s man page
-// separately documents a shell-level "-F selections-file" flag with
-// its own directive grammar — from / install / don't install / remove
-// / don't remove / set — for driving inst non-interactively from the
-// command line before it starts; that's a real, different mechanism,
-// but it's not the one the field-tested walkthrough uses, so Commands
-// below follows the walkthrough's "admin source" form instead.)
+// "keep", "install" — not a distinct file syntax; "install feature"
+// and "install maint" are ordinary Main Menu commands like any other,
+// so they replay through admin source the same as "from" or "keep *"
+// do. (inst(1)'s man page separately documents a shell-level "-F
+// selections-file" flag with its own directive grammar — from /
+// install / don't install / remove / don't remove / set — for driving
+// inst non-interactively from the command line before it starts;
+// that's a real, different mechanism, but it's not the one the
+// field-tested walkthrough uses, so Commands below follows the
+// walkthrough's "admin source" form instead.)
 //
-// Both mechanisms stop short of full automation the same way: the
-// walkthrough is explicit that its command file omits "go" on purpose
-// — "Note that we didn't place a 'go' command at the end of the
-// command file. This way you still have a chance to add additional
+// Both mechanisms still stop short of full automation the same way:
+// the walkthrough is explicit that its command file omits "go" on
+// purpose — "Note that we didn't place a 'go' command at the end of
+// the command file. This way you still have a chance to add additional
 // distributions before performing the installation. If you are done,
 // check for any remaining conflicts by typing 'conflicts'. If none are
 // remaining, just type 'go'" — and neither mechanism's vocabulary
-// includes a way to answer the first-install release-stream prompt.
-// So: yes for product selection, no for the release-stream choice,
-// conflict resolution, or triggering the install itself — those
-// remain a human (or scripted-console-driver) step, which is why
-// Generate produces a full runbook and Commands only covers the
-// admin-source-safe subset.
+// includes a way to view or resolve a conflict. So: yes for product
+// selection AND the release-stream choice, no for conflict resolution
+// or triggering the install itself — those remain a human (or
+// scripted-console-driver) step, which is why Generate produces a full
+// runbook and Commands only covers the admin-source-safe subset.
 package instscript
 
 import (
@@ -126,22 +135,26 @@ type Params struct {
 	// Release is the IRIX release being installed, e.g. "6.5.30".
 	Release string
 	// Stream is "feature" or "maintenance" (see the package doc
-	// comment, "Choosing Release Streams"). Anything else defaults to
-	// feature, the common recommendation, with a note saying so.
+	// comment, "release-stream choice"). Anything else defaults to
+	// feature, the common recommendation, with a note saying so. It
+	// drives both the interactive menu entry Generate shows for
+	// orientation and the "install feature"/"install maint" command
+	// that actually answers it.
 	Stream string
 }
 
-// streamMenu resolves Stream to the exact wording and Main Menu entry
-// number of SGI's first-install release-stream prompt (see the package
-// doc comment).
-func streamMenu(stream string) (number, name string) {
+// streamChoice resolves Stream to SGI's first-install release-stream
+// prompt: the interactive Main Menu wording and entry number (shown for
+// orientation - see the package doc comment) and the "install
+// maint"/"install feature" command that answers it non-interactively.
+func streamChoice(stream string) (menuNumber, name, command string) {
 	switch strings.ToLower(strings.TrimSpace(stream)) {
 	case "maintenance", "maint":
-		return "1", "maintenance"
+		return "1", "maintenance", "install maint"
 	case "feature":
-		return "2", "feature"
+		return "2", "feature", "install feature"
 	default:
-		return "2", "feature"
+		return "2", "feature", "install feature"
 	}
 }
 
@@ -165,7 +178,7 @@ func promBootLine(distPath string) string {
 // documented in the package doc comment, with Params' real values
 // filled in throughout. It is copy-pasteable at an IRIX serial console.
 func Generate(p Params) string {
-	num, name := streamMenu(p.Stream)
+	_, name, command := streamChoice(p.Stream)
 
 	var b strings.Builder
 
@@ -175,10 +188,11 @@ func Generate(p Params) string {
 	b.WriteString("\n\n")
 
 	b.WriteString("This is an operator runbook, not an unattended installer: inst(1M)'s\n")
-	b.WriteString("\"admin source\" file mechanism has no way to answer the release-stream\n")
-	b.WriteString("prompt or resolve package conflicts, so a human (or a scripted serial-\n")
-	b.WriteString("console driver) needs to be present for those two steps. See Commands()\n")
-	b.WriteString("for the product-selection subset inst can load from a file unattended.\n\n")
+	b.WriteString("\"admin source\" file mechanism has no way to resolve package conflicts\n")
+	b.WriteString("or trigger the install, so a human (or a scripted serial-console\n")
+	b.WriteString("driver) needs to be present for those steps. See Commands() for the\n")
+	b.WriteString("subset inst can load from a file unattended, up through product\n")
+	b.WriteString("selection.\n\n")
 
 	b.WriteString("1. PROM command monitor — boot the disk partitioner over the network:\n\n")
 	fmt.Fprintf(&b, "     %s\n\n", promBootLine(p.DistPath))
@@ -192,42 +206,42 @@ func Generate(p Params) string {
 	b.WriteString("   itself — expect it to report several distributions opened, not one.\n")
 	b.WriteString("   There is no per-disc \"open\" step.\n\n")
 
-	b.WriteString("3. First install only: choose a release stream.\n\n")
+	b.WriteString("3. Select the release stream and the standard product set together.\n")
+	b.WriteString("   On a first install, Inst would otherwise stop and ask interactively:\n\n")
 	b.WriteString("     1. Place me on the maintenance stream.\n")
 	b.WriteString("     2. Place me on the feature stream.\n\n")
-	fmt.Fprintf(&b, "   Enter %s for the %s stream", num, name)
+	fmt.Fprintf(&b, "   %q answers that without waiting for it, and also does the\n", command)
+	b.WriteString("   work \"keep * ; install standard\" would: it clears prior selections\n")
+	b.WriteString("   and selects the stream's upgrades and their prerequisites.\n")
 	if name == "feature" {
-		b.WriteString(" (feature is a superset of maintenance — the common\n")
-		b.WriteString("   recommendation, since starting on maintenance and switching later\n")
-		b.WriteString("   generates more conflicts than starting on feature).\n\n")
-	} else {
-		b.WriteString(".\n\n")
+		b.WriteString("   Feature is a superset of maintenance, the common recommendation,\n")
+		b.WriteString("   since starting on maintenance and switching later generates more\n")
+		b.WriteString("   conflicts than starting on feature.\n")
 	}
-
-	b.WriteString("4. Select the standard product set and its prerequisites. Either type\n")
-	b.WriteString("   these directly, or save them to a file on the server and load them\n")
-	b.WriteString("   in one shot with \"admin source <host>:<path>\" (see Commands()):\n\n")
-	b.WriteString("     keep *\n")
-	b.WriteString("     install standard\n")
+	b.WriteString("\n")
+	b.WriteString("   Either type the lines below directly, or save them to a file on the\n")
+	b.WriteString("   server and load them in one shot with \"admin source <host>:<path>\"\n")
+	b.WriteString("   (see Commands()):\n\n")
+	fmt.Fprintf(&b, "     %s\n", command)
 	b.WriteString("     install prereqs\n")
 	b.WriteString("     keep incompleteoverlays\n\n")
 
-	b.WriteString("5. Start the preinstallation/conflict check:\n\n")
+	b.WriteString("4. Start the preinstallation/conflict check:\n\n")
 	b.WriteString("     go\n\n")
 
-	b.WriteString("6. If inst reports conflicts, address them now (enter 1), then resolve\n")
+	b.WriteString("5. If inst reports conflicts, address them now (enter 1), then resolve\n")
 	b.WriteString("   each numbered conflict with a lettered choice, e.g. \"conflicts 1a 2b\"\n")
 	b.WriteString("   (abbreviation \"c\"). If the list is long, enter \"q\" to stop viewing it,\n")
 	b.WriteString("   resolve what's visible, then run \"conflicts\" again for the rest:\n\n")
 	b.WriteString("     conflicts <n><choice> <n><choice> ...\n\n")
 
-	b.WriteString("7. Once there are no more conflicts, start the install for real:\n\n")
+	b.WriteString("6. Once there are no more conflicts, start the install for real:\n\n")
 	b.WriteString("     go\n\n")
 
-	b.WriteString("8. When Inst reports the installation finished:\n\n")
+	b.WriteString("7. When Inst reports the installation finished:\n\n")
 	b.WriteString("     quit\n\n")
 
-	b.WriteString("9. Answer yes when asked \"Ready to restart the system. Restart?\":\n\n")
+	b.WriteString("8. Answer yes when asked \"Ready to restart the system. Restart?\":\n\n")
 	b.WriteString("     y\n")
 
 	return b.String()
@@ -241,19 +255,22 @@ func Generate(p Params) string {
 // walkthrough this package cites actually uses, confirmed by fetching
 // it directly).
 //
-// It covers only product selection: "from" plus the same
-// keep/install lines as Generate's step 4. Deliberately excluded, all
-// per the same walkthrough: the release-stream prompt (no admin-source
-// equivalent exists in any source found) and "go" ("we didn't place a
-// 'go' command at the end of the command file. This way you still have
-// a chance to add additional distributions before performing the
-// installation."). A human still runs conflicts/go/quit afterward —
-// see Generate's steps 5 through 9.
+// It covers "from" plus the release-stream and product selection from
+// Generate's step 3 — "install feature"/"install maint" sets the
+// stream and does what "keep * ; install standard" would in one
+// command (007-1364-140 ch.7), so this is a plain Main Menu command
+// admin source replays exactly like any other. Deliberately excluded,
+// per the walkthrough: "go" ("we didn't place a 'go' command at the
+// end of the command file. This way you still have a chance to add
+// additional distributions before performing the installation.") and,
+// since no source found gives a file directive for it, conflict
+// resolution. A human still runs conflicts/go/quit afterward — see
+// Generate's steps 4 through 8.
 func Commands(p Params) string {
+	_, _, command := streamChoice(p.Stream)
 	var b strings.Builder
 	fmt.Fprintf(&b, "from %s:%s\n", p.ServerIP, p.DistPath)
-	b.WriteString("keep *\n")
-	b.WriteString("install standard\n")
+	fmt.Fprintf(&b, "%s\n", command)
 	b.WriteString("install prereqs\n")
 	b.WriteString("keep incompleteoverlays\n")
 	return b.String()
