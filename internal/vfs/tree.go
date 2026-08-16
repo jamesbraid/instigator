@@ -28,6 +28,7 @@ type MediaSet struct {
 type Tree struct {
 	medias map[string]map[string]*Disc  // media -> disc slug -> disc
 	files  map[string]map[string]string // media -> disc slug -> image filename
+	unions map[string]*union            // union name -> merged dist layers
 }
 
 // File is an open random-access file from the tree.
@@ -115,6 +116,9 @@ func (t *Tree) Close() error {
 			d.Close()
 		}
 	}
+	for _, u := range t.unions {
+		u.close()
+	}
 	return nil
 }
 
@@ -145,6 +149,18 @@ func (t *Tree) resolve(path string) (*Disc, string, error) {
 
 // Open opens a file by tree path, following symlinks within the disc.
 func (t *Tree) Open(path string) (File, error) {
+	parts := strings.SplitN(strings.Trim(path, "/"), "/", 2)
+	if u, ok := t.unions[parts[0]]; ok {
+		rest := ""
+		if len(parts) == 2 {
+			rest = parts[1]
+		}
+		f, err := u.open(rest)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+		return f, nil
+	}
 	d, rest, err := t.resolve(path)
 	if err != nil {
 		return nil, err
@@ -164,7 +180,17 @@ func (t *Tree) Open(path string) (File, error) {
 func (t *Tree) ReadDir(path string) ([]string, error) {
 	trimmed := strings.Trim(path, "/")
 	if trimmed == "" {
-		return sortedKeys(t.medias), nil
+		names := sortedKeys(t.medias)
+		names = append(names, sortedKeys(t.unions)...)
+		sort.Strings(names)
+		return names, nil
+	}
+	if u, ok := t.unions[strings.SplitN(trimmed, "/", 2)[0]]; ok {
+		rest := ""
+		if i := strings.IndexByte(trimmed, '/'); i >= 0 {
+			rest = trimmed[i+1:]
+		}
+		return u.readdir(rest)
 	}
 	parts := strings.SplitN(trimmed, "/", 3)
 	discs, ok := t.medias[parts[0]]
