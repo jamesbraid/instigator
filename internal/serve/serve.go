@@ -70,12 +70,18 @@ type Option func(*options)
 type options struct {
 	bootpReplyAddr net.Addr
 	rshHighPorts   bool
+	verbose        bool
 }
 
 // WithBootpReplyAddr redirects bootp replies away from the broadcast
 // address, for tests that cannot receive broadcasts.
 func WithBootpReplyAddr(a net.Addr) Option {
 	return func(o *options) { o.bootpReplyAddr = a }
+}
+
+// WithVerbose logs every datagram received and sent, decoded.
+func WithVerbose() Option {
+	return func(o *options) { o.verbose = true }
 }
 
 // WithRSHHighPorts disables the rsh reserved-source-port check, for
@@ -120,6 +126,7 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 			Clients:   clients,
 			ReplyAddr: o.bootpReplyAddr,
 			Logf:      logf,
+			Verbose:   o.verbose,
 		}
 		pc, err := bootp.ListenBroadcast(fmt.Sprintf(":%d", cfg.Ports.BOOTP))
 		if err != nil {
@@ -137,6 +144,7 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 			PortMin: cfg.Services.TFTP.PortRange[0],
 			PortMax: cfg.Services.TFTP.PortRange[1],
 			Logf:    logf,
+			Verbose: o.verbose,
 		}
 		pc, err := net.ListenPacket("udp4", fmt.Sprintf(":%d", cfg.Ports.TFTP))
 		if err != nil {
@@ -152,6 +160,7 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 			AllowIP:        allow,
 			AllowHighPorts: o.rshHighPorts,
 			Logf:           logf,
+			Verbose:        o.verbose,
 			Handler: func(req *rcmd.Request) error {
 				return instcmd.Run(cmdFS{tree}, req.Command, req.Stdout, req.Stderr)
 			},
@@ -166,7 +175,7 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 	}
 
 	if cfg.Services.NFS {
-		if err := s.startNFS(cfg, allow, logf); err != nil {
+		if err := s.startNFS(cfg, allow, logf, o.verbose); err != nil {
 			s.Close()
 			return nil, err
 		}
@@ -177,8 +186,8 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 
 // startNFS binds portmap, mountd, and nfsd and registers the assigned
 // ports with portmap.
-func (s *Servers) startNFS(cfg *config.Config, allow func(netip.Addr) bool, logf func(string, ...any)) error {
-	srv := &nfs.Server{FS: s.tree.NFSExport(), AllowIP: allow, Logf: logf}
+func (s *Servers) startNFS(cfg *config.Config, allow func(netip.Addr) bool, logf func(string, ...any), verbose bool) error {
+	srv := &nfs.Server{FS: s.tree.NFSExport(), AllowIP: allow, Logf: logf, Verbose: verbose}
 
 	pmap, err := net.ListenPacket("udp4", fmt.Sprintf(":%d", cfg.Ports.Portmap))
 	if err != nil {

@@ -87,7 +87,13 @@ func (s *Server) dispatch(addr net.Addr, pkt []byte, prog, vers uint32, dispatch
 	_ = cvers
 	h, ok := dispatch[cproc]
 	if !ok {
+		if s.Verbose {
+			s.logf("nfs: %s: prog=%d proc=%d unavailable", addr, cprog, cproc)
+		}
 		return replyAccepted(xid, procUnavail, nil)
+	}
+	if s.Verbose {
+		s.logf("nfs: %s: prog=%d vers=%d proc=%d", addr, cprog, cvers, cproc)
 	}
 	body := h(addr, r)
 	if r.err {

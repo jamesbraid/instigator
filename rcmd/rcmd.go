@@ -57,6 +57,10 @@ type Server struct {
 
 	// Logf, when set, receives one line per connection and command.
 	Logf func(format string, args ...any)
+
+	// Verbose logs every connection, the parsed request, and the
+	// stderr dial-back.
+	Verbose bool
 }
 
 func (s *Server) logf(format string, args ...any) {
@@ -90,6 +94,9 @@ func (s *Server) handle(c net.Conn) {
 	if !ok {
 		return
 	}
+	if s.Verbose {
+		s.logf("rcmd: connection from %s", tcp)
+	}
 	ip, _ := netip.AddrFromSlice(tcp.IP)
 	ip = ip.Unmap()
 	if s.AllowIP != nil && !s.AllowIP(ip) {
@@ -118,6 +125,10 @@ func (s *Server) handle(c net.Conn) {
 	if err != nil || errPort < 0 || errPort > 65535 {
 		refuse(c, "bad stderr port")
 		return
+	}
+	if s.Verbose {
+		s.logf("rcmd: %s: stderr-port=%d remuser=%q locuser=%q command=%q",
+			tcp, errPort, fields[1], fields[2], fields[3])
 	}
 
 	// Without a stderr channel, stderr shares the primary connection,

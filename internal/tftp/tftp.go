@@ -6,6 +6,7 @@
 package tftp
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -67,6 +68,9 @@ type Server struct {
 
 	// Logf, when set, receives one line per request and transfer event.
 	Logf func(format string, args ...any)
+
+	// Verbose logs every datagram arrival, including ones ignored.
+	Verbose bool
 }
 
 func (s *Server) logf(format string, args ...any) {
@@ -94,6 +98,13 @@ func (s *Server) Serve(pc net.PacketConn) error {
 }
 
 func (s *Server) handle(pc net.PacketConn, addr net.Addr, pkt []byte) {
+	if s.Verbose {
+		op := uint16(0)
+		if len(pkt) >= 2 {
+			op = binary.BigEndian.Uint16(pkt[0:2])
+		}
+		s.logf("tftp: recv %d bytes from %s (opcode %d)", len(pkt), addr, op)
+	}
 	if len(pkt) < 2 {
 		return
 	}
@@ -112,10 +123,19 @@ func (s *Server) handle(pc net.PacketConn, addr net.Addr, pkt []byte) {
 	op := binary.BigEndian.Uint16(pkt[0:2])
 	switch op {
 	case opRRQ:
-		file, mode, err := parseRRQ(pkt)
+		file, mode, opts, err := parseRRQ(pkt)
 		if err != nil {
 			s.sendError(pc, addr, errNotDefined, err.Error())
 			return
+		}
+		if s.Verbose {
+			extra := ""
+			if len(opts) > 0 {
+				// SGI PROMs append junk (or options) after the mode; show
+				// it as hex so an option negotiation is never invisible.
+				extra = fmt.Sprintf(" trailing=% x", opts)
+			}
+			s.logf("tftp: %s: RRQ file=%q mode=%q%s", addr, file, mode, extra)
 		}
 		s.serveFile(udp, file, mode)
 	case opWRQ:
@@ -126,12 +146,23 @@ func (s *Server) handle(pc net.PacketConn, addr net.Addr, pkt []byte) {
 	}
 }
 
-func parseRRQ(pkt []byte) (file, mode string, err error) {
-	parts := strings.Split(string(pkt[2:]), "\x00")
-	if len(parts) < 2 {
-		return "", "", fmt.Errorf("malformed request")
+// parseRRQ splits a read request into filename, mode, and any trailing
+// bytes after the mode (TFTP options, or junk a PROM left in its buffer).
+func parseRRQ(pkt []byte) (file, mode string, trailing []byte, err error) {
+	body := pkt[2:]
+	i := bytes.IndexByte(body, 0)
+	if i < 0 {
+		return "", "", nil, fmt.Errorf("malformed request: no filename terminator")
 	}
-	return parts[0], strings.ToLower(parts[1]), nil
+	file = string(body[:i])
+	rest := body[i+1:]
+	j := bytes.IndexByte(rest, 0)
+	if j < 0 {
+		return "", "", nil, fmt.Errorf("malformed request: no mode terminator")
+	}
+	mode = strings.ToLower(string(rest[:j]))
+	trailing = bytes.TrimRight(rest[j+1:], "\x00")
+	return file, mode, trailing, nil
 }
 
 func (s *Server) sendError(pc net.PacketConn, addr net.Addr, code uint16, msg string) {
@@ -227,6 +258,13 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string) {
 				s.logf("tftp: %s: send: %v", client, err)
 				return
 			}
+			if s.Verbose {
+				if attempt == 0 {
+					s.logf("tftp: %s: DATA block %d (%d bytes, off %d)", client, block, want, off)
+				} else {
+					s.logf("tftp: %s: resend block %d (attempt %d)", client, block, attempt)
+				}
+			}
 			pc.SetReadDeadline(time.Now().Add(retry))
 			for {
 				n, from, err := pc.ReadFrom(ack)
@@ -235,6 +273,9 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string) {
 				}
 				fu, ok := from.(*net.UDPAddr)
 				if !ok || !fu.IP.Equal(client.IP) || fu.Port != client.Port {
+					if s.Verbose {
+						s.logf("tftp: %s: stray packet from %s, ignoring", client, from)
+					}
 					continue // stray packet from elsewhere
 				}
 				if n < 4 {
@@ -242,12 +283,22 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string) {
 				}
 				switch binary.BigEndian.Uint16(ack[0:2]) {
 				case opACK:
-					if binary.BigEndian.Uint16(ack[2:4]) == block {
-						acked = true
+					got := binary.BigEndian.Uint16(ack[2:4])
+					acked = got == block
+					if s.Verbose {
+						if acked {
+							s.logf("tftp: %s: ACK block %d", client, got)
+						} else {
+							s.logf("tftp: %s: ACK block %d (waiting for %d)", client, got, block)
+						}
 					}
 				case opERROR:
-					s.logf("tftp: %s: client error: %q", client, ack[4:n])
+					s.logf("tftp: %s: client ERROR code %d: %q", client, binary.BigEndian.Uint16(ack[2:4]), ack[4:n])
 					return
+				default:
+					if s.Verbose {
+						s.logf("tftp: %s: unexpected opcode %d during transfer", client, binary.BigEndian.Uint16(ack[0:2]))
+					}
 				}
 				if acked {
 					break
