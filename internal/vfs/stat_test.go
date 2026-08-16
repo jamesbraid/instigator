@@ -64,35 +64,37 @@ func TestTreeStatMissingPath(t *testing.T) {
 	}
 }
 
-func TestUnionStat(t *testing.T) {
+func TestCombinedStat(t *testing.T) {
 	dir := t.TempDir()
-	base := distDisc(t, dir, "base.iso", "base", []string{"eoe.sw"})
-	over := distDisc(t, dir, "over.iso", "over", []string{"overlay.sw"})
+	primary := combImage(t, dir, "tools.image", primaryDist)
+	found := combImage(t, dir, "foundation1.iso", foundationDist)
 	tree, err := BuildTree(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tree.Close()
-	if err := tree.AddUnion("full", []string{base, over}); err != nil {
+	if _, err := tree.AddCombined("full", []string{primary, found}); err != nil {
 		t.Fatal(err)
 	}
 
-	distInfo, err := tree.Stat("full/dist")
+	// a disc's dist directory stats as a directory
+	distInfo, err := tree.Stat("full/foundation1/dist")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !distInfo.IsDir {
-		t.Fatal("union dist not reported as a directory")
+		t.Fatal("combined dist not reported as a directory")
 	}
 
-	fileInfo, err := tree.Stat("full/dist/eoe.sw")
+	// a real product file stats as a non-directory with a real size
+	fileInfo, err := tree.Stat("full/foundation1/dist/foundation.sw")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fileInfo.IsDir {
-		t.Fatal("union file reported as a directory")
+		t.Fatal("combined product file reported as a directory")
 	}
 	if fileInfo.Size == 0 {
-		t.Fatal("union file size is zero")
+		t.Fatal("combined product file size is zero")
 	}
 }

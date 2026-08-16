@@ -49,8 +49,11 @@ type Ports struct {
 	NFS     int
 }
 
-// Combined merges several disc images' dist directories into one union
-// served at /<Name>/dist. Layers are lowest precedence first.
+// Combined serves several disc images as one distribution set under
+// /<Name>/, each disc kept whole at /<Name>/<slug>/. The primary disc
+// (the one carrying dist/.related_dists) gets a synthesized .related_dists
+// that chains the rest, so inst auto-opens the whole set from one path.
+// Layers is the disc images, in the order they are chained.
 type Combined struct {
 	Name   string
 	Layers []string

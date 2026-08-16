@@ -11,9 +11,8 @@ import (
 // FileInfo is a path's metadata. It follows the same level structure
 // Open and ReadDir already resolve: a real EFS path returns its own
 // inode's fields, and every tree level above the EFS boundary - the
-// root, a media name, a disc slug, a union name, the union's own dist -
-// gets stable synthetic values, since none of them is backed by a real
-// inode.
+// root, a media name, a disc slug, a combined-set name - gets stable
+// synthetic values, since none of them is backed by a real inode.
 type FileInfo struct {
 	Ino   uint64
 	IsDir bool
@@ -36,8 +35,8 @@ func syntheticDir() FileInfo {
 }
 
 // Stat returns a path's metadata, resolving it exactly as Open and
-// ReadDir do: a synthetic top-level file, a union, media/disc, or an
-// EFS path within a disc. Anything Open or ReadDir can reach, Stat can
+// ReadDir do: a synthetic top-level file, a combined set, media/disc, or
+// an EFS path within a disc. Anything Open or ReadDir can reach, Stat can
 // describe.
 func (t *Tree) Stat(path string) (FileInfo, error) {
 	trimmed := strings.Trim(path, "/")
@@ -48,12 +47,12 @@ func (t *Tree) Stat(path string) (FileInfo, error) {
 		return FileInfo{Ino: syntheticDirIno + 1, IsDir: false, Perm: 0o444, Nlink: 1, Size: int64(len(c))}, nil
 	}
 	parts := strings.SplitN(trimmed, "/", 2)
-	if u, ok := t.unions[parts[0]]; ok {
+	if c, ok := t.combined[parts[0]]; ok {
 		rest := ""
 		if len(parts) == 2 {
 			rest = parts[1]
 		}
-		return u.stat(rest)
+		return c.stat(rest)
 	}
 	parts3 := strings.SplitN(trimmed, "/", 3)
 	discs, ok := t.medias[parts3[0]]
@@ -90,26 +89,4 @@ func inodeInfo(n *efs.Inode) FileInfo {
 		Size:  int64(n.Size),
 		Mtime: time.Unix(int64(n.Mtime), 0),
 	}
-}
-
-// stat resolves a path within a union: its own root or "dist" are
-// synthetic, like any other tree level; anything under dist is a real
-// file or directory found by searching layers highest-precedence first,
-// mirroring open and readdir.
-func (u *union) stat(rest string) (FileInfo, error) {
-	rest = strings.Trim(rest, "/")
-	if rest == "" || rest == "dist" {
-		return syntheticDir(), nil
-	}
-	if !strings.HasPrefix(rest+"/", "dist/") {
-		return FileInfo{}, ErrNotFound
-	}
-	for i := len(u.layers) - 1; i >= 0; i-- {
-		node, err := u.layers[i].lookupFollow(rest, 8)
-		if err != nil {
-			continue
-		}
-		return inodeInfo(node), nil
-	}
-	return FileInfo{}, fmt.Errorf("%s: %w", rest, ErrNotFound)
 }

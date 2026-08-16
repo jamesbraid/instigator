@@ -29,7 +29,7 @@ type MediaSet struct {
 type Tree struct {
 	medias    map[string]map[string]*Disc  // media -> disc slug -> disc
 	files     map[string]map[string]string // media -> disc slug -> image filename
-	unions    map[string]*union            // union name -> merged dist layers
+	combined  map[string]*combined         // combined-set name -> per-disc distributions
 	synthetic map[string][]byte            // top-level generated files (the runbook)
 }
 
@@ -118,8 +118,8 @@ func (t *Tree) Close() error {
 			d.Close()
 		}
 	}
-	for _, u := range t.unions {
-		u.close()
+	for _, c := range t.combined {
+		c.close()
 	}
 	return nil
 }
@@ -155,12 +155,12 @@ func (t *Tree) Open(path string) (File, error) {
 		return &bytesFile{r: bytes.NewReader(c), size: int64(len(c))}, nil
 	}
 	parts := strings.SplitN(strings.Trim(path, "/"), "/", 2)
-	if u, ok := t.unions[parts[0]]; ok {
+	if c, ok := t.combined[parts[0]]; ok {
 		rest := ""
 		if len(parts) == 2 {
 			rest = parts[1]
 		}
-		f, err := u.open(rest)
+		f, err := c.open(rest)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
@@ -186,19 +186,19 @@ func (t *Tree) ReadDir(path string) ([]string, error) {
 	trimmed := strings.Trim(path, "/")
 	if trimmed == "" {
 		names := sortedKeys(t.medias)
-		names = append(names, sortedKeys(t.unions)...)
+		names = append(names, sortedKeys(t.combined)...)
 		for n := range t.synthetic {
 			names = append(names, n)
 		}
 		sort.Strings(names)
 		return names, nil
 	}
-	if u, ok := t.unions[strings.SplitN(trimmed, "/", 2)[0]]; ok {
+	if c, ok := t.combined[strings.SplitN(trimmed, "/", 2)[0]]; ok {
 		rest := ""
 		if i := strings.IndexByte(trimmed, '/'); i >= 0 {
 			rest = trimmed[i+1:]
 		}
-		return u.readdir(rest)
+		return c.readdir(rest)
 	}
 	parts := strings.SplitN(trimmed, "/", 3)
 	discs, ok := t.medias[parts[0]]
