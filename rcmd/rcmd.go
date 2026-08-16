@@ -20,6 +20,7 @@ import (
 	"net/netip"
 	"strconv"
 	"syscall"
+	"time"
 )
 
 // maxRequest bounds the request head (port + three strings). Real inst
@@ -66,6 +67,15 @@ type Server struct {
 	// Verbose logs every connection, the parsed request, and the
 	// stderr dial-back.
 	Verbose bool
+
+	// IdleTimeout bounds the time between reads on a connection: every
+	// read - the request-head fields and, for a shell command, every
+	// line a Handler pulls from Request.Stdin - resets it. Zero means
+	// no timeout, unbounded wait, the historical behavior. Without this,
+	// a shell session (rsh exec /bin/sh) blocks its handler goroutine
+	// reading Stdin for as long as the client holds the connection open
+	// and stays silent - stuck, hostile, or simply gone.
+	IdleTimeout time.Duration
 }
 
 func (s *Server) logf(format string, args ...any) {
@@ -118,7 +128,11 @@ func (s *Server) handle(c net.Conn) {
 	// bufio over the raw connection, not a LimitReader: a shell command
 	// streams its input here after the request head, so stdin must stay
 	// unbounded. Each field is still capped so the head cannot run away.
-	r := bufio.NewReader(c)
+	var src io.Reader = c
+	if s.IdleTimeout > 0 {
+		src = &idleReader{c: c, timeout: s.IdleTimeout}
+	}
+	r := bufio.NewReader(src)
 	readField := func() (string, error) {
 		var b []byte
 		for len(b) <= maxRequest {
@@ -215,6 +229,23 @@ func (s *Server) dialStderr(ip net.IP, port int) (net.Conn, error) {
 		return nil, err
 	}
 	return net.Dial("tcp", dst.String())
+}
+
+// idleReader resets c's read deadline before every Read, so timeout
+// bounds the gap between reads rather than the connection's whole
+// lifetime - a client that keeps sending, however slowly, stays
+// connected; one that goes silent gets the next Read failed out from
+// under it once timeout has passed with nothing arriving.
+type idleReader struct {
+	c       net.Conn
+	timeout time.Duration
+}
+
+func (r *idleReader) Read(p []byte) (int, error) {
+	if err := r.c.SetReadDeadline(time.Now().Add(r.timeout)); err != nil {
+		return 0, err
+	}
+	return r.c.Read(p)
 }
 
 func isAddrInUse(err error) bool { return errors.Is(err, syscall.EADDRINUSE) }
