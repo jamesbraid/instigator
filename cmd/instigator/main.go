@@ -4,12 +4,12 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/jamesbraid/instigator/internal/config"
+	"github.com/jamesbraid/instigator/internal/logging"
 	"github.com/jamesbraid/instigator/internal/serve"
 )
 
@@ -74,12 +74,15 @@ func runServe(configPath string, verbose bool) error {
 	if err != nil {
 		return err
 	}
-	logger := log.New(os.Stdout, "", log.LstdFlags)
-	var opts []serve.Option
+	// -v means decode every packet, at DEBUG; the default level is
+	// INFO, which still always shows WARN/ERROR - a refused command or
+	// a real failure is never hidden behind -v.
+	level := logging.LevelInfo
 	if verbose {
-		opts = append(opts, serve.WithVerbose())
+		level = logging.LevelDebug
 	}
-	s, err := serve.Start(cfg, logger.Printf, opts...)
+	logger := logging.New(os.Stdout, level)
+	s, err := serve.Start(cfg, logger)
 	if err != nil {
 		return err
 	}
@@ -87,8 +90,8 @@ func runServe(configPath string, verbose bool) error {
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	logger.Printf("serving; stop with SIGINT/SIGTERM")
+	logger.Infof("serving; stop with SIGINT/SIGTERM")
 	<-sig
-	logger.Printf("shutting down")
+	logger.Infof("shutting down")
 	return nil
 }

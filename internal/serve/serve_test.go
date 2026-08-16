@@ -8,12 +8,55 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jamesbraid/instigator/efs/efstest"
 	"github.com/jamesbraid/instigator/internal/config"
+	"github.com/jamesbraid/instigator/internal/logging"
 )
+
+// testLogWriter routes leveled log lines to t.Log, so a test failure's
+// output includes the server log around it, same as the old t.Logf
+// callback did.
+type testLogWriter struct{ t *testing.T }
+
+func (w testLogWriter) Write(p []byte) (int, error) {
+	w.t.Log(strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}
+
+// testLogger builds a Logger for tests: DEBUG level, since a test
+// exercising Verbose-only behavior needs it, and t.Log as the sink so
+// server log output only surfaces when a test actually fails.
+func testLogger(t *testing.T) *logging.Logger {
+	t.Helper()
+	return logging.New(testLogWriter{t}, logging.LevelDebug)
+}
+
+// syncBuffer is a mutex-protected buffer: a test reads back what a
+// server captured after Close, but background service goroutines can
+// still be logging or writing operator instructions up to that point,
+// so both the writes and the read need to be serialized against each
+// other, not just against themselves.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // mediaDir builds a media directory holding one synthetic disc with
 // stand/fx.64 and dist/sa.
@@ -55,7 +98,7 @@ func startAll(t *testing.T) (*Servers, *config.Config) {
 	t.Helper()
 	cfg := testConfig(t)
 	// tests cannot bind reserved client ports
-	s, err := Start(cfg, t.Logf, WithRSHHighPorts())
+	s, err := Start(cfg, testLogger(t), WithRSHHighPorts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +284,7 @@ func TestBOOTPAnswersConfiguredMAC(t *testing.T) {
 
 	// tests cannot receive broadcasts: redirect replies at Start
 	cfg := testConfig(t)
-	s, err := Start(cfg, t.Logf, WithBootpReplyAddr(c.LocalAddr()))
+	s, err := Start(cfg, testLogger(t), WithBootpReplyAddr(c.LocalAddr()))
 	if err != nil {
 		t.Fatal(err)
 	}

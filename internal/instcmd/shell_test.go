@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/jamesbraid/instigator/internal/logging"
 )
 
 // shellTestFS builds a fixture with a distinctive (non-uniform) byte
@@ -26,14 +28,19 @@ func shellTestFS() *fakeFS {
 	}
 }
 
+// runShell runs a shell script and returns stdout/stderr. It logs at
+// DEBUG so every command line and any refusal shows up in the test log
+// (t.Logf), matching what RunShell now sends to the server's own log
+// instead of the old per-line callback.
 func runShell(t *testing.T, script string) (string, string) {
 	t.Helper()
 	var out, errb strings.Builder
-	var logged []string
-	if err := RunShell(shellTestFS(), strings.NewReader(script), &out, &errb, func(l string) { logged = append(logged, l) }); err != nil {
+	var logbuf bytes.Buffer
+	logger := logging.New(&logbuf, logging.LevelDebug)
+	if err := RunShell(shellTestFS(), strings.NewReader(script), &out, &errb, logger); err != nil {
 		t.Fatalf("RunShell: %v (stderr: %s)", err, errb.String())
 	}
-	t.Logf("logged commands: %v", logged)
+	t.Logf("server log:\n%s", logbuf.String())
 	return out.String(), errb.String()
 }
 

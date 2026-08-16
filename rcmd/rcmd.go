@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/jamesbraid/instigator/internal/logging"
 )
 
 // maxRequest bounds the request head (port + three strings). Real inst
@@ -61,12 +63,13 @@ type Server struct {
 	// rcmd client uses reserved ports - and off in unprivileged tests.
 	AllowHighPorts bool
 
-	// Logf, when set, receives one line per connection and command.
-	Logf func(format string, args ...any)
-
-	// Verbose logs every connection, the parsed request, and the
-	// stderr dial-back.
-	Verbose bool
+	// Logger, when set, receives leveled log output: DEBUG for every
+	// connection and the parsed request/stderr dial-back detail, INFO
+	// for each command run, WARN for a connection refused or malformed,
+	// ERROR for a command the Handler refused or failed - a command
+	// this side couldn't or wouldn't serve must show up here, not just
+	// on the client's own stderr. A nil Logger is silent.
+	Logger *logging.Logger
 
 	// IdleTimeout bounds the time between reads on a connection: every
 	// read - the request-head fields and, for a shell command, every
@@ -76,12 +79,6 @@ type Server struct {
 	// reading Stdin for as long as the client holds the connection open
 	// and stays silent - stuck, hostile, or simply gone.
 	IdleTimeout time.Duration
-}
-
-func (s *Server) logf(format string, args ...any) {
-	if s.Logf != nil {
-		s.Logf(format, args...)
-	}
 }
 
 // Serve accepts connections on l (conventionally bound to :514) until l
@@ -109,18 +106,18 @@ func (s *Server) handle(c net.Conn) {
 	if !ok {
 		return
 	}
-	if s.Verbose {
-		s.logf("rcmd: connection from %s", tcp)
+	if s.Logger.Enabled(logging.LevelDebug) {
+		s.Logger.Debugf("rcmd: connection from %s", tcp)
 	}
 	ip, _ := netip.AddrFromSlice(tcp.IP)
 	ip = ip.Unmap()
 	if s.AllowIP != nil && !s.AllowIP(ip) {
-		s.logf("rcmd: %s: denied by client filter", tcp)
+		s.Logger.Warnf("rcmd: %s: denied by client filter", tcp)
 		refuse(c, "permission denied")
 		return
 	}
 	if !s.AllowHighPorts && (tcp.Port >= 1024 || tcp.Port < 512) {
-		s.logf("rcmd: %s: source port not reserved", tcp)
+		s.Logger.Warnf("rcmd: %s: source port not reserved", tcp)
 		refuse(c, "permission denied")
 		return
 	}
@@ -155,7 +152,7 @@ func (s *Server) handle(c net.Conn) {
 	// Read the port, dial the stderr channel, then read the rest.
 	portField, err := readField()
 	if err != nil {
-		s.logf("rcmd: %s: short request (stderr port): %v", tcp, err)
+		s.Logger.Warnf("rcmd: %s: short request (stderr port): %v", tcp, err)
 		refuse(c, "malformed request")
 		return
 	}
@@ -171,7 +168,7 @@ func (s *Server) handle(c net.Conn) {
 	if errPort != 0 {
 		ec, err := s.dialStderr(tcp.IP, errPort)
 		if err != nil {
-			s.logf("rcmd: %s: stderr dial-back to %d: %v", tcp, errPort, err)
+			s.Logger.Errorf("rcmd: %s: stderr dial-back to %d: %v", tcp, errPort, err)
 			refuse(c, "cannot connect stderr")
 			return
 		}
@@ -183,18 +180,18 @@ func (s *Server) handle(c net.Conn) {
 	locuser, err2 := readField()
 	command, err3 := readField()
 	if err1 != nil || err2 != nil || err3 != nil {
-		s.logf("rcmd: %s: short request (fields): %v %v %v", tcp, err1, err2, err3)
+		s.Logger.Warnf("rcmd: %s: short request (fields): %v %v %v", tcp, err1, err2, err3)
 		refuse(c, "malformed request")
 		return
 	}
 	req.RemoteUser, req.LocalUser, req.Command = remuser, locuser, command
 	req.Stdin = r // the rest of the connection, for a shell command
-	if s.Verbose {
-		s.logf("rcmd: %s: stderr-port=%d remuser=%q locuser=%q command=%q",
+	if s.Logger.Enabled(logging.LevelDebug) {
+		s.Logger.Debugf("rcmd: %s: stderr-port=%d remuser=%q locuser=%q command=%q",
 			tcp, errPort, remuser, locuser, command)
 	}
 
-	s.logf("rcmd: %s: user=%s/%s command=%q", tcp, req.RemoteUser, req.LocalUser, req.Command)
+	s.Logger.Infof("rcmd: %s: user=%s/%s command=%q", tcp, req.RemoteUser, req.LocalUser, req.Command)
 	if s.Handler == nil {
 		refuse(c, "no handler")
 		return
@@ -204,7 +201,7 @@ func (s *Server) handle(c net.Conn) {
 	}
 	if err := s.Handler(req); err != nil {
 		fmt.Fprintf(req.Stderr, "%v\n", err)
-		s.logf("rcmd: %s: %q: %v", tcp, req.Command, err)
+		s.Logger.Errorf("rcmd: %s: %q: %v", tcp, req.Command, err)
 	}
 }
 
@@ -234,8 +231,8 @@ func (s *Server) dialStderr(ip net.IP, port int) (net.Conn, error) {
 		d := net.Dialer{LocalAddr: &net.TCPAddr{Port: local}}
 		c, err := d.Dial("tcp", dst.String())
 		if err == nil {
-			if s.Verbose {
-				s.logf("rcmd: stderr dial-back to %s: local=%d attempts=%d took=%v",
+			if s.Logger.Enabled(logging.LevelDebug) {
+				s.Logger.Debugf("rcmd: stderr dial-back to %s: local=%d attempts=%d took=%v",
 					dst, local, attempts, time.Since(t0))
 			}
 			return c, nil
@@ -248,8 +245,8 @@ func (s *Server) dialStderr(ip net.IP, port int) (net.Conn, error) {
 		}
 		return nil, err
 	}
-	if s.Verbose {
-		s.logf("rcmd: stderr dial-back to %s: reserved range exhausted, attempts=%d took=%v, falling back to ephemeral",
+	if s.Logger.Enabled(logging.LevelDebug) {
+		s.Logger.Debugf("rcmd: stderr dial-back to %s: reserved range exhausted, attempts=%d took=%v, falling back to ephemeral",
 			dst, attempts, time.Since(t0))
 	}
 	return net.Dial("tcp", dst.String())

@@ -5,11 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/jamesbraid/instigator/efs/efstest"
 	"github.com/jamesbraid/instigator/internal/config"
+	"github.com/jamesbraid/instigator/internal/logging"
 )
 
 // combinedImage writes one CD image: dist/ holds the given entries, and
@@ -54,28 +54,33 @@ func combinedSet(t *testing.T) (foundation, primary string) {
 // logged, with the servers closed again.
 func captureStart(t *testing.T, cfg *config.Config) []string {
 	t.Helper()
-	var mu sync.Mutex
-	var lines []string
-	logf := func(format string, args ...any) {
-		line := fmt.Sprintf(format, args...)
-		mu.Lock()
-		lines = append(lines, line)
-		mu.Unlock()
-		t.Log(line)
-	}
-	s, err := Start(cfg, logf, WithRSHHighPorts())
+	var logbuf syncBuffer
+	logger := logging.New(&logbuf, logging.LevelDebug)
+	s, err := Start(cfg, logger, WithRSHHighPorts())
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
-	mu.Lock()
-	defer mu.Unlock()
-	return append([]string(nil), lines...)
+	t.Logf("server log:\n%s", logbuf.String())
+	return splitNonEmpty(logbuf.String())
 }
 
+func splitNonEmpty(s string) []string {
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		if l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// hasLine reports whether any line ends with want: each line now carries
+// a leading "<ISO8601> <LEVEL> " prefix from the leveled logger, so an
+// exact match against the bare message never succeeds.
 func hasLine(lines []string, want string) bool {
 	for _, l := range lines {
-		if l == want {
+		if strings.HasSuffix(l, want) {
 			return true
 		}
 	}

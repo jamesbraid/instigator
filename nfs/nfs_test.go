@@ -95,7 +95,7 @@ func testFS() *memFS {
 // startNFS runs portmap, mountd and nfsd on loopback ephemeral ports.
 func startNFS(t *testing.T) (*nfs.Server, *net.UDPAddr) {
 	t.Helper()
-	s := &nfs.Server{FS: testFS(), Logf: t.Logf}
+	s := &nfs.Server{FS: testFS()}
 	pm, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

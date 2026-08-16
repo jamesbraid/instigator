@@ -15,6 +15,8 @@ import (
 	"net"
 	"net/netip"
 	"syscall"
+
+	"github.com/jamesbraid/instigator/internal/logging"
 )
 
 const packetLen = 300
@@ -41,17 +43,10 @@ type Server struct {
 	// limited broadcast 255.255.255.255:68.
 	ReplyAddr net.Addr
 
-	// Logf, when set, receives one line per request.
-	Logf func(format string, args ...any)
-
-	// Verbose logs every datagram received and sent, decoded.
-	Verbose bool
-}
-
-func (s *Server) logf(format string, args ...any) {
-	if s.Logf != nil {
-		s.Logf(format, args...)
-	}
+	// Logger, when set, receives leveled log output: DEBUG for every
+	// datagram decoded, INFO for each request answered or ignored,
+	// ERROR for a reply that failed to send. A nil Logger is silent.
+	Logger *logging.Logger
 }
 
 // Serve answers requests arriving on pc (conventionally bound to :67)
@@ -74,12 +69,12 @@ func (s *Server) Serve(pc net.PacketConn) error {
 			}
 			return err
 		}
-		if s.Verbose {
-			s.logf("bootp: recv %d bytes from %s\n%s", n, src, decodeReq(buf[:n]))
+		if s.Logger.Enabled(logging.LevelDebug) {
+			s.Logger.Debugf("bootp: recv %d bytes from %s\n%s", n, src, decodeReq(buf[:n]))
 		}
 		if n < packetLen {
-			if s.Verbose {
-				s.logf("bootp: %s: runt packet (%d < %d), ignoring", src, n, packetLen)
+			if s.Logger.Enabled(logging.LevelDebug) {
+				s.Logger.Debugf("bootp: %s: runt packet (%d < %d), ignoring", src, n, packetLen)
 			}
 			continue
 		}
@@ -105,11 +100,11 @@ func (s *Server) Serve(pc net.PacketConn) error {
 				dst = &net.UDPAddr{IP: net.IPv4bcast, Port: port}
 			}
 		}
-		if s.Verbose {
-			s.logf("bootp: send %d bytes to %s (%s)\n%s", len(reply), dst, how, decodeReq(reply))
+		if s.Logger.Enabled(logging.LevelDebug) {
+			s.Logger.Debugf("bootp: send %d bytes to %s (%s)\n%s", len(reply), dst, how, decodeReq(reply))
 		}
 		if _, err := pc.WriteTo(reply, dst); err != nil {
-			s.logf("bootp: reply to %s: %v", dst, err)
+			s.Logger.Errorf("bootp: reply to %s: %v", dst, err)
 		}
 	}
 }
@@ -150,11 +145,11 @@ func (s *Server) handle(req []byte) []byte {
 		}
 	}
 	if client == nil {
-		s.logf("bootp: ignoring request from %s (not configured)", mac)
+		s.Logger.Infof("bootp: ignoring request from %s (not configured)", mac)
 		return nil
 	}
 	file := string(bytes.TrimRight(req[108:236], "\x00"))
-	s.logf("bootp: answering %s (%s): ip=%s file=%q", mac, client.Name, client.IP, file)
+	s.Logger.Infof("bootp: answering %s (%s): ip=%s file=%q", mac, client.Name, client.IP, file)
 
 	rep := make([]byte, packetLen)
 	copy(rep, req[:packetLen])
