@@ -202,6 +202,104 @@ func TestReservedPortEnforced(t *testing.T) {
 	}
 }
 
+// TestIdleTimeoutClosesSilentSession models a shell session (rsh exec
+// /bin/sh): the handler blocks reading Request.Stdin, the way
+// instcmd.RunShell does, waiting for the next command line. A client
+// that sends the request head and then goes silent - stuck, hostile,
+// or just gone - must not hold that goroutine (and the connection)
+// open forever once IdleTimeout is set.
+func TestIdleTimeoutClosesSilentSession(t *testing.T) {
+	handlerDone := make(chan error, 1)
+	addr := startServer(t, &rcmd.Server{
+		AllowHighPorts: true,
+		IdleTimeout:    100 * time.Millisecond,
+		Handler: func(req *rcmd.Request) error {
+			buf := make([]byte, 1)
+			_, err := req.Stdin.Read(buf)
+			handlerDone <- err
+			return err
+		},
+	})
+
+	c, err := net.Dial("tcp", addr.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	// send the full request head, then go silent - never write to
+	// Stdin, as a stuck client would
+	fmt.Fprintf(c, "0\x00guest\x00guest\x00exec /bin/sh\x00")
+
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	ack := make([]byte, 1)
+	if _, err := io.ReadFull(c, ack); err != nil {
+		t.Fatalf("reading acceptance byte: %v", err)
+	}
+	if ack[0] != 0 {
+		t.Fatalf("ack = %d, want 0", ack[0])
+	}
+
+	select {
+	case err := <-handlerDone:
+		if err == nil {
+			t.Fatal("Stdin.Read returned nil error; want an idle timeout once the client went silent")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("idle session was never dropped (handler still blocked reading Stdin)")
+	}
+
+	// the server closes the connection once its Handler returns; a
+	// client read now must reach a clean EOF, not hang until this
+	// test's own deadline
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := io.ReadAll(c); err != nil {
+		t.Fatalf("connection not closed by the server after the idle timeout: %v", err)
+	}
+}
+
+// TestIdleTimeoutUnsetPreservesUnboundedWait confirms the zero value
+// changes nothing: a handler that blocks on Stdin for longer than what
+// would be a short idle timeout keeps running when IdleTimeout is unset.
+func TestIdleTimeoutUnsetPreservesUnboundedWait(t *testing.T) {
+	handlerDone := make(chan error, 1)
+	addr := startServer(t, &rcmd.Server{
+		AllowHighPorts: true,
+		Handler: func(req *rcmd.Request) error {
+			buf := make([]byte, 1)
+			_, err := req.Stdin.Read(buf)
+			handlerDone <- err
+			return nil
+		},
+	})
+
+	c, err := net.Dial("tcp", addr.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	fmt.Fprintf(c, "0\x00guest\x00guest\x00exec /bin/sh\x00")
+
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	ack := make([]byte, 1)
+	if _, err := io.ReadFull(c, ack); err != nil {
+		t.Fatalf("reading acceptance byte: %v", err)
+	}
+
+	// stay silent well past what TestIdleTimeoutClosesSilentSession uses
+	// as its timeout; without IdleTimeout set, the handler must still be
+	// waiting
+	select {
+	case err := <-handlerDone:
+		t.Fatalf("handler returned early (err=%v) with no IdleTimeout set", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	fmt.Fprintf(c, "x")
+	if err := <-handlerDone; err != nil {
+		t.Fatalf("Stdin.Read error = %v, want nil once data arrived", err)
+	}
+}
+
 func TestMalformedRequestClosed(t *testing.T) {
 	addr := startServer(t, &rcmd.Server{Handler: echoHandler, AllowHighPorts: true})
 	c, err := net.Dial("tcp", addr.String())
