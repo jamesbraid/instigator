@@ -14,6 +14,7 @@ import (
 	"github.com/jamesbraid/instigator/internal/bootp"
 	"github.com/jamesbraid/instigator/internal/config"
 	"github.com/jamesbraid/instigator/internal/instcmd"
+	"github.com/jamesbraid/instigator/internal/instscript"
 	"github.com/jamesbraid/instigator/internal/tftp"
 	"github.com/jamesbraid/instigator/internal/vfs"
 	"github.com/jamesbraid/instigator/nfs"
@@ -112,6 +113,21 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 		}
 		if logf != nil {
 			logf("union: /%s/dist  <-  %d discs merged", cb.Name, len(cb.Layers))
+		}
+	}
+
+	// Serve a generated install runbook at /install, filled in with this
+	// server's address and the first union's dist path when there is one.
+	if len(cfg.Combined) > 0 {
+		script := instscript.Generate(instscript.Params{
+			ServerIP: cfg.ServerIP.String(),
+			DistPath: "/" + cfg.Combined[0].Name + "/dist",
+			Release:  cfg.Combined[0].Name,
+			Stream:   "feature",
+		})
+		tree.AddSynthetic("install", []byte(script))
+		if logf != nil {
+			logf("runbook: /install  (from %s:/%s/dist)", cfg.ServerIP, cfg.Combined[0].Name)
 		}
 	}
 	s := &Servers{tree: tree}
