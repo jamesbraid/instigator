@@ -69,7 +69,11 @@ func (fs *FS) Inode(ino uint32) (*Inode, error) {
 		return nil, fmt.Errorf("efs: zero inodes per cylinder group")
 	}
 	cg := ino / inopcg
-	if int16(cg) >= fs.ncg {
+	// Full-width compare: int16(cg) would truncate, so cg in
+	// [32768,65535] wrapped negative and slipped past the guard, letting a
+	// forged inode number read arbitrary blocks. ncg is validated > 0 at
+	// Open, so the uint32 conversion is safe.
+	if cg >= uint32(fs.ncg) {
 		return nil, fmt.Errorf("efs: inode %d beyond %d cylinder groups", ino, fs.ncg)
 	}
 	bb := int64(fs.firstCG) + int64(cg)*int64(fs.cgFSize) + int64((ino%inopcg)/inodesPerBB)
@@ -90,6 +94,11 @@ func (fs *FS) Inode(ino uint32) (*Inode, error) {
 		Mtime: binary.BigEndian.Uint32(d[16:]),
 		Ctime: binary.BigEndian.Uint32(d[20:]),
 		Gen:   int32(binary.BigEndian.Uint32(d[24:])),
+	}
+	// A negative on-disk size is corrupt (a valid EFS file is under 2GB).
+	// Reject it here so no downstream make([]byte, Size) can panic.
+	if n.Size < 0 {
+		return nil, fmt.Errorf("efs: inode %d: negative size %d", ino, n.Size)
 	}
 	numext := int(int16(binary.BigEndian.Uint16(d[28:])))
 	if numext < 0 || numext > 0xffff {
@@ -199,6 +208,9 @@ func (fs *FS) ReadDir(ino *Inode) ([]DirEntry, error) {
 	if !ino.IsDir() {
 		return nil, fmt.Errorf("efs: inode %d is not a directory", ino.Num)
 	}
+	if ino.Size < 0 {
+		return nil, fmt.Errorf("efs: inode %d: negative size %d", ino.Num, ino.Size)
+	}
 	data := make([]byte, ino.Size)
 	if _, err := fs.ReadAt(ino, data, 0); err != nil && err != io.EOF {
 		return nil, err
@@ -236,6 +248,9 @@ func (fs *FS) ReadDir(ino *Inode) ([]DirEntry, error) {
 func (fs *FS) Readlink(ino *Inode) (string, error) {
 	if !ino.IsSymlink() {
 		return "", fmt.Errorf("efs: inode %d is not a symlink", ino.Num)
+	}
+	if ino.Size < 0 {
+		return "", fmt.Errorf("efs: inode %d: negative size %d", ino.Num, ino.Size)
 	}
 	p := make([]byte, ino.Size)
 	if _, err := fs.ReadAt(ino, p, 0); err != nil && err != io.EOF {

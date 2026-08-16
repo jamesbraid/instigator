@@ -50,9 +50,9 @@ func Open(r io.ReaderAt, baseBlock int64) (*FS, error) {
 	fs.cgFSize = int32(binary.BigEndian.Uint32(sb[8:]))
 	fs.cgISize = int16(binary.BigEndian.Uint16(sb[12:]))
 	fs.ncg = int16(binary.BigEndian.Uint16(sb[18:]))
-	if fs.firstCG <= 0 || fs.cgFSize <= 0 || fs.cgISize <= 0 {
-		return nil, fmt.Errorf("efs: implausible geometry firstcg=%d cgfsize=%d cgisize=%d",
-			fs.firstCG, fs.cgFSize, fs.cgISize)
+	if fs.firstCG <= 0 || fs.cgFSize <= 0 || fs.cgISize <= 0 || fs.ncg <= 0 {
+		return nil, fmt.Errorf("efs: implausible geometry firstcg=%d cgfsize=%d cgisize=%d ncg=%d",
+			fs.firstCG, fs.cgFSize, fs.cgISize, fs.ncg)
 	}
 	return fs, nil
 }
