@@ -82,7 +82,10 @@ func runServe(configPath string, verbose bool) error {
 		level = logging.LevelDebug
 	}
 	logger := logging.New(os.Stdout, level)
-	s, err := serve.Start(cfg, logger)
+	// The operator's PROM/Inst> commands are console UX, not server log
+	// content, so they go to stdout directly rather than through the
+	// leveled logger - see serve.WithInstructions.
+	s, err := serve.Start(cfg, logger, serve.WithInstructions(os.Stdout))
 	if err != nil {
 		return err
 	}

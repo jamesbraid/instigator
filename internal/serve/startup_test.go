@@ -50,19 +50,33 @@ func combinedSet(t *testing.T) (foundation, primary string) {
 	return foundation, primary
 }
 
-// captureStart runs Start over the given config and returns every line it
-// logged, with the servers closed again.
-func captureStart(t *testing.T, cfg *config.Config) []string {
+// startupCapture separates Start's two output audiences: log is the
+// leveled server log (media map, client config - what this server is
+// doing), instructions is the operator's PROM/Inst> commands (what a
+// human does next). They used to be the same stream; James's directive
+// was that they never should have been - see logStartup's own comment.
+type startupCapture struct {
+	log          []string
+	instructions []string
+}
+
+// captureStart runs Start over the given config and returns both output
+// streams as lines, with the servers closed again.
+func captureStart(t *testing.T, cfg *config.Config) startupCapture {
 	t.Helper()
-	var logbuf syncBuffer
+	var logbuf, instrbuf syncBuffer
 	logger := logging.New(&logbuf, logging.LevelDebug)
-	s, err := Start(cfg, logger, WithRSHHighPorts())
+	s, err := Start(cfg, logger, WithRSHHighPorts(), WithInstructions(&instrbuf))
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
 	t.Logf("server log:\n%s", logbuf.String())
-	return splitNonEmpty(logbuf.String())
+	t.Logf("operator instructions:\n%s", instrbuf.String())
+	return startupCapture{
+		log:          splitNonEmpty(logbuf.String()),
+		instructions: splitNonEmpty(instrbuf.String()),
+	}
 }
 
 func splitNonEmpty(s string) []string {
@@ -75,12 +89,9 @@ func splitNonEmpty(s string) []string {
 	return out
 }
 
-// hasLine reports whether any line ends with want: each line now carries
-// a leading "<ISO8601> <LEVEL> " prefix from the leveled logger, so an
-// exact match against the bare message never succeeds.
 func hasLine(lines []string, want string) bool {
 	for _, l := range lines {
-		if strings.HasSuffix(l, want) {
+		if l == want {
 			return true
 		}
 	}
@@ -116,14 +127,22 @@ combined:
 // the PROM line that boots the same disc's miniroot - not leave them to
 // assemble it from the "combined:" line and a media disc's boot hint.
 func TestStartupLogsCombinedRecipe(t *testing.T) {
-	lines := captureStart(t, combinedConfig(t))
+	c := captureStart(t, combinedConfig(t))
 
 	for _, want := range []string{
 		"  PROM: boot -f bootp():/irix6.5.30/tools/stand/fx.64",
 		"  Inst>: from 192.0.2.10:/irix6.5.30/tools/dist",
 	} {
-		if !hasLine(lines, want) {
-			t.Errorf("startup log missing %q, got:\n%s", want, strings.Join(lines, "\n"))
+		if !hasLine(c.instructions, want) {
+			t.Errorf("operator instructions missing %q, got:\n%s", want, strings.Join(c.instructions, "\n"))
+		}
+	}
+
+	// these are operator console UX, not server log content: they must
+	// never show up in the leveled log itself.
+	for _, l := range c.log {
+		if strings.Contains(l, "PROM:") || strings.Contains(l, "Inst>:") {
+			t.Errorf("operator instruction line leaked into the server log: %q", l)
 		}
 	}
 }
@@ -157,22 +176,23 @@ combined:
 	}
 	cfg.Ports = config.Ports{}
 
-	lines := captureStart(t, cfg)
-	if hasLine(lines, "  PROM: boot -f bootp():/irix6.5.30/tools/stand/fx.64") {
-		t.Errorf("PROM line logged for a primary disc with no stand/fx.64, got:\n%s", strings.Join(lines, "\n"))
+	c := captureStart(t, cfg)
+	if hasLine(c.instructions, "  PROM: boot -f bootp():/irix6.5.30/tools/stand/fx.64") {
+		t.Errorf("PROM line logged for a primary disc with no stand/fx.64, got:\n%s", strings.Join(c.instructions, "\n"))
 	}
-	if !hasLine(lines, "  Inst>: from 192.0.2.10:/irix6.5.30/tools/dist") {
-		t.Errorf("Inst> line dropped along with the PROM line, got:\n%s", strings.Join(lines, "\n"))
+	if !hasLine(c.instructions, "  Inst>: from 192.0.2.10:/irix6.5.30/tools/dist") {
+		t.Errorf("Inst> line dropped along with the PROM line, got:\n%s", strings.Join(c.instructions, "\n"))
 	}
 }
 
-// Without a combined set there is nothing to point inst at, so the log
-// must not grow a bare "Inst>:" line with an empty path.
+// Without a combined set there is nothing to point inst at, so the
+// operator instructions must not grow a bare "Inst>:" line with an
+// empty path.
 func TestStartupLogsNoInstLineWithoutCombined(t *testing.T) {
-	lines := captureStart(t, testConfig(t))
-	for _, l := range lines {
+	c := captureStart(t, testConfig(t))
+	for _, l := range c.instructions {
 		if strings.Contains(l, "Inst>:") {
-			t.Errorf("media-only config logged an Inst> line: %q", l)
+			t.Errorf("media-only config produced an Inst> line: %q", l)
 		}
 	}
 }
