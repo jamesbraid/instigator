@@ -1,3 +1,6 @@
 /instigator
 *.iso
 *.img
+
+# local runtime config (real MAC) - never commit
+/instigator.yaml
