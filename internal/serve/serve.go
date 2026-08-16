@@ -127,16 +127,14 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 	if err != nil {
 		return nil, err
 	}
-	var firstPrimaryDist string
-	for i, cb := range cfg.Combined {
+	var primaryDists []string
+	for _, cb := range cfg.Combined {
 		primaryDist, err := tree.AddCombined(cb.Name, cb.Layers, cb.DiscNames)
 		if err != nil {
 			tree.Close()
 			return nil, err
 		}
-		if i == 0 {
-			firstPrimaryDist = primaryDist
-		}
+		primaryDists = append(primaryDists, primaryDist)
 		if logf != nil {
 			logf("combined: /%s  <-  %d discs, open %s:%s", cb.Name, len(cb.Layers), cfg.ServerIP, primaryDist)
 		}
@@ -146,16 +144,16 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 	// server's address and the first combined set's primary dist path -
 	// the single distribution inst opens, from which its synthesized
 	// .related_dists auto-opens the rest.
-	if len(cfg.Combined) > 0 {
+	if len(primaryDists) > 0 {
 		script := instscript.Generate(instscript.Params{
 			ServerIP: cfg.ServerIP.String(),
-			DistPath: firstPrimaryDist,
+			DistPath: primaryDists[0],
 			Release:  cfg.Combined[0].Name,
 			Stream:   "feature",
 		})
 		tree.AddSynthetic("install", []byte(script))
 		if logf != nil {
-			logf("runbook: /install  (from %s:%s)", cfg.ServerIP, firstPrimaryDist)
+			logf("runbook: /install  (from %s:%s)", cfg.ServerIP, primaryDists[0])
 		}
 	}
 	s := &Servers{tree: tree}
@@ -166,7 +164,7 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 	}
 	allow := func(a netip.Addr) bool { return allowed[a] }
 
-	logStartup(cfg, tree, logf)
+	logStartup(cfg, tree, primaryDists, logf)
 
 	if cfg.Services.BOOTP {
 		var clients []bootp.Client
@@ -293,7 +291,20 @@ func (s *Servers) startNFS(cfg *config.Config, allow func(netip.Addr) bool, logf
 	return nil
 }
 
-func logStartup(cfg *config.Config, tree *vfs.Tree, logf func(string, ...any)) {
+// combinedFxPath returns the tree path of the miniroot partitioner that
+// sits beside a combined set's primary dist. AddCombined returns
+// "/<name>/<primary>/dist"; stand/ is that disc's other top-level
+// directory, so the "dist" leaf comes off and "stand/fx.64" goes on.
+func combinedFxPath(primaryDist string) string {
+	base := strings.TrimSuffix(strings.Trim(primaryDist, "/"), "/dist")
+	return base + "/stand/fx.64"
+}
+
+// logStartup prints the serve map and, per client, the commands to type.
+// primaryDists is one primary dist path per combined set, in config
+// order: a combined set is opened with a single "from", so its whole
+// recipe fits on two lines and belongs next to the client it is for.
+func logStartup(cfg *config.Config, tree *vfs.Tree, primaryDists []string, logf func(string, ...any)) {
 	if logf == nil {
 		return
 	}
@@ -322,6 +333,13 @@ func logStartup(cfg *config.Config, tree *vfs.Tree, logf func(string, ...any)) {
 					logf("  PROM: boot -f bootp():/%s/%s/stand/fx.64", m, s)
 				}
 			}
+		}
+		for _, p := range primaryDists {
+			fx := combinedFxPath(p)
+			if _, err := tree.Open(fx); err == nil {
+				logf("  PROM: boot -f bootp():/%s", fx)
+			}
+			logf("  Inst>: from %s:%s", cfg.ServerIP, p)
 		}
 	}
 }
