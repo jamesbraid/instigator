@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jamesbraid/instigator/internal/logging"
 )
 
 // ErrNotFound is returned by a FileSystem when the path does not exist.
@@ -84,17 +86,12 @@ type Server struct {
 	FinalRetries int
 	FinalTimeout time.Duration
 
-	// Logf, when set, receives one line per request and transfer event.
-	Logf func(format string, args ...any)
-
-	// Verbose logs every datagram arrival, including ones ignored.
-	Verbose bool
-}
-
-func (s *Server) logf(format string, args ...any) {
-	if s.Logf != nil {
-		s.Logf(format, args...)
-	}
+	// Logger, when set, receives leveled log output: DEBUG for every
+	// datagram and per-block DATA/ACK detail, INFO for each transfer
+	// started or finished, WARN for a request refused or a transfer a
+	// client stopped acking, ERROR for this side failing to read or
+	// send. A nil Logger is silent.
+	Logger *logging.Logger
 }
 
 // Serve answers requests arriving on pc (conventionally bound to :69)
@@ -116,12 +113,12 @@ func (s *Server) Serve(pc net.PacketConn) error {
 }
 
 func (s *Server) handle(pc net.PacketConn, addr net.Addr, pkt []byte) {
-	if s.Verbose {
+	if s.Logger.Enabled(logging.LevelDebug) {
 		op := uint16(0)
 		if len(pkt) >= 2 {
 			op = binary.BigEndian.Uint16(pkt[0:2])
 		}
-		s.logf("tftp: recv %d bytes from %s (opcode %d)", len(pkt), addr, op)
+		s.Logger.Debugf("tftp: recv %d bytes from %s (opcode %d)", len(pkt), addr, op)
 	}
 	if len(pkt) < 2 {
 		return
@@ -133,7 +130,7 @@ func (s *Server) handle(pc net.PacketConn, addr net.Addr, pkt []byte) {
 	if s.AllowIP != nil {
 		ip, _ := netip.AddrFromSlice(udp.IP)
 		if !s.AllowIP(ip.Unmap()) {
-			s.logf("tftp: %s: denied by client filter", addr)
+			s.Logger.Warnf("tftp: %s: denied by client filter", addr)
 			s.sendError(pc, addr, errAccessViolation, "access denied")
 			return
 		}
@@ -152,7 +149,7 @@ func (s *Server) handle(pc net.PacketConn, addr net.Addr, pkt []byte) {
 		if !ok {
 			opts = nil
 		}
-		if s.Verbose {
+		if s.Logger.Enabled(logging.LevelDebug) {
 			extra := ""
 			if len(trailing) > 0 {
 				extra = fmt.Sprintf(" trailing=% x", trailing)
@@ -160,11 +157,11 @@ func (s *Server) handle(pc net.PacketConn, addr net.Addr, pkt []byte) {
 			if len(opts) > 0 {
 				extra += fmt.Sprintf(" opts=%v", opts)
 			}
-			s.logf("tftp: %s: RRQ file=%q mode=%q%s", addr, file, mode, extra)
+			s.Logger.Debugf("tftp: %s: RRQ file=%q mode=%q%s", addr, file, mode, extra)
 		}
 		s.serveFile(udp, file, mode, opts)
 	case opWRQ:
-		s.logf("tftp: %s: write refused", addr)
+		s.Logger.Warnf("tftp: %s: write refused", addr)
 		s.sendError(pc, addr, errAccessViolation, "server is read-only")
 	default:
 		// stray DATA/ACK on the request port: ignore
@@ -319,11 +316,11 @@ func (s *Server) listenTransfer() (*net.UDPConn, error) {
 func (s *Server) sendAndWaitAck(pc *net.UDPConn, client *net.UDPAddr, clientAP netip.AddrPort, ackbuf, pkt []byte, wantBlock uint16, timeout time.Duration, retries int) (acked, aborted bool) {
 	for attempt := 0; attempt <= retries; attempt++ {
 		if _, err := pc.WriteToUDPAddrPort(pkt, clientAP); err != nil {
-			s.logf("tftp: %s: send: %v", client, err)
+			s.Logger.Errorf("tftp: %s: send: %v", client, err)
 			return false, true
 		}
-		if s.Verbose && attempt > 0 {
-			s.logf("tftp: %s: resend block %d (attempt %d)", client, wantBlock, attempt)
+		if attempt > 0 && s.Logger.Enabled(logging.LevelDebug) {
+			s.Logger.Debugf("tftp: %s: resend block %d (attempt %d)", client, wantBlock, attempt)
 		}
 		pc.SetReadDeadline(time.Now().Add(timeout))
 		for {
@@ -332,8 +329,8 @@ func (s *Server) sendAndWaitAck(pc *net.UDPConn, client *net.UDPAddr, clientAP n
 				break // timeout: resend
 			}
 			if from.Addr().Unmap() != clientAP.Addr() || from.Port() != clientAP.Port() {
-				if s.Verbose {
-					s.logf("tftp: %s: stray packet from %s, ignoring", client, from)
+				if s.Logger.Enabled(logging.LevelDebug) {
+					s.Logger.Debugf("tftp: %s: stray packet from %s, ignoring", client, from)
 				}
 				continue // stray packet from elsewhere
 			}
@@ -344,20 +341,20 @@ func (s *Server) sendAndWaitAck(pc *net.UDPConn, client *net.UDPAddr, clientAP n
 			case opACK:
 				got := binary.BigEndian.Uint16(ackbuf[2:4])
 				if got == wantBlock {
-					if s.Verbose {
-						s.logf("tftp: %s: ACK block %d", client, got)
+					if s.Logger.Enabled(logging.LevelDebug) {
+						s.Logger.Debugf("tftp: %s: ACK block %d", client, got)
 					}
 					return true, false
 				}
-				if s.Verbose {
-					s.logf("tftp: %s: ACK block %d (waiting for %d)", client, got, wantBlock)
+				if s.Logger.Enabled(logging.LevelDebug) {
+					s.Logger.Debugf("tftp: %s: ACK block %d (waiting for %d)", client, got, wantBlock)
 				}
 			case opERROR:
-				s.logf("tftp: %s: client ERROR code %d: %q", client, binary.BigEndian.Uint16(ackbuf[2:4]), ackbuf[4:n])
+				s.Logger.Warnf("tftp: %s: client ERROR code %d: %q", client, binary.BigEndian.Uint16(ackbuf[2:4]), ackbuf[4:n])
 				return false, true
 			default:
-				if s.Verbose {
-					s.logf("tftp: %s: unexpected opcode %d during transfer", client, binary.BigEndian.Uint16(ackbuf[0:2]))
+				if s.Logger.Enabled(logging.LevelDebug) {
+					s.Logger.Debugf("tftp: %s: unexpected opcode %d during transfer", client, binary.BigEndian.Uint16(ackbuf[0:2]))
 				}
 			}
 		}
@@ -370,7 +367,7 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 	path := strings.TrimPrefix(name, "/")
 	f, err := s.FS.Open(path)
 	if err != nil {
-		s.logf("tftp: %s: %q: %v", client, name, err)
+		s.Logger.Warnf("tftp: %s: %q: %v", client, name, err)
 		pc, lerr := s.listenTransfer()
 		if lerr != nil {
 			return
@@ -384,11 +381,11 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 		return
 	}
 	if mode != "octet" && mode != "netascii" {
-		s.logf("tftp: %s: %q: unknown mode %q", client, name, mode)
+		s.Logger.Warnf("tftp: %s: %q: unknown mode %q", client, name, mode)
 	}
 	pc, err := s.listenTransfer()
 	if err != nil {
-		s.logf("tftp: %s: %v", client, err)
+		s.Logger.Errorf("tftp: %s: %v", client, err)
 		return
 	}
 	defer pc.Close()
@@ -418,7 +415,7 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 		finalTimeout = retry
 	}
 
-	s.logf("tftp: %s: sending %q (%d bytes) from port %d",
+	s.Logger.Infof("tftp: %s: sending %q (%d bytes) from port %d",
 		client, name, size, pc.LocalAddr().(*net.UDPAddr).Port)
 
 	// Pre-converted once per transfer; Unmap keeps a v4-mapped v6 address
@@ -430,15 +427,15 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 	ack := make([]byte, 1500)
 
 	if oack != nil {
-		if s.Verbose {
-			s.logf("tftp: %s: OACK %v", client, opts)
+		if s.Logger.Enabled(logging.LevelDebug) {
+			s.Logger.Debugf("tftp: %s: OACK %v", client, opts)
 		}
 		acked, aborted := s.sendAndWaitAck(pc, client, clientAP, ack, oack, 0, retry, retries)
 		if aborted {
 			return
 		}
 		if !acked {
-			s.logf("tftp: %s: %q: no ACK for OACK, giving up", client, name)
+			s.Logger.Warnf("tftp: %s: %q: no ACK for OACK, giving up", client, name)
 			return
 		}
 	}
@@ -457,14 +454,14 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 		binary.BigEndian.PutUint16(data[2:], block)
 		if want > 0 {
 			if _, err := f.ReadAt(data[4:4+want], off); err != nil && err != io.EOF {
-				s.logf("tftp: %s: read %q at %d: %v", client, name, off, err)
+				s.Logger.Errorf("tftp: %s: read %q at %d: %v", client, name, off, err)
 				s.sendError(pc, client, errNotDefined, "read error")
 				return
 			}
 		}
 		pkt := data[:4+want]
-		if s.Verbose {
-			s.logf("tftp: %s: DATA block %d (%d bytes, off %d)", client, block, want, off)
+		if s.Logger.Enabled(logging.LevelDebug) {
+			s.Logger.Debugf("tftp: %s: DATA block %d (%d bytes, off %d)", client, block, want, off)
 		}
 
 		// The last DATA block of a transfer routinely goes unacknowledged:
@@ -482,11 +479,11 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 			return
 		}
 		if !acked {
-			s.logf("tftp: %s: %q: no ACK for block %d, giving up", client, name, block)
+			s.Logger.Warnf("tftp: %s: %q: no ACK for block %d, giving up", client, name, block)
 			return
 		}
 		if isFinal {
-			s.logf("tftp: %s: %q done", client, name)
+			s.Logger.Infof("tftp: %s: %q done", client, name)
 			return
 		}
 		block++

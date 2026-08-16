@@ -49,7 +49,7 @@ services: {bootp: false, tftp: {port_range: [0,0]}, rsh: true, nfs: true}
 // against the oracle checksum, proving the NFS stack on real EFS layouts.
 func TestNFSRealMediaRead(t *testing.T) {
 	cfg := realMediaConfig(t)
-	s, err := Start(cfg, t.Logf, WithRSHHighPorts())
+	s, err := Start(cfg, testLogger(t), WithRSHHighPorts())
 	if err != nil {
 		t.Fatal(err)
 	}

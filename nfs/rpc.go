@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+
+	"github.com/jamesbraid/instigator/internal/logging"
 )
 
 // ONC-RPC constants (RFC 5531).
@@ -75,7 +77,7 @@ func (s *Server) dispatch(addr net.Addr, pkt []byte, prog, vers uint32, dispatch
 		if udp, ok := addr.(*net.UDPAddr); ok {
 			ip, _ := netip.AddrFromSlice(udp.IP)
 			if !s.AllowIP(ip.Unmap()) {
-				s.logf("nfs: %s: denied by client filter", addr)
+				s.Logger.Warnf("nfs: %s: denied by client filter", addr)
 				return nil
 			}
 		}
@@ -87,13 +89,13 @@ func (s *Server) dispatch(addr net.Addr, pkt []byte, prog, vers uint32, dispatch
 	_ = cvers
 	h, ok := dispatch[cproc]
 	if !ok {
-		if s.Verbose {
-			s.logf("nfs: %s: prog=%d proc=%d unavailable", addr, cprog, cproc)
+		if s.Logger.Enabled(logging.LevelDebug) {
+			s.Logger.Debugf("nfs: %s: prog=%d proc=%d unavailable", addr, cprog, cproc)
 		}
 		return replyAccepted(xid, procUnavail, nil)
 	}
-	if s.Verbose {
-		s.logf("nfs: %s: prog=%d vers=%d proc=%d", addr, cprog, cvers, cproc)
+	if s.Logger.Enabled(logging.LevelDebug) {
+		s.Logger.Debugf("nfs: %s: prog=%d vers=%d proc=%d", addr, cprog, cvers, cproc)
 	}
 	body := h(addr, r)
 	if r.err {

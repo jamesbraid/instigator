@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/netip"
 	"sync/atomic"
+
+	"github.com/jamesbraid/instigator/internal/logging"
 )
 
 // Errors an FS returns; each maps to an NFS status code.
@@ -57,21 +59,14 @@ type Server struct {
 	// AllowIP filters clients; nil allows everyone.
 	AllowIP func(netip.Addr) bool
 
-	// Logf, when set, receives one line per call.
-	Logf func(format string, args ...any)
-
-	// Verbose logs every RPC call: program, procedure, and caller.
-	Verbose bool
+	// Logger, when set, receives leveled log output: DEBUG for every
+	// RPC call (program, procedure, caller), INFO for a mount, WARN for
+	// a call refused by the client filter. A nil Logger is silent.
+	Logger *logging.Logger
 
 	// Ports portmap hands out. Atomic because SetPorts can race the
 	// serve goroutines when tests bind ephemeral ports after Serve.
 	mountPort, nfsPort atomic.Uint32
-}
-
-func (s *Server) logf(format string, args ...any) {
-	if s.Logf != nil {
-		s.Logf(format, args...)
-	}
 }
 
 // SetPorts records the mount and nfs UDP ports portmap hands out. In

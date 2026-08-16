@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jamesbraid/instigator/internal/logging"
 	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/interp"
 	"mvdan.cc/sh/v3/syntax"
@@ -85,12 +86,13 @@ func baseName(cmd string) string {
 // RunShell serves the shell inst opens over rsh with "exec /bin/sh": one
 // mvdan/sh Runner for the life of the connection, fed one line at a time
 // so state (variables, trap registrations, $?) persists across lines the
-// way a real shell's does. log, when set, records every line verbatim,
-// matching what the old table did for observability. A command that
-// fails writes its own diagnostic to stderr and the shell keeps going -
-// a real shell continues past a ';'-separated failure - matching inst's
-// expectation that the trailing marker wrapper always still runs.
-func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, log func(string)) error {
+// way a real shell's does. logger, when set, records every line at
+// DEBUG for observability, and a runner-level failure at WARN/ERROR.
+// A command that fails writes its own diagnostic to stderr and the
+// shell keeps going - a real shell continues past a ';'-separated
+// failure - matching inst's expectation that the trailing marker
+// wrapper always still runs.
+func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, logger *logging.Logger) error {
 	env := newShellEnv(fsys)
 	runner, err := interp.New(
 		interp.StdIO(nil, stdout, stderr),
@@ -124,12 +126,11 @@ func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, log fu
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		if log != nil {
-			log(line)
-		}
+		logger.Debugf("instcmd: rsh-sh: %q", line)
 		file, perr := parser.Parse(strings.NewReader(line), "")
 		if perr != nil {
 			fmt.Fprintf(stderr, "%v\n", perr)
+			logger.Warnf("instcmd: rsh-sh: %q: parse error: %v", line, perr)
 			continue
 		}
 		if err := runner.Run(ctx, file); err != nil {
@@ -140,6 +141,7 @@ func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, log fu
 				// leaf commands never produce (they only ever return
 				// ExitStatus), so it's worth surfacing on its own line.
 				fmt.Fprintf(stderr, "%v\n", err)
+				logger.Errorf("instcmd: rsh-sh: %q: %v", line, err)
 			}
 		}
 		if runner.Exited() {

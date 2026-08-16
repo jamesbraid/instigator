@@ -115,11 +115,11 @@ func (s *Server) mountMnt(caller net.Addr, r *xdrReader) []byte {
 	w := &xdrWriter{}
 	root, err := s.FS.MountRoot(path)
 	if err != nil {
-		s.logf("nfs: mount %q from %s: %v", path, caller, err)
+		s.Logger.Warnf("nfs: mount %q from %s: %v", path, caller, err)
 		w.uint32(statusFor(err))
 		return w.b
 	}
-	s.logf("nfs: mount %q from %s", path, caller)
+	s.Logger.Infof("nfs: mount %q from %s", path, caller)
 	w.uint32(nfsOK)
 	w.fixed(encodeFH(root.ID()))
 	return w.b

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jamesbraid/instigator/internal/logging"
 )
 
 type fakeFS struct {
@@ -186,10 +188,10 @@ func TestUnknownCommandRejected(t *testing.T) {
 }
 
 func TestRunShellStreamsCommands(t *testing.T) {
-	var out, errb strings.Builder
-	var logged []string
+	var out, errb, logbuf strings.Builder
 	stdin := strings.NewReader("echo hello\nls /6.5.30/disc1/dist\ndd if=/6.5.30/disc1/dist/sa bs=512 count=1\n\ntrap \"\" 2 3\n")
-	if err := RunShell(testFS(), stdin, &out, &errb, func(l string) { logged = append(logged, l) }); err != nil {
+	logger := logging.New(&logbuf, logging.LevelDebug)
+	if err := RunShell(testFS(), stdin, &out, &errb, logger); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(out.String(), "hello\n") {
@@ -198,8 +200,9 @@ func TestRunShellStreamsCommands(t *testing.T) {
 	if !strings.Contains(out.String(), "sa") {
 		t.Fatalf("ls output missing sa: %q", out.String())
 	}
-	if len(logged) != 4 { // echo, ls, dd, trap (blank line skipped)
-		t.Fatalf("logged %d commands, want 4: %v", len(logged), logged)
+	logged := strings.Count(logbuf.String(), "instcmd: rsh-sh: ")
+	if logged != 4 { // echo, ls, dd, trap (blank line skipped)
+		t.Fatalf("logged %d commands, want 4:\n%s", logged, logbuf.String())
 	}
 }
 

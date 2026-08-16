@@ -16,6 +16,7 @@ import (
 	"github.com/jamesbraid/instigator/internal/config"
 	"github.com/jamesbraid/instigator/internal/instcmd"
 	"github.com/jamesbraid/instigator/internal/instscript"
+	"github.com/jamesbraid/instigator/internal/logging"
 	"github.com/jamesbraid/instigator/internal/tftp"
 	"github.com/jamesbraid/instigator/internal/vfs"
 	"github.com/jamesbraid/instigator/nfs"
@@ -92,18 +93,12 @@ type Option func(*options)
 type options struct {
 	bootpReplyAddr net.Addr
 	rshHighPorts   bool
-	verbose        bool
 }
 
 // WithBootpReplyAddr redirects bootp replies away from the broadcast
 // address, for tests that cannot receive broadcasts.
 func WithBootpReplyAddr(a net.Addr) Option {
 	return func(o *options) { o.bootpReplyAddr = a }
-}
-
-// WithVerbose logs every datagram received and sent, decoded.
-func WithVerbose() Option {
-	return func(o *options) { o.verbose = true }
 }
 
 // WithRSHHighPorts disables the rsh reserved-source-port check, for
@@ -113,8 +108,12 @@ func WithRSHHighPorts() Option {
 }
 
 // Start opens the media, binds the enabled services on the configured
-// ports, and serves until Close.
-func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Option) (*Servers, error) {
+// ports, and serves until Close. logger receives leveled server output;
+// nil is silent, exactly like an unset Logf used to be. -v maps to a
+// DEBUG-level logger at the call site (cmd/instigator), not an option
+// here: verbosity is a property of the logger a caller builds, not a
+// separate flag threaded through every service.
+func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers, error) {
 	var o options
 	for _, opt := range opts {
 		opt(&o)
@@ -135,9 +134,7 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 			return nil, err
 		}
 		primaryDists = append(primaryDists, primaryDist)
-		if logf != nil {
-			logf("combined: /%s  <-  %d discs, open %s:%s", cb.Name, len(cb.Layers), cfg.ServerIP, primaryDist)
-		}
+		logger.Infof("combined: /%s  <-  %d discs, open %s:%s", cb.Name, len(cb.Layers), cfg.ServerIP, primaryDist)
 	}
 
 	// Serve a generated install runbook at /install, filled in with this
@@ -152,9 +149,7 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 			Stream:   "feature",
 		})
 		tree.AddSynthetic("install", []byte(script))
-		if logf != nil {
-			logf("runbook: /install  (from %s:%s)", cfg.ServerIP, primaryDists[0])
-		}
+		logger.Infof("runbook: /install  (from %s:%s)", cfg.ServerIP, primaryDists[0])
 	}
 	s := &Servers{tree: tree}
 
@@ -164,7 +159,7 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 	}
 	allow := func(a netip.Addr) bool { return allowed[a] }
 
-	logStartup(cfg, tree, primaryDists, logf)
+	logStartup(cfg, tree, primaryDists, logger)
 
 	if cfg.Services.BOOTP {
 		var clients []bootp.Client
@@ -176,8 +171,7 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 			Netmask:   cfg.Netmask,
 			Clients:   clients,
 			ReplyAddr: o.bootpReplyAddr,
-			Logf:      logf,
-			Verbose:   o.verbose,
+			Logger:    logger,
 		}
 		pc, err := bootp.ListenBroadcast(fmt.Sprintf(":%d", cfg.Ports.BOOTP))
 		if err != nil {
@@ -194,8 +188,7 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 			AllowIP: allow,
 			PortMin: cfg.Services.TFTP.PortRange[0],
 			PortMax: cfg.Services.TFTP.PortRange[1],
-			Logf:    logf,
-			Verbose: o.verbose,
+			Logger:  logger,
 		}
 		pc, err := net.ListenPacket("udp4", fmt.Sprintf(":%d", cfg.Ports.TFTP))
 		if err != nil {
@@ -210,18 +203,13 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 		srv := &rcmd.Server{
 			AllowIP:        allow,
 			AllowHighPorts: o.rshHighPorts,
-			Logf:           logf,
-			Verbose:        o.verbose,
+			Logger:         logger,
 			Handler: func(req *rcmd.Request) error {
 				// inst drives the install by opening a shell over rsh
 				// (exec /bin/sh) and streaming commands to it, rather than
 				// issuing each as its own rsh command.
 				if isShell(req.Command) {
-					var log func(string)
-					if logf != nil {
-						log = func(line string) { logf("rsh-sh: %q", line) }
-					}
-					return instcmd.RunShell(cmdFS{tree}, req.Stdin, req.Stdout, req.Stderr, log)
+					return instcmd.RunShell(cmdFS{tree}, req.Stdin, req.Stdout, req.Stderr, logger)
 				}
 				return instcmd.Run(cmdFS{tree}, req.Command, req.Stdout, req.Stderr)
 			},
@@ -236,7 +224,7 @@ func Start(cfg *config.Config, logf func(format string, args ...any), opts ...Op
 	}
 
 	if cfg.Services.NFS {
-		if err := s.startNFS(cfg, allow, logf, o.verbose); err != nil {
+		if err := s.startNFS(cfg, allow, logger); err != nil {
 			s.Close()
 			return nil, err
 		}
@@ -262,8 +250,8 @@ func isShell(command string) bool {
 
 // startNFS binds portmap, mountd, and nfsd and registers the assigned
 // ports with portmap.
-func (s *Servers) startNFS(cfg *config.Config, allow func(netip.Addr) bool, logf func(string, ...any), verbose bool) error {
-	srv := &nfs.Server{FS: s.tree.NFSExport(), AllowIP: allow, Logf: logf, Verbose: verbose}
+func (s *Servers) startNFS(cfg *config.Config, allow func(netip.Addr) bool, logger *logging.Logger) error {
+	srv := &nfs.Server{FS: s.tree.NFSExport(), AllowIP: allow, Logger: logger}
 
 	pmap, err := net.ListenPacket("udp4", fmt.Sprintf(":%d", cfg.Ports.Portmap))
 	if err != nil {
@@ -300,14 +288,12 @@ func combinedFxPath(primaryDist string) string {
 	return base + "/stand/fx.64"
 }
 
-// logStartup prints the serve map and, per client, the commands to type.
-// primaryDists is one primary dist path per combined set, in config
-// order: a combined set is opened with a single "from", so its whole
-// recipe fits on two lines and belongs next to the client it is for.
-func logStartup(cfg *config.Config, tree *vfs.Tree, primaryDists []string, logf func(string, ...any)) {
-	if logf == nil {
-		return
-	}
+// logStartup logs the serve map - media and combined sets available -
+// and, per client, the commands to type. primaryDists is one primary
+// dist path per combined set, in config order: a combined set is
+// opened with a single "from", so its whole recipe fits on two lines
+// and belongs next to the client it is for.
+func logStartup(cfg *config.Config, tree *vfs.Tree, primaryDists []string, logger *logging.Logger) {
 	dm := tree.DiscMap()
 	medias := make([]string, 0, len(dm))
 	for m := range dm {
@@ -321,25 +307,25 @@ func logStartup(cfg *config.Config, tree *vfs.Tree, primaryDists []string, logf 
 		}
 		sort.Strings(slugs)
 		for _, s := range slugs {
-			logf("media: /%s/%s  <-  %q", m, s, dm[m][s])
+			logger.Infof("media: /%s/%s  <-  %q", m, s, dm[m][s])
 		}
 	}
 	for _, c := range cfg.Clients {
-		logf("client %s: mac=%s ip=%s", c.Name, c.MAC, c.IP)
-		logf("  PROM: setenv netaddr %s", c.IP)
+		logger.Infof("client %s: mac=%s ip=%s", c.Name, c.MAC, c.IP)
+		logger.Infof("  PROM: setenv netaddr %s", c.IP)
 		for _, m := range medias {
 			for s := range dm[m] {
 				if _, err := tree.Open(fmt.Sprintf("%s/%s/stand/fx.64", m, s)); err == nil {
-					logf("  PROM: boot -f bootp():/%s/%s/stand/fx.64", m, s)
+					logger.Infof("  PROM: boot -f bootp():/%s/%s/stand/fx.64", m, s)
 				}
 			}
 		}
 		for _, p := range primaryDists {
 			fx := combinedFxPath(p)
 			if _, err := tree.Open(fx); err == nil {
-				logf("  PROM: boot -f bootp():/%s", fx)
+				logger.Infof("  PROM: boot -f bootp():/%s", fx)
 			}
-			logf("  Inst>: from %s:%s", cfg.ServerIP, p)
+			logger.Infof("  Inst>: from %s:%s", cfg.ServerIP, p)
 		}
 	}
 }
