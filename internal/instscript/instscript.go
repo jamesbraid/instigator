@@ -19,48 +19,57 @@
 // "techpubs.spinlocksolutions.com" links redirect to — both of those
 // hostnames' TLS certs have expired/mismatched, but the content lives
 // at hcoop.net); and forums.irixnet.org/thread-92.html ("Complete
-// conflict free IRIX 6.5.30 install"). The primary source named in the
-// task, https://wiki.preterhuman.net/IRIX_Network_Installation_to_a_SGI_Fuel,
-// sits behind Cloudflare's bot challenge and returned HTTP 403 to every
-// fetch attempt (direct, cache-buster query string, and two read-it-later
-// proxies); what's used below instead is its search-result summaries
-// (confirmed by Google's indexed text: it "demonstrate[s] the feature of
-// driving inst using a pre-written command file instead of manually
-// performing all needed software selection steps") plus one verbatim
-// quote surfaced by search: "Note that we didn't place a 'go' command at
-// the end of the command file... If none are remaining, just type 'go'
-// to start the actual installation." That quote corroborates the
-// Commands/-F finding below independently of the sources that were
-// actually fetchable.
+// conflict free IRIX 6.5.30 install").
+//
+// The primary source named for this work,
+// https://wiki.preterhuman.net/IRIX_Network_Installation_to_a_SGI_Fuel,
+// 403s from an automated fetcher (Cloudflare bot challenge) but loads
+// fine with a plain curl carrying a normal browser User-Agent — the
+// challenge is triggered by the fetcher's fingerprint, not a real
+// block. Retrieved directly; it is IRIX 6.5.28 onto a Fuel, an Indy as
+// install server, and its own stated focus is "driving inst using a
+// pre-written command file instead of manually performing all needed
+// software selection steps."
 //
 // The Main Menu sequence for a complete install from a remote/unified
 // distribution:
 //
 //  1. from <server>:<distpath>       — point inst at the distribution
-//     (the official manual instead uses "open" for CD-by-CD reading of
-//     several separate distributions; instigator serves one already-
-//     unified dist tree, so a single "from" covers it and no further
-//     "open" commands are needed)
+//     (the official manual and the Fuel walkthrough both instead use
+//     "open" for CD-by-CD reading of several separate distributions;
+//     instigator serves one already-unified dist tree, so a single
+//     "from" covers it and no further "open" commands are needed)
 //  2. release-stream choice, first install only:
 //     "1. Place me on the maintenance stream." / "2. Place me on the
 //     feature stream." — feature is a strict superset of maintenance
 //     (bug fixes + new hardware support, plus new software features)
 //     and is the common recommendation because installing from the
 //     smaller maintenance stream first and switching later generates
-//     far more package conflicts than starting on feature.
+//     far more package conflicts than starting on feature. (Not shown
+//     in the Fuel walkthrough — that install was already stream-
+//     committed from a prior release — but is in both the official
+//     manual and the man page's "-u" discussion; sourced from the
+//     manual, "Choosing Release Streams".)
 //  3. keep * ; install standard ; install prereqs — the standard
-//     product set plus whatever it prerequires. "keep incompleteoverlays"
-//     is added after these (confirmed by forums.irixnet.org/thread-92
-//     and the hcoop.net worked example) to stop inst from trying to
-//     install placeholder stubs for overlay products that were never
-//     opened.
+//     product set plus whatever it prerequires; "keep *" first clears
+//     any marks left over from opening each distribution. The Fuel
+//     walkthrough's command file uses this exact "keep *" / "install
+//     standard" pair (plus per-product install/keep lines specific to
+//     its own product list). "keep incompleteoverlays" is added after
+//     (confirmed by forums.irixnet.org/thread-92 and the hcoop.net
+//     worked example) to stop inst from trying to install placeholder
+//     stubs for overlay products that were never opened.
 //  4. go — triggers the preinstallation/conflict check.
 //  5. conflicts <n><choice> <n><choice> ... — e.g. "conflicts 1a 2b"
 //     (abbreviation "c"). Both the official manual and the hcoop.net
 //     example use this exact form; the manual additionally documents
 //     entering "1" first, for "Address these conflicts now", and "q" to
 //     stop viewing an overlong conflict list before resolving what's
-//     visible and re-running "conflicts" for the rest.
+//     visible and re-running "conflicts" for the rest. The Fuel
+//     walkthrough doesn't show a specific conflict's syntax, but names
+//     the same two commands at the same point: "check for any
+//     remaining conflicts by typing 'conflicts' ... type 'go' to start
+//     the actual installation."
 //  6. go — re-run once all conflicts are resolved; this is the one that
 //     actually starts file installation.
 //  7. quit — once Inst reports the installation finished.
@@ -68,23 +77,31 @@
 //
 // # Can inst read commands from a file?
 //
-// Partially. inst(1)'s SYNOPSIS documents -F selections-file: "used to
-// pre-select subsystems for installation or removal; or as a script for
-// an automatic installation using inst(1M)." Its directive grammar is
-// from / install / don't install / remove / don't remove / set — not
-// the interactive vocabulary (no "keep", "conflicts", "go", or "quit").
-// Two things are missing from that grammar and confirmed missing by two
-// independent sources: there is no directive for the first-install
-// release-stream prompt, and none for conflict resolution — the
-// wiki excerpt quoted above shows an experienced operator using a
-// command file for product selection but still typing "conflicts" and
-// "go" by hand afterward, and the -a ("automatic mode", no menus)
-// / -u (install-action) flags documented alongside -F do not name a
-// resource that answers either prompt. So: yes for the product-selection
-// step, no for the release-stream choice or conflict resolution — this
-// is fundamentally a human (or a scripted-expect-style) runbook for
-// those two steps, which is why Generate below produces a full runbook
-// and Commands only covers the part that is genuinely unattended-safe.
+// Yes, confirmed directly by the Fuel walkthrough: at the Inst>
+// prompt, "admin source <host>:<path>" loads a remote text file and
+// replays each line as if typed at the prompt. The file uses the exact
+// same interactive vocabulary as the Main Menu above — "from", "open",
+// "keep", "install" — not a distinct file syntax. (inst(1)'s man page
+// separately documents a shell-level "-F selections-file" flag with
+// its own directive grammar — from / install / don't install / remove
+// / don't remove / set — for driving inst non-interactively from the
+// command line before it starts; that's a real, different mechanism,
+// but it's not the one the field-tested walkthrough uses, so Commands
+// below follows the walkthrough's "admin source" form instead.)
+//
+// Both mechanisms stop short of full automation the same way: the
+// walkthrough is explicit that its command file omits "go" on purpose
+// — "Note that we didn't place a 'go' command at the end of the
+// command file. This way you still have a chance to add additional
+// distributions before performing the installation. If you are done,
+// check for any remaining conflicts by typing 'conflicts'. If none are
+// remaining, just type 'go'" — and neither mechanism's vocabulary
+// includes a way to answer the first-install release-stream prompt.
+// So: yes for product selection, no for the release-stream choice,
+// conflict resolution, or triggering the install itself — those
+// remain a human (or scripted-console-driver) step, which is why
+// Generate produces a full runbook and Commands only covers the
+// admin-source-safe subset.
 package instscript
 
 import (
@@ -151,11 +168,11 @@ func Generate(p Params) string {
 	b.WriteString(strings.Repeat("=", 40))
 	b.WriteString("\n\n")
 
-	b.WriteString("This is an operator runbook, not an unattended installer: inst(1M)\n")
-	b.WriteString("has no documented way to answer the release-stream prompt or resolve\n")
-	b.WriteString("package conflicts from a file, so a human (or a scripted serial-console\n")
-	b.WriteString("driver) needs to be present for those two steps. See Commands() for the\n")
-	b.WriteString("subset of this that inst can take from a file unattended.\n\n")
+	b.WriteString("This is an operator runbook, not an unattended installer: inst(1M)'s\n")
+	b.WriteString("\"admin source\" file mechanism has no way to answer the release-stream\n")
+	b.WriteString("prompt or resolve package conflicts, so a human (or a scripted serial-\n")
+	b.WriteString("console driver) needs to be present for those two steps. See Commands()\n")
+	b.WriteString("for the product-selection subset inst can load from a file unattended.\n\n")
 
 	b.WriteString("1. PROM command monitor — boot the disk partitioner over the network:\n\n")
 	fmt.Fprintf(&b, "     %s\n\n", promBootLine(p.DistPath))
@@ -177,7 +194,9 @@ func Generate(p Params) string {
 		b.WriteString(".\n\n")
 	}
 
-	b.WriteString("4. Select the standard product set and its prerequisites:\n\n")
+	b.WriteString("4. Select the standard product set and its prerequisites. Either type\n")
+	b.WriteString("   these directly, or save them to a file on the server and load them\n")
+	b.WriteString("   in one shot with \"admin source <host>:<path>\" (see Commands()):\n\n")
 	b.WriteString("     keep *\n")
 	b.WriteString("     install standard\n")
 	b.WriteString("     install prereqs\n")
@@ -205,25 +224,27 @@ func Generate(p Params) string {
 }
 
 // Commands returns the subset of the inst runbook that inst(1M) can
-// genuinely take from a file unattended, one bare command per line,
-// suitable for an inst -F selections-file (see the package doc comment,
-// "Can inst read commands from a file?"). It covers only product
-// selection — the release-stream prompt and conflict resolution have no
-// -F directive and are not included; feeding this file still requires
-// an operator (or scripted driver) present to answer those and to enter
-// go/quit, which is exactly what Generate's runbook is for.
+// genuinely load from a file unattended, one bare command per line,
+// written in the plain Inst> vocabulary that "admin source <host>:<path>"
+// replays a file's lines as (see the package doc comment, "Can inst
+// read commands from a file?" — this is the mechanism the field-tested
+// walkthrough this package cites actually uses, confirmed by fetching
+// it directly).
 //
-// "keep" is Inst's interactive-menu word for "leave unmarked"; the -F
-// grammar spells the same thing "don't install"/"don't remove", so
-// "keep incompleteoverlays" becomes "don't install incompleteoverlays"
-// below. "keep *" itself is omitted: it resets marks accumulated
-// through the interactive CD/distribution reading process, which does
-// not happen when driving inst from a blank -F file.
+// It covers only product selection: "from" plus the same
+// keep/install lines as Generate's step 4. Deliberately excluded, all
+// per the same walkthrough: the release-stream prompt (no admin-source
+// equivalent exists in any source found) and "go" ("we didn't place a
+// 'go' command at the end of the command file. This way you still have
+// a chance to add additional distributions before performing the
+// installation."). A human still runs conflicts/go/quit afterward —
+// see Generate's steps 5 through 9.
 func Commands(p Params) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "from %s:%s\n", p.ServerIP, p.DistPath)
+	b.WriteString("keep *\n")
 	b.WriteString("install standard\n")
 	b.WriteString("install prereqs\n")
-	b.WriteString("don't install incompleteoverlays\n")
+	b.WriteString("keep incompleteoverlays\n")
 	return b.String()
 }
