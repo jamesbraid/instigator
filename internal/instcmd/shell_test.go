@@ -2,6 +2,7 @@ package instcmd
 
 import (
 	"bytes"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -183,4 +184,98 @@ func tail(s string, n int) string {
 		return s
 	}
 	return s[len(s)-n:]
+}
+
+// assertLsLongLine checks the shape inst actually parses out of a long
+// ls line: a leading numeric inode field and a permission string
+// starting with the directory type bit.
+func assertLsLongLine(t *testing.T, line string) {
+	t.Helper()
+	fields := strings.Fields(line)
+	if len(fields) < 8 {
+		t.Fatalf("long ls line has too few fields (%d): %q", len(fields), line)
+	}
+	if _, err := strconv.ParseUint(fields[0], 10, 64); err != nil {
+		t.Fatalf("inode field %q is not a number: %v (line %q)", fields[0], err, line)
+	}
+	if fields[1] == "" || fields[1][0] != 'd' {
+		t.Fatalf("permission field %q doesn't start with 'd': %q", fields[1], line)
+	}
+}
+
+// TestShellLsProbeSequence runs the exact three probes a live Octane2
+// session sends at the start of a shell, in order: inst uses these to
+// stat "." for its inode/identity before it ever cds anywhere.
+func TestShellLsProbeSequence(t *testing.T) {
+	script := "ls -inld .\n" +
+		"/usr/5bin/ls -inld .\n" +
+		"ls -inlgd .\n"
+	out, errb := runShell(t, script)
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d ls lines, want 3: out=%q stderr=%q", len(lines), out, errb)
+	}
+	for _, line := range lines {
+		assertLsLongLine(t, line)
+	}
+	if strings.Contains(errb, "not supported") || strings.Contains(errb, "not found") {
+		t.Fatalf("a probe was refused instead of answered: stderr=%q", errb)
+	}
+}
+
+// TestShellCdAndRelativeDD is the flow after the probes succeed: inst
+// cds into the distribution, then reads a file by a bare relative name.
+func TestShellCdAndRelativeDD(t *testing.T) {
+	out, errb := runShell(t, "cd /6.5.30/disc1/dist\ndd if=sa bs=7\n")
+	want := shellTestFS().files["6.5.30/disc1/dist/sa"]
+	if len(out) != len(want) {
+		t.Fatalf("relative dd after cd copied %d bytes, want %d (stderr %q)", len(out), len(want), errb)
+	}
+	if !bytes.Equal([]byte(out), want) {
+		t.Fatal("relative dd after cd is not byte-exact")
+	}
+}
+
+// TestShellLsLongFormatAfterCd checks ls -inld . reports the new
+// directory once cwd has actually moved, not the one the shell started
+// in.
+func TestShellLsLongFormatAfterCd(t *testing.T) {
+	out, errb := runShell(t, "cd /6.5.30/disc1/dist\nls -inld .\n")
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("got %d ls lines, want 1: out=%q stderr=%q", len(lines), out, errb)
+	}
+	assertLsLongLine(t, lines[0])
+}
+
+// TestShellCdRefusesPathOutsideVFS is the security case for this layer:
+// cd only ever resolves through the vfs, so a path that doesn't exist
+// there - including a real host path like /etc - fails and leaves cwd
+// unchanged, proven here by a relative dd that would only succeed if cd
+// had silently moved somewhere it shouldn't have.
+func TestShellCdRefusesPathOutsideVFS(t *testing.T) {
+	out, errb := runShell(t, "cd /etc\necho CDSTATUS=$?\ndd if=sa bs=7\necho DDSTATUS=$?\n")
+	if !strings.Contains(out, "CDSTATUS=1") {
+		t.Fatalf("cd to a path outside the vfs did not fail: out=%q stderr=%q", out, errb)
+	}
+	if !strings.Contains(out, "DDSTATUS=1") {
+		t.Fatalf("cwd changed despite the failed cd: relative dd found a file anyway: out=%q stderr=%q", out, errb)
+	}
+}
+
+// TestShellLsPlainStaysNameOnly guards the pre-existing behavior: ls
+// without -l lists bare names, cwd-relative dirs included.
+func TestShellLsPlainStaysNameOnly(t *testing.T) {
+	out, errb := runShell(t, "cd /6.5.30/disc1/dist\nls .\n")
+	if err := errb; err != "" && strings.Contains(err, "not supported") {
+		t.Fatalf("plain ls refused: %q", errb)
+	}
+	for _, want := range []string{"sa", "PRODUCT.idb", "miniroot"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("plain ls missing %q: %q", want, out)
+		}
+	}
+	if strings.ContainsAny(out, "0123456789") {
+		t.Fatalf("plain ls (no -l) printed something numeric, expected bare names only: %q", out)
+	}
 }

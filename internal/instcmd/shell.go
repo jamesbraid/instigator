@@ -17,6 +17,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,57 @@ import (
 // errReadOnly is returned by the open handler for any write attempt.
 var errReadOnly = errors.New("read-only filesystem")
 
+// shellEnv is the state shared by every handler for one rsh shell
+// session: FileSystem access plus the tracked working directory. cd is
+// entirely hand-rolled (see callHandler's "cd" case, never mvdan/sh's
+// own builtin - see its comment for why), so every handler resolves a
+// path against this cwd itself rather than against the interpreter's
+// own Dir, which this shell never updates.
+type shellEnv struct {
+	fsys FileSystem
+	cwd  string // always an absolute, path.Clean'd vfs path
+}
+
+func newShellEnv(fsys FileSystem) *shellEnv {
+	return &shellEnv{fsys: fsys, cwd: "/"}
+}
+
+// resolve turns a possibly-relative path into an absolute vfs path
+// against cwd, collapsing "." and ".." lexically. That's the "path"
+// package, not "path/filepath": vfs paths are always forward-slash,
+// never host paths, so there's no OS-dependent separator to account
+// for. A ".." that would climb above a disc's own root behaves as
+// ordinary lexical collapsing here, not the real EFS filesystem's
+// self-referential root entry (see internal/vfs's own ".." handling
+// within a disc) - a difference that never shows up in inst's actual
+// usage, which only cds to an absolute distribution path and reads
+// forward from there.
+func (e *shellEnv) resolve(p string) string {
+	if p == "" {
+		p = "."
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = e.cwd + "/" + p
+	}
+	return path.Clean(p)
+}
+
+// fsPath resolves p against cwd and strips the leading slash every
+// FileSystem implementation in this codebase expects.
+func (e *shellEnv) fsPath(p string) string {
+	return strings.TrimPrefix(e.resolve(p), "/")
+}
+
+// baseName returns the last path component of a command name, so
+// /usr/5bin/ls and /bin/ls are recognized the same as ls: inst invokes
+// ls from more than one absolute path.
+func baseName(cmd string) string {
+	if i := strings.LastIndex(cmd, "/"); i >= 0 {
+		return cmd[i+1:]
+	}
+	return cmd
+}
+
 // RunShell serves the shell inst opens over rsh with "exec /bin/sh": one
 // mvdan/sh Runner for the life of the connection, fed one line at a time
 // so state (variables, trap registrations, $?) persists across lines the
@@ -38,15 +90,16 @@ var errReadOnly = errors.New("read-only filesystem")
 // a real shell continues past a ';'-separated failure - matching inst's
 // expectation that the trailing marker wrapper always still runs.
 func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, log func(string)) error {
+	env := newShellEnv(fsys)
 	runner, err := interp.New(
 		interp.StdIO(nil, stdout, stderr),
 		interp.Env(expand.ListEnviron("PATH=", "HOME=/", "IFS= \t\n")),
 		interp.Dir("/"),
-		interp.CallHandler(callHandler(fsys)),
-		interp.ExecHandler(execHandler(fsys)),
-		interp.OpenHandler(openHandler(fsys)),
-		interp.ReadDirHandler2(readDirHandler(fsys)),
-		interp.StatHandler(statHandler(fsys)),
+		interp.CallHandler(callHandler(env)),
+		interp.ExecHandler(execHandler(env)),
+		interp.OpenHandler(openHandler(env)),
+		interp.ReadDirHandler2(readDirHandler(env)),
+		interp.StatHandler(statHandler(env)),
 	)
 	if err != nil {
 		return fmt.Errorf("instcmd: shell setup: %w", err)
@@ -102,10 +155,10 @@ func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, log fu
 // function bodies. Every other command passes through unchanged to the
 // runner's normal dispatch, ending at execHandler for anything that
 // isn't itself a builtin.
-func callHandler(fsys FileSystem) interp.CallHandlerFunc {
+func callHandler(env *shellEnv) interp.CallHandlerFunc {
 	return func(ctx context.Context, args []string) ([]string, error) {
 		hc := interp.HandlerCtx(ctx)
-		switch args[0] {
+		switch baseName(args[0]) {
 		case "echo":
 			// mvdan/sh's builtin echo needs -e for any backslash
 			// expansion, and even with -e has no \c support at all: it
@@ -138,14 +191,32 @@ func callHandler(fsys FileSystem) interp.CallHandlerFunc {
 			// hook to redirect either to the vfs, so any path to the
 			// real test/[ builtin is a hole straight through the
 			// security boundary this shell exists to enforce.
-			return []string{boolWord(evalTest(fsys, hc, args))}, nil
-		case "cd", "source", ".":
-			// cd reaches the same unguarded unix.Access call as
-			// test -x (interp/builtin.go's changeDir), and source/.
-			// probes $PATH on the real filesystem via os.Stat before
-			// ever reaching the open handler. inst's observed corpus
-			// uses neither; refuse both outright rather than accept
-			// the host-filesystem probe as a side effect.
+			return []string{boolWord(evalTest(env, hc, args))}, nil
+		case "cd":
+			// Hand-rolled for the same reason test/[ is: mvdan/sh's own
+			// cd builtin calls unix.Access on the real path for its -x
+			// check (interp/builtin.go's changeDir), with no handler to
+			// redirect it. cwd only ever moves to a path this shell can
+			// already Stat through the vfs, so it can never point
+			// anywhere the vfs itself couldn't already reach.
+			target := "/"
+			if len(args) > 1 {
+				target = args[len(args)-1]
+			}
+			abs := env.resolve(target)
+			info, err := env.fsys.Stat(strings.TrimPrefix(abs, "/"))
+			if err != nil || !info.IsDir {
+				fmt.Fprintf(hc.Stderr, "cd: %s: not a directory\n", target)
+				return []string{"false"}, nil
+			}
+			env.cwd = abs
+			return []string{"true"}, nil
+		case "source", ".":
+			// source/. probes $PATH on the real filesystem via os.Stat
+			// before ever reaching the open handler (interp/builtin.go's
+			// scriptFromPathDir). inst's observed corpus doesn't use
+			// either; refuse outright rather than accept that probe as
+			// a side effect.
 			fmt.Fprintf(hc.Stderr, "%s: not supported\n", args[0])
 			return []string{"false"}, nil
 		default:
@@ -231,7 +302,7 @@ func shEcho(w io.Writer, args []string) {
 
 // evalTest evaluates a test/[ invocation against the vfs. args[0] is
 // "test" or "[".
-func evalTest(fsys FileSystem, hc interp.HandlerContext, args []string) bool {
+func evalTest(env *shellEnv, hc interp.HandlerContext, args []string) bool {
 	operands := args[1:]
 	if args[0] == "[" {
 		if len(operands) == 0 || operands[len(operands)-1] != "]" {
@@ -240,7 +311,7 @@ func evalTest(fsys FileSystem, hc interp.HandlerContext, args []string) bool {
 		}
 		operands = operands[:len(operands)-1]
 	}
-	ok, err := runTest(fsys, operands)
+	ok, err := runTest(env, operands)
 	if err != nil {
 		fmt.Fprintf(hc.Stderr, "test: %v\n", err)
 	}
@@ -248,13 +319,14 @@ func evalTest(fsys FileSystem, hc interp.HandlerContext, args []string) bool {
 }
 
 // runTest evaluates the small subset of POSIX test(1) inst is known to
-// use: existence/type checks against the vfs, and plain string/integer
+// use: existence/type checks against the vfs (cwd-relative, like every
+// other path this shell resolves), and plain string/integer
 // comparisons, neither of which needs anything beyond what FileSystem
 // already exposes. Anything wider (-a/-o, parenthesised expressions,
 // -r/-w/-x, ownership tests) is refused with an error rather than
 // silently answering false, so a gap here is visible instead of quietly
 // always failing.
-func runTest(fsys FileSystem, args []string) (bool, error) {
+func runTest(env *shellEnv, args []string) (bool, error) {
 	switch len(args) {
 	case 0:
 		return false, nil
@@ -262,10 +334,10 @@ func runTest(fsys FileSystem, args []string) (bool, error) {
 		return args[0] != "", nil
 	case 2:
 		if args[0] == "!" {
-			ok, err := runTest(fsys, args[1:])
+			ok, err := runTest(env, args[1:])
 			return !ok, err
 		}
-		return unaryTest(fsys, args[0], args[1])
+		return unaryTest(env, args[0], args[1])
 	case 3:
 		return binaryTest(args[0], args[1], args[2])
 	default:
@@ -273,24 +345,25 @@ func runTest(fsys FileSystem, args []string) (bool, error) {
 	}
 }
 
-func unaryTest(fsys FileSystem, op, operand string) (bool, error) {
+func unaryTest(env *shellEnv, op, operand string) (bool, error) {
+	stat := func() (FileInfo, error) { return env.fsys.Stat(env.fsPath(operand)) }
 	switch op {
 	case "-z":
 		return operand == "", nil
 	case "-n":
 		return operand != "", nil
 	case "-f":
-		info, err := vfsStat(fsys, operand)
-		return err == nil && !info.IsDir(), nil
+		info, err := stat()
+		return err == nil && !info.IsDir, nil
 	case "-d":
-		info, err := vfsStat(fsys, operand)
-		return err == nil && info.IsDir(), nil
+		info, err := stat()
+		return err == nil && info.IsDir, nil
 	case "-e":
-		_, err := vfsStat(fsys, operand)
+		_, err := stat()
 		return err == nil, nil
 	case "-s":
-		info, err := vfsStat(fsys, operand)
-		return err == nil && info.Size() > 0, nil
+		info, err := stat()
+		return err == nil && info.Size > 0, nil
 	default:
 		return false, fmt.Errorf("%s: not supported", op)
 	}
@@ -331,16 +404,16 @@ func binaryTest(a, op, b string) (bool, error) {
 // function nor a builtin - the vfs-backed leaf commands, and a refusal
 // for everything else. This is the whitelist: dd, ls, and cat are the
 // only external-looking programs this shell can run.
-func execHandler(fsys FileSystem) interp.ExecHandlerFunc {
+func execHandler(env *shellEnv) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
 		hc := interp.HandlerCtx(ctx)
-		switch args[0] {
+		switch baseName(args[0]) {
 		case "dd":
-			return shDD(fsys, hc, args[1:])
+			return shDD(env, hc, args[1:])
 		case "ls":
-			return shLs(fsys, hc, args[1:])
+			return shLs(env, hc, args[1:])
 		case "cat":
-			return shCat(fsys, hc, args[1:])
+			return shCat(env, hc, args[1:])
 		default:
 			fmt.Fprintf(hc.Stderr, "%s: not supported\n", args[0])
 			return interp.ExitStatus(1)
@@ -348,25 +421,127 @@ func execHandler(fsys FileSystem) interp.ExecHandlerFunc {
 	}
 }
 
-func shLs(fsys FileSystem, hc interp.HandlerContext, args []string) error {
-	path := "."
+// shLs implements the ls forms inst is known to send: -i (inode), -n
+// (numeric uid/gid - the only kind this shell has, so it's the default
+// regardless), -l (long format), -g (accepted; group is always in the
+// long line here, see lsLongLine), -d (the named path itself rather
+// than a directory's contents). Without -l it's still just names,
+// cwd-relative like everything else. inst mainly keys on the leading
+// inode field for file identity, not the rest of the line.
+func shLs(env *shellEnv, hc interp.HandlerContext, args []string) error {
+	var flagI, flagL, flagD bool
+	target := "."
 	for _, a := range args {
-		if !strings.HasPrefix(a, "-") {
-			path = a
+		if strings.HasPrefix(a, "-") && len(a) > 1 {
+			for _, c := range a[1:] {
+				switch c {
+				case 'i':
+					flagI = true
+				case 'l':
+					flagL = true
+				case 'd':
+					flagD = true
+				}
+			}
+			continue
 		}
+		target = a
 	}
-	names, err := fsys.ReadDir(strings.TrimPrefix(path, "/"))
+
+	abs := env.resolve(target)
+	fsPath := strings.TrimPrefix(abs, "/")
+	info, err := env.fsys.Stat(fsPath)
 	if err != nil {
-		fmt.Fprintf(hc.Stderr, "ls: %s: %v\n", path, err)
+		fmt.Fprintf(hc.Stderr, "ls: %s: %v\n", target, err)
 		return interp.ExitStatus(1)
 	}
+
+	if flagD || !info.IsDir {
+		printLsEntry(hc.Stdout, flagI, flagL, target, info)
+		return nil
+	}
+	names, err := env.fsys.ReadDir(fsPath)
+	if err != nil {
+		fmt.Fprintf(hc.Stderr, "ls: %s: %v\n", target, err)
+		return interp.ExitStatus(1)
+	}
+	if !flagL {
+		// Names only: no per-entry Stat needed, and none required - a
+		// name ReadDir lists but can't itself be Stat'd (a dangling
+		// entry, say) must still show up here, exactly as a plain ls
+		// always did before -l/-i/-d existed.
+		for _, n := range names {
+			fmt.Fprintln(hc.Stdout, n)
+		}
+		return nil
+	}
+	base := strings.TrimSuffix(abs, "/")
 	for _, n := range names {
-		fmt.Fprintln(hc.Stdout, n)
+		childInfo, err := env.fsys.Stat(strings.TrimPrefix(base+"/"+n, "/"))
+		if err != nil {
+			continue
+		}
+		printLsEntry(hc.Stdout, flagI, flagL, n, childInfo)
 	}
 	return nil
 }
 
-func shCat(fsys FileSystem, hc interp.HandlerContext, args []string) error {
+func printLsEntry(w io.Writer, flagI, flagL bool, name string, info FileInfo) {
+	if !flagL {
+		fmt.Fprintln(w, name)
+		return
+	}
+	fmt.Fprintln(w, lsLongLine(flagI, name, info))
+}
+
+// lsLongLine formats one ls -l line: [inode] perms nlink uid gid size
+// mon day time-or-year name.
+func lsLongLine(withInode bool, name string, info FileInfo) string {
+	var b strings.Builder
+	if withInode {
+		fmt.Fprintf(&b, "%d ", info.Ino)
+	}
+	fmt.Fprintf(&b, "%s %3d %5d %5d %8d %s %s",
+		permString(info.IsDir, info.Perm), info.Nlink, info.UID, info.GID, info.Size,
+		lsDate(info.Mtime), name)
+	return b.String()
+}
+
+// permString renders the type + rwxrwxrwx string ls -l shows.
+// instigator's vfs never sets setuid/setgid/sticky, so those bits are
+// out of scope.
+func permString(isDir bool, perm uint32) string {
+	b := []byte("----------")
+	if isDir {
+		b[0] = 'd'
+	}
+	const bits = "rwxrwxrwx"
+	for i := 0; i < 9; i++ {
+		if perm&(1<<uint(8-i)) != 0 {
+			b[i+1] = bits[i]
+		}
+	}
+	return string(b)
+}
+
+// lsDate formats a modification time the way ls -l does: "Mon Day
+// HH:MM" for a recent file, "Mon Day  Year" once it's more than about
+// six months old (or in the future, from a clock skew or an unset
+// mtime). instigator's media doesn't move, so the exact cutoff rarely
+// matters; inst reads the leading inode field for identity, not this
+// column.
+func lsDate(t time.Time) string {
+	if t.IsZero() {
+		t = time.Unix(0, 0).UTC()
+	}
+	age := time.Since(t)
+	if age > 182*24*time.Hour || age < 0 {
+		return fmt.Sprintf("%s %2d  %4d", t.Format("Jan"), t.Day(), t.Year())
+	}
+	return fmt.Sprintf("%s %2d %02d:%02d", t.Format("Jan"), t.Day(), t.Hour(), t.Minute())
+}
+
+func shCat(env *shellEnv, hc interp.HandlerContext, args []string) error {
 	if len(args) == 0 {
 		if hc.Stdin != nil {
 			io.Copy(hc.Stdout, hc.Stdin)
@@ -374,7 +549,7 @@ func shCat(fsys FileSystem, hc interp.HandlerContext, args []string) error {
 		return nil
 	}
 	for _, p := range args {
-		f, err := fsys.Open(strings.TrimPrefix(p, "/"))
+		f, err := env.fsys.Open(env.fsPath(p))
 		if err != nil {
 			fmt.Fprintf(hc.Stderr, "cat: %s: %v\n", p, err)
 			return interp.ExitStatus(1)
@@ -390,7 +565,7 @@ func shCat(fsys FileSystem, hc interp.HandlerContext, args []string) error {
 // stdin, bs/ibs/obs, skip/iseek, count, and oseek/seek/obs accepted but
 // inert since nothing this dd writes to is ever seekable. of= is
 // refused outright - this dd only ever writes to its own stdout.
-func shDD(fsys FileSystem, hc interp.HandlerContext, args []string) error {
+func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 	var (
 		file      string
 		bs        int64 = -1
@@ -461,7 +636,7 @@ func shDD(fsys FileSystem, hc interp.HandlerContext, args []string) error {
 
 	var src io.Reader
 	if file != "" {
-		f, err := fsys.Open(strings.TrimPrefix(file, "/"))
+		f, err := env.fsys.Open(env.fsPath(file))
 		if err != nil {
 			fmt.Fprintf(hc.Stderr, "dd: %s: %v\n", file, err)
 			return interp.ExitStatus(1)
@@ -517,13 +692,14 @@ func shDD(fsys FileSystem, hc interp.HandlerContext, args []string) error {
 }
 
 // openHandler backs every redirect the shell parses. Reads resolve
-// through the vfs, exactly as dd/ls/cat do; anything with a write intent
-// is refused before the vfs is even consulted, and /dev/null is
-// synthesized rather than left to touch a real device node. There is no
-// other path here: a redirect or test against a real host path (/etc/
-// passwd, say) is just a miss against the vfs, indistinguishable from
-// any other path that doesn't exist in it.
-func openHandler(fsys FileSystem) interp.OpenHandlerFunc {
+// through the vfs, cwd-relative like every other path here, exactly as
+// dd/ls/cat do; anything with a write intent is refused before the vfs
+// is even consulted, and /dev/null is synthesized rather than left to
+// touch a real device node. There is no other path here: a redirect or
+// test against a real host path (/etc/passwd, say) is just a miss
+// against the vfs, indistinguishable from any other path that doesn't
+// exist in it.
+func openHandler(env *shellEnv) interp.OpenHandlerFunc {
 	return func(ctx context.Context, path string, flag int, perm os.FileMode) (io.ReadWriteCloser, error) {
 		if path == "/dev/null" {
 			return devNull{}, nil
@@ -531,7 +707,7 @@ func openHandler(fsys FileSystem) interp.OpenHandlerFunc {
 		if flag&(os.O_WRONLY|os.O_RDWR|os.O_CREATE|os.O_APPEND|os.O_TRUNC|os.O_EXCL) != 0 {
 			return nil, &os.PathError{Op: "open", Path: path, Err: errReadOnly}
 		}
-		f, err := fsys.Open(strings.TrimPrefix(path, "/"))
+		f, err := env.fsys.Open(env.fsPath(path))
 		if err != nil {
 			return nil, &os.PathError{Op: "open", Path: path, Err: err}
 		}
@@ -558,74 +734,61 @@ func (devNull) Write(p []byte) (int, error) { return len(p), nil }
 func (devNull) Close() error                { return nil }
 
 // readDirHandler backs shell globbing. inst's observed corpus doesn't
-// glob, but wiring it correctly costs little: each entry's type comes
-// from the same vfsStat probe test/[ and StatHandler both use.
-func readDirHandler(fsys FileSystem) interp.ReadDirHandlerFunc2 {
+// glob, but wiring it correctly costs little: each entry's metadata
+// comes from the same FileSystem.Stat test/[ and StatHandler both use.
+func readDirHandler(env *shellEnv) interp.ReadDirHandlerFunc2 {
 	return func(ctx context.Context, path string) ([]fs.DirEntry, error) {
-		p := strings.TrimPrefix(path, "/")
-		names, err := fsys.ReadDir(p)
+		abs := env.resolve(path)
+		p := strings.TrimPrefix(abs, "/")
+		names, err := env.fsys.ReadDir(p)
 		if err != nil {
 			return nil, err
 		}
+		base := strings.TrimSuffix(abs, "/")
 		entries := make([]fs.DirEntry, len(names))
 		for i, n := range names {
-			info, err := vfsStat(fsys, strings.TrimSuffix(p, "/")+"/"+n)
+			info, err := env.fsys.Stat(strings.TrimPrefix(base+"/"+n, "/"))
 			if err != nil {
-				info = statInfo{name: n}
+				info = FileInfo{}
 			}
-			entries[i] = fs.FileInfoToDirEntry(info)
+			entries[i] = fs.FileInfoToDirEntry(fsInfoAdapter{name: n, info: info})
 		}
 		return entries, nil
 	}
 }
 
-// statHandler backs test -f/-d/-e/-s (via our own runTest, not mvdan/sh's
-// built-in test/[, which this shell never lets run) and any other
-// interpreter internals that call Stat, such as glob matching.
-func statHandler(fsys FileSystem) interp.StatHandlerFunc {
+// statHandler backs any interpreter internals that call Stat, such as
+// glob matching. test -f/-d/-e/-s goes through our own runTest instead,
+// never mvdan/sh's built-in test/[, which this shell doesn't let run at
+// all (see callHandler's "test", "[" case).
+func statHandler(env *shellEnv) interp.StatHandlerFunc {
 	return func(ctx context.Context, path string, followSymlinks bool) (fs.FileInfo, error) {
-		return vfsStat(fsys, path)
+		abs := env.resolve(path)
+		info, err := env.fsys.Stat(strings.TrimPrefix(abs, "/"))
+		if err != nil {
+			return nil, err
+		}
+		return fsInfoAdapter{name: baseName(strings.TrimSuffix(abs, "/")), info: info}, nil
 	}
 }
 
-// vfsStat synthesizes a stat result from FileSystem's Open/ReadDir,
-// since FileSystem has no Stat of its own: a successful ReadDir means a
-// directory, a successful Open means a regular file, anything else means
-// not found. This is the only existence/type check the shell has - there
-// is no fallback to a real filesystem underneath it.
-func vfsStat(fsys FileSystem, path string) (fs.FileInfo, error) {
-	p := strings.TrimPrefix(path, "/")
-	name := p
-	if i := strings.LastIndex(p, "/"); i >= 0 {
-		name = p[i+1:]
-	}
-	if _, err := fsys.ReadDir(p); err == nil {
-		return statInfo{name: name, isDir: true}, nil
-	}
-	f, err := fsys.Open(p)
-	if err != nil {
-		return nil, err
-	}
-	return statInfo{name: name, size: f.Size()}, nil
+// fsInfoAdapter adapts FileInfo to io/fs.FileInfo, which is what
+// interp.StatHandlerFunc and ReadDirHandlerFunc2 must return. name is
+// supplied separately since FileInfo carries no name of its own - every
+// caller already knows the path it stat'd.
+type fsInfoAdapter struct {
+	name string
+	info FileInfo
 }
 
-// statInfo is the fs.FileInfo synthesized by vfsStat: instigator's vfs
-// tracks no mode bits or mtimes, so those are fixed, read-only-looking
-// placeholders, never read from a real filesystem.
-type statInfo struct {
-	name  string
-	size  int64
-	isDir bool
-}
-
-func (i statInfo) Name() string { return i.name }
-func (i statInfo) Size() int64  { return i.size }
-func (i statInfo) Mode() fs.FileMode {
-	if i.isDir {
-		return fs.ModeDir | 0o555
+func (a fsInfoAdapter) Name() string { return a.name }
+func (a fsInfoAdapter) Size() int64  { return a.info.Size }
+func (a fsInfoAdapter) Mode() fs.FileMode {
+	if a.info.IsDir {
+		return fs.ModeDir | fs.FileMode(a.info.Perm)
 	}
-	return 0o444
+	return fs.FileMode(a.info.Perm)
 }
-func (i statInfo) ModTime() time.Time { return time.Time{} }
-func (i statInfo) IsDir() bool        { return i.isDir }
-func (i statInfo) Sys() any           { return nil }
+func (a fsInfoAdapter) ModTime() time.Time { return a.info.Mtime }
+func (a fsInfoAdapter) IsDir() bool        { return a.info.IsDir }
+func (a fsInfoAdapter) Sys() any           { return nil }

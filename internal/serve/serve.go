@@ -66,6 +66,26 @@ func (f cmdFS) ReadDir(path string) ([]string, error) {
 	return names, err
 }
 
+func (f cmdFS) Stat(path string) (instcmd.FileInfo, error) {
+	info, err := f.t.Stat(path)
+	if errors.Is(err, vfs.ErrNotFound) {
+		return instcmd.FileInfo{}, fmt.Errorf("%s: %w", path, instcmd.ErrNotFound)
+	}
+	if err != nil {
+		return instcmd.FileInfo{}, err
+	}
+	return instcmd.FileInfo{
+		Ino:   info.Ino,
+		IsDir: info.IsDir,
+		Perm:  info.Perm,
+		Nlink: info.Nlink,
+		UID:   info.UID,
+		GID:   info.GID,
+		Size:  info.Size,
+		Mtime: info.Mtime,
+	}, nil
+}
+
 // Option adjusts Start for tests.
 type Option func(*options)
 

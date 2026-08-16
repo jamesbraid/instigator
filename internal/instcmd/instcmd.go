@@ -13,6 +13,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ErrNotFound is returned by a FileSystem for missing paths.
@@ -22,12 +23,28 @@ var ErrNotFound = errors.New("not found")
 type FileSystem interface {
 	Open(path string) (File, error)
 	ReadDir(path string) ([]string, error)
+	Stat(path string) (FileInfo, error)
 }
 
 // File is an open, random-access file.
 type File interface {
 	io.ReaderAt
 	Size() int64
+}
+
+// FileInfo is a path's metadata: what the rsh shell needs to answer
+// ls -l/-i and cd/test's file-type checks, not a full stat(2). A path
+// above the real filesystem's own boundary (a synthetic tree level)
+// carries plausible placeholder values instead of a real inode's.
+type FileInfo struct {
+	Ino   uint64
+	IsDir bool
+	Perm  uint32 // permission bits only, e.g. 0o755
+	Nlink int
+	UID   uint32
+	GID   uint32
+	Size  int64
+	Mtime time.Time
 }
 
 // Run executes one rsh command line against fs, writing command output

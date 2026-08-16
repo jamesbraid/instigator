@@ -50,6 +50,26 @@ func (f treeFS) ReadDir(path string) ([]string, error) {
 	return names, err
 }
 
+func (f treeFS) Stat(path string) (FileInfo, error) {
+	info, err := f.t.Stat(path)
+	if errors.Is(err, vfs.ErrNotFound) {
+		return FileInfo{}, fmt.Errorf("%s: %w", path, ErrNotFound)
+	}
+	if err != nil {
+		return FileInfo{}, err
+	}
+	return FileInfo{
+		Ino:   info.Ino,
+		IsDir: info.IsDir,
+		Perm:  info.Perm,
+		Nlink: info.Nlink,
+		UID:   info.UID,
+		GID:   info.GID,
+		Size:  info.Size,
+		Mtime: info.Mtime,
+	}, nil
+}
+
 // countingWriter counts the bytes written through it while forwarding
 // them to w, so a 20MB dd transfer can be hashed on the fly instead of
 // held in memory.
