@@ -18,11 +18,31 @@ type Client struct {
 	IP   netip.Addr
 }
 
-// Media is one served set of CD images.
-type Media struct {
+// Layer is one directory or image contributing files to an install set.
+// Exactly one of Image or Dir names its source: Image is a disc image
+// mounted read-only, Dir is a directory served as-is. SourceDir is the
+// path within that source to serve; TargetDir is where it lands in the
+// install set's tree. Both default to "." (the source's root, the set's
+// root).
+type Layer struct {
 	Name      string
+	Image     string
 	Dir       string
-	DiscNames map[string]string
+	SourceDir string
+	TargetDir string
+}
+
+// InstallSet is one served IRIX install tree, assembled by layering Layers
+// in the given order. Every configured set is always built and served
+// (browsable); Enabled controls only whether the set is offered in the
+// generated command file and Inst> instructions. Collisions records, for a
+// full logical path written by more than one layer, which layer's copy
+// wins.
+type InstallSet struct {
+	Name       string
+	Enabled    bool
+	Layers     []Layer
+	Collisions map[string]string
 }
 
 // TFTPService holds the tftp toggle and its transfer port range.
@@ -36,40 +56,23 @@ type Services struct {
 	BOOTP bool
 	TFTP  TFTPService
 	RSH   bool
-	NFS   bool
 }
 
 // Ports holds the listening ports, overridable for unprivileged runs.
 type Ports struct {
-	BOOTP   int
-	TFTP    int
-	RSH     int
-	Portmap int
-	Mount   int
-	NFS     int
-}
-
-// Combined serves several disc images as one distribution set under
-// /<Name>/, each disc kept whole at /<Name>/<slug>/. The primary disc
-// (the one carrying dist/.related_dists) gets a synthesized .related_dists
-// that chains the rest, so inst auto-opens the whole set from one path.
-// Layers is the disc images, in the order they are chained; DiscNames
-// overrides a disc's serve slug per image filename, as a media set's does.
-type Combined struct {
-	Name      string
-	Layers    []string
-	DiscNames map[string]string
+	BOOTP int
+	TFTP  int
+	RSH   int
 }
 
 // Config is a validated instigator configuration.
 type Config struct {
-	ServerIP netip.Addr
-	Netmask  netip.Prefix
-	Clients  []Client
-	Media    []Media
-	Combined []Combined
-	Services Services
-	Ports    Ports
+	ServerIP    netip.Addr
+	Netmask     netip.Prefix
+	Clients     []Client
+	InstallSets []InstallSet
+	Services    Services
+	Ports       Ports
 }
 
 // raw mirrors the YAML shape before validation.
@@ -81,16 +84,18 @@ type raw struct {
 		MAC  string `yaml:"mac"`
 		IP   string `yaml:"ip"`
 	} `yaml:"clients"`
-	Media []struct {
-		Name      string            `yaml:"name"`
-		Discs     string            `yaml:"discs"`
-		DiscNames map[string]string `yaml:"disc_names"`
-	} `yaml:"media"`
-	Combined []struct {
-		Name      string            `yaml:"name"`
-		Layers    []string          `yaml:"layers"`
-		DiscNames map[string]string `yaml:"disc_names"`
-	} `yaml:"combined"`
+	InstallSets []struct {
+		Name    string `yaml:"name"`
+		Enabled *bool  `yaml:"enabled"`
+		Layers  []struct {
+			Name      string `yaml:"name"`
+			Image     string `yaml:"image"`
+			Dir       string `yaml:"dir"`
+			SourceDir string `yaml:"source_dir"`
+			TargetDir string `yaml:"target_dir"`
+		} `yaml:"layers"`
+		Collisions map[string]string `yaml:"collisions"`
+	} `yaml:"install_sets"`
 	Services *struct {
 		BOOTP *bool `yaml:"bootp"`
 		TFTP  *struct {
@@ -98,15 +103,11 @@ type raw struct {
 			PortRange [2]int `yaml:"port_range"`
 		} `yaml:"tftp"`
 		RSH *bool `yaml:"rsh"`
-		NFS *bool `yaml:"nfs"`
 	} `yaml:"services"`
 	Ports *struct {
-		BOOTP   int `yaml:"bootp"`
-		TFTP    int `yaml:"tftp"`
-		RSH     int `yaml:"rsh"`
-		Portmap int `yaml:"portmap"`
-		Mount   int `yaml:"mount"`
-		NFS     int `yaml:"nfs"`
+		BOOTP int `yaml:"bootp"`
+		TFTP  int `yaml:"tftp"`
+		RSH   int `yaml:"rsh"`
 	} `yaml:"ports"`
 }
 
@@ -124,7 +125,7 @@ func Parse(b []byte) (*Config, error) {
 			TFTP:  TFTPService{Enabled: true, PortRange: [2]int{2048, 32767}},
 			RSH:   true,
 		},
-		Ports: Ports{BOOTP: 67, TFTP: 69, RSH: 514, Portmap: 111, Mount: 635, NFS: 2049},
+		Ports: Ports{BOOTP: 67, TFTP: 69, RSH: 514},
 	}
 
 	if r.ServerIP == "" {
@@ -159,21 +160,52 @@ func Parse(b []byte) (*Config, error) {
 		c.Clients = append(c.Clients, Client{Name: rc.Name, MAC: mac, IP: cip})
 	}
 
-	if len(r.Media) == 0 {
-		return nil, fmt.Errorf("config: at least one media set is required")
+	if len(r.InstallSets) == 0 {
+		return nil, fmt.Errorf("config: at least one install set is required")
 	}
-	for i, rm := range r.Media {
-		if rm.Name == "" || rm.Discs == "" {
-			return nil, fmt.Errorf("config: media[%d]: name and discs are required", i)
+	for i, rs := range r.InstallSets {
+		if rs.Name == "" || len(rs.Layers) == 0 {
+			return nil, fmt.Errorf("config: install_sets[%d]: name and at least one layer are required", i)
 		}
-		c.Media = append(c.Media, Media{Name: rm.Name, Dir: rm.Discs, DiscNames: rm.DiscNames})
-	}
-
-	for i, rc := range r.Combined {
-		if rc.Name == "" || len(rc.Layers) == 0 {
-			return nil, fmt.Errorf("config: combined[%d]: name and at least one layer are required", i)
+		enabled := true
+		if rs.Enabled != nil {
+			enabled = *rs.Enabled
 		}
-		c.Combined = append(c.Combined, Combined{Name: rc.Name, Layers: rc.Layers, DiscNames: rc.DiscNames})
+		seen := make(map[string]bool, len(rs.Layers))
+		layers := make([]Layer, 0, len(rs.Layers))
+		for j, rl := range rs.Layers {
+			if rl.Name == "" {
+				return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d]: name is required", i, rs.Name, j)
+			}
+			if seen[rl.Name] {
+				return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d]: duplicate layer name %q", i, rs.Name, j, rl.Name)
+			}
+			seen[rl.Name] = true
+			if (rl.Image == "") == (rl.Dir == "") {
+				return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d] (%s): exactly one of image or dir is required", i, rs.Name, j, rl.Name)
+			}
+			sourceDir := rl.SourceDir
+			if sourceDir == "" {
+				sourceDir = "."
+			}
+			targetDir := rl.TargetDir
+			if targetDir == "" {
+				targetDir = "."
+			}
+			layers = append(layers, Layer{
+				Name:      rl.Name,
+				Image:     rl.Image,
+				Dir:       rl.Dir,
+				SourceDir: sourceDir,
+				TargetDir: targetDir,
+			})
+		}
+		c.InstallSets = append(c.InstallSets, InstallSet{
+			Name:       rs.Name,
+			Enabled:    enabled,
+			Layers:     layers,
+			Collisions: rs.Collisions,
+		})
 	}
 
 	if r.Services != nil {
@@ -191,9 +223,6 @@ func Parse(b []byte) (*Config, error) {
 		if r.Services.RSH != nil {
 			c.Services.RSH = *r.Services.RSH
 		}
-		if r.Services.NFS != nil {
-			c.Services.NFS = *r.Services.NFS
-		}
 	}
 	if r.Ports != nil {
 		if r.Ports.BOOTP != 0 {
@@ -204,15 +233,6 @@ func Parse(b []byte) (*Config, error) {
 		}
 		if r.Ports.RSH != 0 {
 			c.Ports.RSH = r.Ports.RSH
-		}
-		if r.Ports.Portmap != 0 {
-			c.Ports.Portmap = r.Ports.Portmap
-		}
-		if r.Ports.Mount != 0 {
-			c.Ports.Mount = r.Ports.Mount
-		}
-		if r.Ports.NFS != 0 {
-			c.Ports.NFS = r.Ports.NFS
 		}
 	}
 	return c, nil

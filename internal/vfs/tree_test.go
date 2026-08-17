@@ -1,138 +1,202 @@
 package vfs
 
 import (
+	"errors"
 	"io"
-	"os"
-	"path/filepath"
+	"io/fs"
 	"testing"
-
-	"github.com/jamesbraid/instigator/efs/efstest"
+	"testing/fstest"
 )
 
-// makeDisc writes one synthetic CD image holding stand/fx.64 with the
-// given content.
-func makeDisc(t *testing.T, dir, filename, content string) {
-	t.Helper()
-	img := efstest.New()
-	fx := img.AddFile(0o755, []byte(content))
-	stand := img.AddDir(map[string]uint32{"fx.64": fx})
-	img.SetRoot(map[string]uint32{"stand": stand})
-	if err := os.WriteFile(filepath.Join(dir, filename), img.CDImage(64, nil), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func buildTestTree(t *testing.T) *Tree {
+// standardTree is the shape the rest of these tests read against: one set
+// merged from a whole-root image layer and a dist-only directory layer,
+// plus a generated command file.
+func standardTree(t *testing.T) *Tree {
 	t.Helper()
 	dir := t.TempDir()
-	makeDisc(t, dir, "IRIX 6.5.30 Overlay 1of3.iso", "overlay one fx")
-	makeDisc(t, dir, "IRIX 6.5.30 Overlay 2of3.iso", "overlay two fx")
-	tree, err := BuildTree([]MediaSet{{Name: "6.5.30", Dir: dir}})
-	if err != nil {
+	img := makeImage(t, dir, "tools.image", map[string]string{
+		"stand/fx.64": "FX",
+		"dist/sa":     "SA",
+	})
+	extracted := makeDir(t, dir+"/found", map[string]string{"dist/foundation.sw": "F"})
+
+	tree := build(t, []SetSpec{{
+		Name: "6.5.30",
+		Layers: []LayerSpec{
+			wholeRoot("tools", img),
+			{Name: "foundations", Dir: extracted, SourceDir: "dist", TargetDir: "dist"},
+		},
+	}})
+	if err := tree.AddGenerated("6.5.30/dist/inst.init", "inst.init", []byte("from server:/6.5.30/dist\n")); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { tree.Close() })
 	return tree
 }
 
-func TestTreeOpenAcrossDiscs(t *testing.T) {
-	tree := buildTestTree(t)
-	f, err := tree.Open("6.5.30/irix-6-5-30-overlay-1of3/stand/fx.64")
-	if err != nil {
+func TestTreeSatisfiesFSTest(t *testing.T) {
+	tree := standardTree(t)
+	if err := fstest.TestFS(tree,
+		"6.5.30/stand/fx.64",
+		"6.5.30/dist/sa",
+		"6.5.30/dist/foundation.sw",
+		"6.5.30/dist/inst.init",
+	); err != nil {
 		t.Fatal(err)
-	}
-	b := make([]byte, f.Size())
-	if _, err := f.ReadAt(b, 0); err != nil && err != io.EOF {
-		t.Fatal(err)
-	}
-	if string(b) != "overlay one fx" {
-		t.Fatalf("content = %q", b)
 	}
 }
 
-func TestTreeReadDirLevels(t *testing.T) {
-	tree := buildTestTree(t)
-	medias, err := tree.ReadDir("")
+func TestTreeImplementsTheIOFSInterfaces(t *testing.T) {
+	tree := standardTree(t)
+	var _ fs.FS = tree
+	var _ fs.ReadDirFS = tree
+	var _ fs.StatFS = tree
+
+	f, err := tree.Open("6.5.30/dist/sa")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(medias) != 1 || medias[0] != "6.5.30" {
-		t.Fatalf("media level = %v", medias)
+	defer f.Close()
+	rf, ok := f.(File)
+	if !ok {
+		t.Fatalf("Open returned %T, want a File with random access", f)
 	}
-	discs, err := tree.ReadDir("6.5.30")
+	if rf.Size() != 2 {
+		t.Errorf("Size = %d, want 2", rf.Size())
+	}
+	p := make([]byte, 1)
+	if _, err := rf.ReadAt(p, 1); err != nil && err != io.EOF {
+		t.Fatal(err)
+	}
+	if p[0] != 'A' {
+		t.Errorf("ReadAt(1) = %q, want A", p)
+	}
+
+	root, err := tree.Open(".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(discs) != 2 {
-		t.Fatalf("disc level = %v", discs)
-	}
-	files, err := tree.ReadDir("6.5.30/irix-6-5-30-overlay-2of3/stand")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(files) != 1 || files[0] != "fx.64" {
-		t.Fatalf("efs level = %v", files)
+	defer root.Close()
+	if _, ok := root.(fs.ReadDirFile); !ok {
+		t.Fatalf("Open(.) returned %T, want an fs.ReadDirFile", root)
 	}
 }
 
-func TestTreeDiscNameOverride(t *testing.T) {
+func TestTreeStatReportsMetadata(t *testing.T) {
+	tree := standardTree(t)
+
+	info, err := tree.Stat("6.5.30/dist/sa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Name() != "sa" || info.IsDir() || info.Size() != 2 {
+		t.Fatalf("Stat = %+v", info)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Errorf("mode = %v, want the source perm 0644", info.Mode())
+	}
+	meta, ok := info.Sys().(*Metadata)
+	if !ok {
+		t.Fatalf("Sys() = %T, want *Metadata", info.Sys())
+	}
+	if meta.Ino == 0 {
+		t.Error("Metadata.Ino is unset")
+	}
+	if meta.Origin.Kind != OriginImage || meta.Origin.Source != "tools" {
+		t.Errorf("Metadata.Origin = %+v", meta.Origin)
+	}
+
+	dirInfo, err := tree.Stat("6.5.30/dist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dirInfo.IsDir() || dirInfo.Mode() != fs.ModeDir|0o755 {
+		t.Fatalf("directory Stat = %v mode %v", dirInfo.IsDir(), dirInfo.Mode())
+	}
+}
+
+// TestTreeRejectsInvalidAndMissingNames pins the io/fs error contract the
+// protocol adapters rely on, and with it containment. The tree is an index
+// of paths the build materialized, so ".." is not resolved but refused:
+// every name goes through fs.ValidPath, which rejects a leading slash, a
+// trailing one, and any ".." component outright. A client cannot address a
+// host path, or another set, no matter how it spells the climb.
+func TestTreeRejectsInvalidAndMissingNames(t *testing.T) {
+	tree := standardTree(t)
+
+	invalid := []string{"/6.5.30/dist/sa", "6.5.30/../6.5.30/dist/sa", "../etc/passwd", "6.5.30/dist/", ""}
+	for _, name := range invalid {
+		_, err := tree.Open(name)
+		var pe *fs.PathError
+		if !errors.As(err, &pe) {
+			t.Fatalf("Open(%q) error = %v, want a *fs.PathError", name, err)
+		}
+		if !errors.Is(err, fs.ErrInvalid) {
+			t.Errorf("Open(%q) error = %v, want fs.ErrInvalid", name, err)
+		}
+	}
+
+	_, err := tree.Open("6.5.30/dist/absent")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("Open error = %v, want ErrNotFound", err)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Open error = %v, want fs.ErrNotExist too", err)
+	}
+	if _, err := tree.Stat("absent"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Stat error = %v, want fs.ErrNotExist", err)
+	}
+	if _, err := tree.ReadDir("6.5.30/absent"); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("ReadDir error = %v, want fs.ErrNotExist", err)
+	}
+	if _, err := tree.Resolve("6.5.30/dist/absent"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Resolve error = %v, want ErrNotFound", err)
+	}
+	if _, err := tree.ReadDir("6.5.30/dist/sa"); err == nil {
+		t.Error("ReadDir on a regular file succeeded")
+	}
+}
+
+// TestTreeReadDirIsLexicalAndInodesAreStable: listings are sorted so an
+// operator's ls and inst's own walk see one order, and two builds of the
+// same spec hand the same path the same inode, so identity survives a
+// restart.
+func TestTreeReadDirIsLexicalAndInodesAreStable(t *testing.T) {
 	dir := t.TempDir()
-	makeDisc(t, dir, "IRIX 6.5.30 Overlay 1of3.iso", "fx")
-	tree, err := BuildTree([]MediaSet{{
-		Name:      "6.5.30",
-		Dir:       dir,
-		DiscNames: map[string]string{"IRIX 6.5.30 Overlay 1of3.iso": "overlay1"},
-	}})
+	img := makeImage(t, dir, "tools.image", map[string]string{
+		"dist/sa":       "SA",
+		"dist/.iscd":    "",
+		"dist/prod.sw":  "P",
+		"dist/apple.sw": "A",
+	})
+	spec := []SetSpec{{Name: "6.5.30", Layers: []LayerSpec{wholeRoot("tools", img)}}}
+
+	first := build(t, spec)
+	want := []string{".iscd", "apple.sw", "prod.sw", "sa"}
+	if got := dirNames(t, first, "6.5.30/dist"); !equalStrings(got, want) {
+		t.Fatalf("ReadDir = %v, want %v", got, want)
+	}
+
+	second := build(t, spec)
+	for _, p := range treePaths(t, first) {
+		a, err := first.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := second.Stat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ai := a.Sys().(*Metadata).Ino
+		bi := b.Sys().(*Metadata).Ino
+		if ai != bi {
+			t.Errorf("%s: inode %d on the first build, %d on the second", p, ai, bi)
+		}
+	}
+	rootInfo, err := first.Stat(".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tree.Close()
-	if _, err := tree.Open("6.5.30/overlay1/stand/fx.64"); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestTreeMissingPath(t *testing.T) {
-	tree := buildTestTree(t)
-	if _, err := tree.Open("6.5.30/no-such-disc/stand/fx.64"); err == nil {
-		t.Fatal("opened a missing disc")
-	}
-	if _, err := tree.Open("6.5.30/irix-6-5-30-overlay-1of3/absent"); err == nil {
-		t.Fatal("opened a missing file")
-	}
-}
-
-// ResolveImage backs the served-file manifest log line: given the tree
-// path a command actually opened, it must say which image and which
-// in-image path the bytes came from.
-func TestTreeResolveImage(t *testing.T) {
-	tree := buildTestTree(t)
-	r, err := tree.ResolveImage("6.5.30/irix-6-5-30-overlay-1of3/stand/fx.64")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.Image != "IRIX 6.5.30 Overlay 1of3.iso" {
-		t.Fatalf("image = %q", r.Image)
-	}
-	if r.Path != "stand/fx.64" {
-		t.Fatalf("path = %q", r.Path)
-	}
-}
-
-func TestTreeResolveImageMissingPath(t *testing.T) {
-	tree := buildTestTree(t)
-	if _, err := tree.ResolveImage("6.5.30/no-such-disc/stand/fx.64"); err == nil {
-		t.Fatal("resolved a missing disc")
-	}
-}
-
-func TestTreeDiscMap(t *testing.T) {
-	tree := buildTestTree(t)
-	m := tree.DiscMap()
-	if len(m["6.5.30"]) != 2 {
-		t.Fatalf("DiscMap = %v", m)
-	}
-	if m["6.5.30"]["irix-6-5-30-overlay-1of3"] == "" {
-		t.Fatalf("DiscMap missing slug: %v", m)
+	if got := rootInfo.Sys().(*Metadata).Ino; got != 2 {
+		t.Errorf("root inode = %d, want 2", got)
 	}
 }

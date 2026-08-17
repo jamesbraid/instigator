@@ -8,11 +8,14 @@ import (
 func testParams() Params {
 	return Params{
 		ServerIP: "192.0.2.10",
-		// the primary disc's own dist, the path AddCombined returns and
-		// serve passes in - not a union across the set
-		DistPath: "/irix6.5.30/tools/dist",
-		Release:  "6.5.30",
-		Stream:   "feature",
+		Sets: []string{
+			"/6.5.30/dist",
+			"/foundations/dist",
+			"/applications/dist",
+			"/development/dist",
+		},
+		BootPath:  "/6.5.30/stand/fx.64",
+		RemoteDir: "6.5.30/dist/",
 	}
 }
 
@@ -31,107 +34,198 @@ func inOrder(t *testing.T, s string, subs ...string) {
 	}
 }
 
-func TestGenerateContainsRealParamsInOrder(t *testing.T) {
+// TestCommandsExactFourSetSequence pins Commands' output byte-for-byte
+// for a four-set profile: "from" on Sets[0], "open" on each later set in
+// order, then the fixed selection block, one command per line, trailing
+// newline. This is the single source served as both inst.init and the
+// admin-source file, so any deviation here is a deviation an operator's
+// serial console will see.
+func TestCommandsExactFourSetSequence(t *testing.T) {
+	p := testParams()
+	got := Commands(p)
+
+	want := "" +
+		"from 192.0.2.10:/6.5.30/dist\n" +
+		"open 192.0.2.10:/foundations/dist\n" +
+		"open 192.0.2.10:/applications/dist\n" +
+		"open 192.0.2.10:/development/dist\n" +
+		"return\n" +
+		"keep *\n" +
+		"install standard\n" +
+		"keep incompleteoverlays\n" +
+		"remove java_dev*\n" +
+		"remove java2_plugin*\n" +
+		"conflicts\n"
+
+	if got != want {
+		t.Errorf("Commands() = %q, want %q", got, want)
+	}
+}
+
+// TestCommandsSingleSet checks the degenerate one-set case: just "from",
+// no "open" lines, then the same fixed selection block.
+func TestCommandsSingleSet(t *testing.T) {
+	p := testParams()
+	p.Sets = []string{"/6.5.30/dist"}
+	got := Commands(p)
+
+	want := "" +
+		"from 192.0.2.10:/6.5.30/dist\n" +
+		"return\n" +
+		"keep *\n" +
+		"install standard\n" +
+		"keep incompleteoverlays\n" +
+		"remove java_dev*\n" +
+		"remove java2_plugin*\n" +
+		"conflicts\n"
+
+	if got != want {
+		t.Errorf("Commands() = %q, want %q", got, want)
+	}
+}
+
+// TestCommandsNeverEmitsRetiredDirectives guards against regressing back
+// to the old release-stream/full-automation vocabulary: no
+// install feature/maint/prereqs, no go, no quit. These bytes are served
+// verbatim to a real inst(1M) session; any of these would either fail to
+// parse under the new contract or promise automation inst does not do
+// from a file.
+func TestCommandsNeverEmitsRetiredDirectives(t *testing.T) {
+	p := testParams()
+	got := Commands(p)
+
+	for _, retired := range []string{
+		"install feature",
+		"install maint",
+		"install prereqs",
+		"\ngo\n",
+		"\nquit\n",
+	} {
+		if strings.Contains(got, retired) {
+			t.Errorf("Commands output must not contain retired directive %q, got:\n%s", retired, got)
+		}
+	}
+}
+
+func TestCommandsOneCommandPerLine(t *testing.T) {
+	p := testParams()
+	got := Commands(p)
+
+	if !strings.HasSuffix(got, "\n") {
+		t.Errorf("Commands output must end with a trailing newline, got:\n%s", got)
+	}
+
+	trimmed := strings.TrimRight(got, "\n")
+	for _, line := range strings.Split(trimmed, "\n") {
+		if strings.TrimSpace(line) == "" {
+			t.Error("Commands output has a blank line; expected one bare command per line")
+		}
+	}
+}
+
+func TestCommandsIsDeterministic(t *testing.T) {
+	p := testParams()
+	a := Commands(p)
+	b := Commands(p)
+	if a != b {
+		t.Error("Commands is not deterministic for identical Params")
+	}
+}
+
+// TestGenerateBootLineOnlyWhenBootPathSet is GC11: the PROM boot line
+// prints only when BootPath is non-empty, and never a synthesized ".64"
+// path.
+func TestGenerateBootLineOnlyWhenBootPathSet(t *testing.T) {
+	p := testParams()
+	got := Generate(p)
+	if !strings.Contains(got, "boot -f bootp():"+p.BootPath) {
+		t.Errorf("Generate output missing PROM boot line for BootPath %q, got:\n%s", p.BootPath, got)
+	}
+
+	p.BootPath = ""
+	got = Generate(p)
+	if strings.Contains(got, "boot -f bootp()") {
+		t.Errorf("Generate output must omit the PROM boot line when BootPath is empty, got:\n%s", got)
+	}
+	if strings.Contains(got, ".64") {
+		t.Errorf("Generate output must not synthesize a .64 path when BootPath is empty, got:\n%s", got)
+	}
+	// The rest of the runbook (the Inst> section) must still be present.
+	if !strings.Contains(got, "Inst>") {
+		t.Errorf("Generate output must still contain the Inst> section when BootPath is empty, got:\n%s", got)
+	}
+	inOrder(t, got, "from "+p.ServerIP+":"+p.Sets[0], "open "+p.ServerIP+":"+p.Sets[1])
+}
+
+// TestGenerateShowsRemoteDirWithTrailingSlash is GC11's other half: the
+// PROM "Remote Directory" instruction prints RemoteDir exactly as given,
+// trailing slash included — that slash is required by the PROM prompt,
+// not decorative.
+func TestGenerateShowsRemoteDirWithTrailingSlash(t *testing.T) {
+	p := testParams()
+	got := Generate(p)
+	if !strings.Contains(got, p.RemoteDir) {
+		t.Errorf("Generate output missing Remote Directory value %q, got:\n%s", p.RemoteDir, got)
+	}
+	if !strings.HasSuffix(p.RemoteDir, "/") {
+		t.Fatal("test fixture bug: RemoteDir must carry a trailing slash")
+	}
+}
+
+// TestGenerateOpensAllSetsExplicitly is GC9/GC10 from the human-runbook
+// side: Generate must walk the operator through "from" on the first set
+// and an explicit "open" for every other set, in order, and must run the
+// same fixed selection block Commands emits.
+func TestGenerateOpensAllSetsExplicitly(t *testing.T) {
 	p := testParams()
 	got := Generate(p)
 
-	if got == "" {
-		t.Fatal("Generate returned empty string")
-	}
-
-	// The server IP and dist path must appear literally (not as
-	// placeholders), the release-stream choice must be named, and the
-	// canonical inst Main Menu commands must appear in the documented
-	// order: from, install, conflicts, go, quit.
 	inOrder(t, got,
-		p.Release,
-		p.ServerIP,
-		p.DistPath,
-		"from "+p.ServerIP+":"+p.DistPath,
-		"feature",
-		"install feature",
-		"go",
+		"from "+p.ServerIP+":"+p.Sets[0],
+		"open "+p.ServerIP+":"+p.Sets[1],
+		"open "+p.ServerIP+":"+p.Sets[2],
+		"open "+p.ServerIP+":"+p.Sets[3],
+		"return",
+		"keep *",
+		"install standard",
+		"keep incompleteoverlays",
+		"remove java_dev*",
+		"remove java2_plugin*",
 		"conflicts",
-		"go",
-		"quit",
 	)
 }
 
-// The stream choice is scriptable: "install maint"/"install feature" sets
-// it without waiting for Inst's interactive first-install prompt (SGI
-// IRIX Admin: Software Installation and Licensing, 007-1364-140, ch.7
-// "Maintenance Tips" > "Switching Streams" - "use the Inst commands
-// install feature or install maintenance when the Inst prompt first
-// appears"). The runbook must instruct that command, not "enter 1/2" at
-// a menu it never has to wait for.
-func TestGenerateMaintenanceStream(t *testing.T) {
-	p := testParams()
-	p.Stream = "maintenance"
-	got := Generate(p)
-
-	if !strings.Contains(got, "maintenance") {
-		t.Errorf("Generate with Stream=maintenance should mention \"maintenance\", got:\n%s", got)
-	}
-	// The interactive menu is still shown for orientation (what the
-	// command answers), the maintenance entry named correctly, but the
-	// instructed action is the scripted command.
-	inOrder(t, got, "1. Place me on the maintenance stream", "install maint")
-}
-
-func TestGenerateFeatureStream(t *testing.T) {
-	p := testParams()
-	p.Stream = "feature"
-	got := Generate(p)
-
-	inOrder(t, got, "2. Place me on the feature stream", "install feature")
-}
-
-// One "from" opens the whole set: instigator serves each disc whole and
-// synthesizes a .related_dists on the primary that names the rest, which
-// inst opens itself. The runbook has to say so. An operator who sees
-// eleven discs served under one name and no explanation reaches for a
-// per-disc "open" for each of the other ten - the very thing the
-// synthesized .related_dists exists to avoid.
-func TestGenerateSaysOneFromOpensTheWholeSet(t *testing.T) {
+// TestGenerateTellsOperatorToReviewConflictsThenGo is the human step
+// Commands deliberately can't cover: reviewing "conflicts" output is
+// interactive, so the runbook must instruct the operator to check it and
+// then type "go" themselves.
+func TestGenerateTellsOperatorToReviewConflictsThenGo(t *testing.T) {
 	p := testParams()
 	got := Generate(p)
 
-	inOrder(t, got, "from "+p.ServerIP+":"+p.DistPath, ".related_dists")
-
-	if n := strings.Count(got, "from "+p.ServerIP+":"); n != 1 {
-		t.Errorf("runbook has %d \"from\" commands, want exactly 1 for a combined set, got:\n%s", n, got)
-	}
-	if strings.Contains(got, "open "+p.ServerIP+":") {
-		t.Errorf("runbook tells the operator to \"open\" a disc by hand; inst opens the rest itself, got:\n%s", got)
+	inOrder(t, got, "conflicts", "go")
+	if !strings.Contains(got, "go") {
+		t.Errorf("Generate output should instruct the operator to type \"go\" once conflicts are resolved, got:\n%s", got)
 	}
 }
 
-// The runbook's PROM line and the one serve prints at startup are the
-// same command derived from the same path; if they ever disagree the
-// operator has two answers and no way to pick.
-func TestGeneratePROMBootLineMatchesStartupLog(t *testing.T) {
-	p := testParams()
-	const want = "boot -f bootp():/irix6.5.30/tools/stand/fx.64"
-	if got := promBootLine(p.DistPath); got != want {
-		t.Errorf("promBootLine(%q) = %q, want %q", p.DistPath, got, want)
-	}
-	if got := Generate(p); !strings.Contains(got, want) {
-		t.Errorf("runbook missing the primary disc's PROM boot line, got:\n%s", got)
-	}
-}
-
-func TestGeneratePROMBootLine(t *testing.T) {
+// TestGenerateDoesNotClaimRelatedDistsOpensDistributions is GC10: no text
+// anywhere in this package's output may claim .related_dists opens
+// distributions. The runbook opens every set with an explicit command
+// instead.
+func TestGenerateDoesNotClaimRelatedDistsOpensDistributions(t *testing.T) {
 	p := testParams()
 	got := Generate(p)
 
-	// A PROM boot-monitor line must be present for reference, following
-	// instigator's own established bootp() convention
-	// (internal/serve/serve.go logStartup / README.md).
-	if !strings.Contains(got, "boot -f bootp():") {
-		t.Errorf("Generate output missing a PROM boot line, got:\n%s", got)
-	}
-	if !strings.Contains(got, "stand/fx.64") {
-		t.Errorf("Generate output missing the fx.64 partitioner reference, got:\n%s", got)
+	for _, wrong := range []string{
+		"related_dists opens",
+		"related_dists lists the others, and inst opens",
+		"inst opens each of them",
+		"inst opens the rest",
+	} {
+		if strings.Contains(got, wrong) {
+			t.Errorf("Generate output must not claim .related_dists opens distributions (%q found), got:\n%s", wrong, got)
+		}
 	}
 }
 
@@ -148,88 +242,12 @@ func TestGenerateDifferentParamsProduceDifferentText(t *testing.T) {
 	p1 := testParams()
 	p2 := testParams()
 	p2.ServerIP = "192.0.2.99"
-	p2.DistPath = "/irix6.5/dist"
-	p2.Release = "6.5"
-	p2.Stream = "maintenance"
+	p2.Sets = []string{"/6.5/dist"}
+	p2.BootPath = ""
+	p2.RemoteDir = "6.5/dist/"
 
 	if Generate(p1) == Generate(p2) {
 		t.Error("Generate should produce different output for different Params")
-	}
-}
-
-func TestCommandsContainsSelectionDirectivesInOrder(t *testing.T) {
-	p := testParams()
-	got := Commands(p)
-
-	if got == "" {
-		t.Fatal("Commands returned empty string")
-	}
-
-	// admin source replays these lines in the plain Inst> vocabulary
-	// (from/install), not the -F selections-file directive grammar
-	// (don't install/don't remove) — see the package doc comment,
-	// confirmed against the field-tested walkthrough. "install feature"
-	// both sets the stream and does the "keep * ; install standard"
-	// product selection in one command (007-1364-140 ch.7).
-	inOrder(t, got,
-		"from "+p.ServerIP+":"+p.DistPath,
-		"install feature",
-		"install prereqs",
-		"keep incompleteoverlays",
-	)
-}
-
-// Commands must NOT emit go/quit/conflicts: neither the "admin source"
-// vocabulary nor inst's -F selections-file grammar has a way to trigger
-// the install or resolve a conflict from a file, so a caller that
-// included them would be promising non-interactive behavior inst does
-// not have. The release-stream prompt used to be excluded here too,
-// wrongly - see TestCommandsSetsStreamNonInteractively.
-func TestCommandsOmitsInteractiveOnlySteps(t *testing.T) {
-	p := testParams()
-	got := Commands(p)
-
-	for _, tok := range []string{"\ngo\n", "\nquit\n", "conflicts"} {
-		if strings.Contains(got, tok) {
-			t.Errorf("Commands output must not contain interactive-only step %q (inst's -F selections-file has no directive for it), got:\n%s", tok, got)
-		}
-	}
-}
-
-// TestCommandsSetsStreamNonInteractively is the fix: the release-stream
-// prompt DOES have a scripted equivalent, "install maint"/"install
-// feature" (007-1364-140 ch.7, "Switching Streams" - "use the Inst
-// commands install feature or install maintenance when the Inst prompt
-// first appears"), so Commands must include it rather than leave stream
-// selection as a step only Generate's human runbook covers.
-func TestCommandsSetsStreamNonInteractively(t *testing.T) {
-	feature := testParams()
-	feature.Stream = "feature"
-	if got := Commands(feature); !strings.Contains(got, "install feature") {
-		t.Errorf("Commands with Stream=feature should contain \"install feature\", got:\n%s", got)
-	}
-
-	maint := testParams()
-	maint.Stream = "maintenance"
-	got := Commands(maint)
-	if !strings.Contains(got, "install maint") {
-		t.Errorf("Commands with Stream=maintenance should contain \"install maint\", got:\n%s", got)
-	}
-	if strings.Contains(got, "install feature") {
-		t.Errorf("Commands with Stream=maintenance should not also contain \"install feature\", got:\n%s", got)
-	}
-}
-
-func TestCommandsOneCommandPerLine(t *testing.T) {
-	p := testParams()
-	got := Commands(p)
-
-	got = strings.TrimRight(got, "\n")
-	for _, line := range strings.Split(got, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			t.Error("Commands output has a blank line; expected one bare command per line")
-		}
 	}
 }
 
@@ -238,41 +256,48 @@ func TestGenerateMentionsAdminSource(t *testing.T) {
 	got := Generate(p)
 
 	// admin source <host>:<path> is the confirmed, field-tested way to
-	// load Commands()'s output into a running Inst session; the
-	// runbook should point operators at it rather than leave them to
-	// discover it separately.
+	// load Commands()'s output into a running Inst session; the runbook
+	// should point operators at it rather than leave them to discover it
+	// separately.
 	if !strings.Contains(got, "admin source") {
 		t.Errorf("Generate output should mention the \"admin source\" file-loading mechanism, got:\n%s", got)
 	}
 }
 
-// TestGenerateDoesNotClaimStreamIsUnscriptable is the other half of the
-// fix: the runbook used to tell operators the release-stream prompt
-// needed a human present. That was wrong - "install maint"/"install
-// feature" answers it - and the wrong claim must not still be in the
-// text next to the right command.
-func TestGenerateDoesNotClaimStreamIsUnscriptable(t *testing.T) {
-	p := testParams()
-	got := Generate(p)
-
-	if !strings.Contains(got, "install feature") {
-		t.Errorf("Generate output should instruct \"install feature\" to set the stream, got:\n%s", got)
+// TestRelatedDistsListsOtherSets: one "../../<setname>/dist" line per set
+// OTHER than sets[0], in order, trailing newline.
+func TestRelatedDistsListsOtherSets(t *testing.T) {
+	sets := []string{
+		"/6.5.30/dist",
+		"/foundations/dist",
+		"/applications/dist",
+		"/development/dist",
 	}
-	for _, wrong := range []string{
-		"no way to answer the release-stream",
-		"release-stream prompt or resolve",
-	} {
-		if strings.Contains(got, wrong) {
-			t.Errorf("Generate output still contains the retired claim %q that the stream choice can't be scripted, got:\n%s", wrong, got)
-		}
+	got := RelatedDists(sets)
+
+	want := "../../foundations/dist\n" +
+		"../../applications/dist\n" +
+		"../../development/dist\n"
+
+	if got != want {
+		t.Errorf("RelatedDists(%v) = %q, want %q", sets, got, want)
 	}
 }
 
-func TestCommandsIsDeterministic(t *testing.T) {
-	p := testParams()
-	a := Commands(p)
-	b := Commands(p)
+// TestRelatedDistsSingleSet: with only the primary set, there is nothing
+// else to list.
+func TestRelatedDistsSingleSet(t *testing.T) {
+	got := RelatedDists([]string{"/6.5.30/dist"})
+	if got != "" {
+		t.Errorf("RelatedDists with a single set = %q, want empty string", got)
+	}
+}
+
+func TestRelatedDistsIsDeterministic(t *testing.T) {
+	sets := []string{"/6.5.30/dist", "/foundations/dist"}
+	a := RelatedDists(sets)
+	b := RelatedDists(sets)
 	if a != b {
-		t.Error("Commands is not deterministic for identical Params")
+		t.Error("RelatedDists is not deterministic for identical input")
 	}
 }

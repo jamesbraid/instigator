@@ -13,18 +13,21 @@ import (
 	"github.com/jamesbraid/instigator/internal/vfs"
 )
 
-// realMediaDir holds the real IRIX 6.5.30 CD images. The test below is
-// skipped when it is absent, so CI (which has no SGI media) stays green
-// while a developer with the media gets byte-exact coverage of the rsh
-// dd path inst actually drives to fetch its distribution.
-const realMediaDir = "/storage/software/os/irix/Irix 6.5.30_cdimages"
+// realMediaImage is a real IRIX 6.5.30 Installation Tools image, served
+// here as the single layer of one install set. The test below is skipped
+// when it is absent, so CI (which has no SGI media) stays green while a
+// developer with the media gets byte-exact coverage of the rsh dd path
+// inst actually drives to fetch its distribution.
+const realMediaImage = "/storage/software/os/irix/Irix 6.5.30_cdimages/Instalation_Tools_and_Overlays1.image"
 
 // dist/sa on the Installation Tools disc, per the irix-efs-tools oracle
 // - the same file and checksum already checked over raw EFS reads in
-// internal/vfs and over the full NFS wire in internal/serve.
+// internal/vfs's own real-media test. internal/nfsexport is retained,
+// experimental, and out of the served path; it carries only synthetic
+// coverage, not this checksum.
 const (
-	realSAPath = "/6.5.30/instalation-tools-and-overlays1/dist/sa"
-	realSADir  = "/6.5.30/instalation-tools-and-overlays1/dist"
+	realSAPath = "/6.5.30/dist/sa"
+	realSADir  = "/6.5.30/dist"
 	realSASHA  = "cf4318a234aa2e3216799927d197f556d548e07200bb08eb9d486630dd0f48d5"
 	realSASize = 20067840
 )
@@ -39,15 +42,30 @@ func (f treeFS) Open(path string) (File, error) {
 	if errors.Is(err, vfs.ErrNotFound) {
 		return nil, fmt.Errorf("%s: %w", path, ErrNotFound)
 	}
-	return file, err
+	if err != nil {
+		return nil, err
+	}
+	regular, ok := file.(vfs.File)
+	if !ok {
+		file.Close()
+		return nil, fmt.Errorf("%s: not a regular file", path)
+	}
+	return regular, nil
 }
 
 func (f treeFS) ReadDir(path string) ([]string, error) {
-	names, err := f.t.ReadDir(path)
+	ents, err := f.t.ReadDir(path)
 	if errors.Is(err, vfs.ErrNotFound) {
 		return nil, fmt.Errorf("%s: %w", path, ErrNotFound)
 	}
-	return names, err
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(ents))
+	for _, e := range ents {
+		names = append(names, e.Name())
+	}
+	return names, nil
 }
 
 func (f treeFS) Stat(path string) (FileInfo, error) {
@@ -58,15 +76,19 @@ func (f treeFS) Stat(path string) (FileInfo, error) {
 	if err != nil {
 		return FileInfo{}, err
 	}
+	md, ok := info.Sys().(*vfs.Metadata)
+	if !ok {
+		md = &vfs.Metadata{}
+	}
 	return FileInfo{
-		Ino:   info.Ino,
-		IsDir: info.IsDir,
-		Perm:  info.Perm,
-		Nlink: info.Nlink,
-		UID:   info.UID,
-		GID:   info.GID,
-		Size:  info.Size,
-		Mtime: info.Mtime,
+		Ino:   md.Ino,
+		IsDir: info.IsDir(),
+		Perm:  uint32(info.Mode().Perm()),
+		Nlink: md.Nlink,
+		UID:   md.UID,
+		GID:   md.GID,
+		Size:  info.Size(),
+		Mtime: info.ModTime(),
 	}, nil
 }
 
@@ -93,10 +115,13 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 // implements - reads real IRIX media byte-exact, not just the synthetic
 // fixture in instcmd_test.go.
 func TestRSHRealMediaDD(t *testing.T) {
-	if _, err := os.Stat(realMediaDir); err != nil {
+	if _, err := os.Stat(realMediaImage); err != nil {
 		t.Skip("real IRIX 6.5.30 media not present")
 	}
-	tree, err := vfs.BuildTree([]vfs.MediaSet{{Name: "6.5.30", Dir: realMediaDir}})
+	tree, err := vfs.Build([]vfs.SetSpec{{
+		Name:   "6.5.30",
+		Layers: []vfs.LayerSpec{{Name: "tools", Image: realMediaImage, SourceDir: ".", TargetDir: "."}},
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}

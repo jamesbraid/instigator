@@ -2,326 +2,364 @@ package vfs
 
 import (
 	"bytes"
-	"fmt"
+	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jamesbraid/instigator/efs"
 )
 
-// ErrNotFound is returned for paths that do not resolve.
-var ErrNotFound = fmt.Errorf("not found")
-
-// MediaSet names a directory of CD images served under one media name.
-type MediaSet struct {
-	Name string
-	Dir  string
-
-	// DiscNames overrides the slugged serve name per image filename.
-	DiscNames map[string]string
-}
-
-// Tree is the assembled serve tree: /<media>/<disc>/<efs path>. All
-// protocol servers read through it.
+// Tree is the assembled install-set filesystem: one directory per
+// configured set, each the ordered merge of that set's layers, plus
+// whatever instigator generates in memory. It is read-only and safe for
+// concurrent use once Build returns.
+//
+// Names are io/fs names throughout - "." for the root, no leading slash,
+// no ".." - so a client can only ever address a path the build itself
+// materialized. Protocol adapters strip or add the leading slash their
+// wire format wants.
 type Tree struct {
-	medias    map[string]map[string]*Disc  // media -> disc slug -> disc
-	files     map[string]map[string]string // media -> disc slug -> image filename
-	combined  map[string]*combined         // combined-set name -> per-disc distributions
-	synthetic map[string][]byte            // top-level generated files (the runbook)
+	root    *node
+	closers []io.Closer
+	nextIno uint64
 }
 
-// File is an open random-access file from the tree.
+// File is an opened regular file: a standard fs.File that also supports
+// random access, which TFTP and instcmd need.
 type File interface {
+	fs.File
 	io.ReaderAt
 	Size() int64
 }
 
-// slug turns an image filename into a serve name: lowercase, extension
-// dropped, runs of non-alphanumerics collapsed to one dash.
-func slug(filename string) string {
-	base := strings.TrimSuffix(filename, filepath.Ext(filename))
-	var b strings.Builder
-	dash := false
-	for _, r := range strings.ToLower(base) {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			if dash && b.Len() > 0 {
-				b.WriteByte('-')
-			}
-			dash = false
-			b.WriteRune(r)
-		default:
-			dash = true
-		}
-	}
-	return b.String()
+// Metadata is FileInfo.Sys() for a tree path: the fields ls -l/-i and the
+// recorder need beyond fs.FileInfo. Ino is the stable per-path inode.
+type Metadata struct {
+	Ino    uint64
+	UID    uint32
+	GID    uint32
+	Nlink  int
+	Origin Origin
 }
 
-// BuildTree opens every image in every media set. Image files are
-// recognized by extension (.iso, .img, .image) or by parsing; files
-// that fail to parse as SGI media are skipped with an error only when
-// nothing at all could be served.
-func BuildTree(sets []MediaSet) (*Tree, error) {
-	t := &Tree{
-		medias: map[string]map[string]*Disc{},
-		files:  map[string]map[string]string{},
-	}
-	for _, set := range sets {
-		if _, dup := t.medias[set.Name]; dup {
-			return nil, fmt.Errorf("media %q defined twice", set.Name)
-		}
-		discs := map[string]*Disc{}
-		names := map[string]string{}
-		entries, err := os.ReadDir(set.Dir)
-		if err != nil {
-			t.Close()
-			return nil, err
-		}
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			d, err := OpenImage(filepath.Join(set.Dir, e.Name()))
-			if err != nil {
-				// not SGI media; leave a trace and move on
-				continue
-			}
-			name := set.DiscNames[e.Name()]
-			if name == "" {
-				name = slug(e.Name())
-			}
-			if _, dup := discs[name]; dup {
-				d.Close()
-				t.Close()
-				return nil, fmt.Errorf("media %q: disc name %q maps to two images", set.Name, name)
-			}
-			discs[name] = d
-			names[name] = e.Name()
-		}
-		if len(discs) == 0 {
-			t.Close()
-			return nil, fmt.Errorf("media %q: no SGI CD images found in %s", set.Name, set.Dir)
-		}
-		t.medias[set.Name] = discs
-		t.files[set.Name] = names
-	}
-	return t, nil
+// node is one materialized path. A directory holds children; a regular
+// file holds only what it takes to open its bytes later, so assembling a
+// tree never reads media content.
+type node struct {
+	name   string
+	dir    bool
+	ino    uint64
+	origin Origin
+
+	perm  fs.FileMode
+	size  int64
+	mtime time.Time
+	uid   uint32
+	gid   uint32
+	nlink int
+
+	children map[string]*node // directories
+
+	image *efs.FS    // image-backed files: the filesystem and inode
+	inode *efs.Inode //
+	root  *os.Root   // directory-backed files, read at origin.Path
+	data  []byte     // generated files
 }
 
-// Close releases every opened image.
+// newDir makes a merged directory node. A merge of layers has no inode of
+// its own, so it reports what a directory on the media reports: one EFS
+// directory block, linked from itself and its parent.
+func newDir(name string, origin Origin) *node {
+	return &node{
+		name:     name,
+		dir:      true,
+		origin:   origin,
+		size:     512,
+		nlink:    2,
+		children: map[string]*node{},
+	}
+}
+
+// errNotExist is what a missing path reports. It answers both
+// errors.Is(err, ErrNotFound) - instigator's own sentinel - and
+// errors.Is(err, fs.ErrNotExist), which io/fs callers test; ErrNotFound is
+// a plain sentinel and cannot answer the second on its own.
+type errNotExist struct{}
+
+func (errNotExist) Error() string { return ErrNotFound.Error() }
+
+func (errNotExist) Is(target error) bool {
+	return target == ErrNotFound || target == fs.ErrNotExist
+}
+
+var errNotDir = errors.New("not a directory")
+
+var errIsDir = errors.New("is a directory")
+
+// Open opens a tree path. A directory opens as an fs.ReadDirFile; a
+// regular file opens as a File, so a caller that needs random access can
+// assert for it.
+func (t *Tree) Open(name string) (fs.File, error) {
+	n, err := t.find("open", name)
+	if err != nil {
+		return nil, err
+	}
+	f, err := n.open()
+	if err != nil {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: err}
+	}
+	return f, nil
+}
+
+// ReadDir lists a tree directory, sorted lexically.
+func (t *Tree) ReadDir(name string) ([]fs.DirEntry, error) {
+	n, err := t.find("readdir", name)
+	if err != nil {
+		return nil, err
+	}
+	if !n.dir {
+		return nil, &fs.PathError{Op: "readdir", Path: name, Err: errNotDir}
+	}
+	return n.entries(), nil
+}
+
+// Stat describes a tree path. Sys reports a *Metadata: the stable inode,
+// the owner and link count, and the resolved origin.
+func (t *Tree) Stat(name string) (fs.FileInfo, error) {
+	n, err := t.find("stat", name)
+	if err != nil {
+		return nil, err
+	}
+	return fileInfo{n}, nil
+}
+
+// Resolve reports where a tree path's bytes come from: the configured
+// layer or generator, and the path within it. Every file resolves,
+// generated ones included, so a served-file manifest line can always name
+// its source. The tree root and the set directories are structural - no
+// single layer backs them - and resolve to the zero Origin.
+func (t *Tree) Resolve(name string) (Origin, error) {
+	n, err := t.find("resolve", name)
+	if err != nil {
+		return Origin{}, err
+	}
+	return n.origin, nil
+}
+
+// Close releases every source the build opened.
 func (t *Tree) Close() error {
-	for _, discs := range t.medias {
-		for _, d := range discs {
-			d.Close()
+	var first error
+	for _, c := range t.closers {
+		if err := c.Close(); err != nil && first == nil {
+			first = err
 		}
 	}
-	for _, c := range t.combined {
-		c.close()
-	}
-	return nil
+	t.closers = nil
+	return first
 }
 
-// DiscMap reports media -> disc slug -> image filename, for startup
-// logging and PROM hints.
-func (t *Tree) DiscMap() map[string]map[string]string { return t.files }
-
-// Resolved is what ResolveImage reports: Image is the backing image's
-// filename, Path is the location within that image's own EFS
-// filesystem - the two facts a served-file manifest log line needs.
-type Resolved struct {
-	Image string
-	Path  string
+// find resolves a name to its node, reporting the io/fs errors callers
+// test for: fs.ErrInvalid for a name io/fs would never produce, and both
+// ErrNotFound and fs.ErrNotExist for one that simply is not there.
+func (t *Tree) find(op, name string) (*node, error) {
+	if !fs.ValidPath(name) {
+		return nil, &fs.PathError{Op: op, Path: name, Err: fs.ErrInvalid}
+	}
+	n, ok := t.lookup(name)
+	if !ok {
+		return nil, &fs.PathError{Op: op, Path: name, Err: errNotExist{}}
+	}
+	return n, nil
 }
 
-// ResolveImage reports the image and in-image path a tree path maps
-// to, for a served-file log line. It repeats Open's own split without
-// opening anything, so a caller that already knows path is valid -
-// usually because it is about to read it, or just did - can say where
-// the bytes actually come from. A synthesized path (the generated
-// runbook, a combined set's synthesized .related_dists) has no
-// backing image and returns an error.
-func (t *Tree) ResolveImage(path string) (Resolved, error) {
-	trimmed := strings.Trim(path, "/")
-	if _, ok := t.synthetic[trimmed]; ok {
-		return Resolved{}, fmt.Errorf("%s: synthesized, no backing image", path)
+// lookup walks a valid io/fs name to its node.
+func (t *Tree) lookup(name string) (*node, bool) {
+	n := t.root
+	if name == "." {
+		return n, true
 	}
-	if c, ok := t.combined[strings.SplitN(trimmed, "/", 2)[0]]; ok {
-		rest := ""
-		if i := strings.IndexByte(trimmed, '/'); i >= 0 {
-			rest = trimmed[i+1:]
+	for _, part := range strings.Split(name, "/") {
+		if !n.dir {
+			return nil, false
 		}
-		r, err := c.resolveImage(rest)
-		if err != nil {
-			return Resolved{}, fmt.Errorf("%s: %w", path, err)
+		child, ok := n.children[part]
+		if !ok {
+			return nil, false
 		}
-		return r, nil
+		n = child
 	}
-	parts := strings.SplitN(trimmed, "/", 3)
-	if len(parts) < 2 {
-		return Resolved{}, fmt.Errorf("%s: %w", path, ErrNotFound)
-	}
-	names, ok := t.files[parts[0]]
-	if !ok {
-		return Resolved{}, fmt.Errorf("media %q: %w", parts[0], ErrNotFound)
-	}
-	image, ok := names[parts[1]]
-	if !ok {
-		return Resolved{}, fmt.Errorf("disc %q: %w", parts[1], ErrNotFound)
-	}
-	rest := "/"
-	if len(parts) == 3 {
-		rest = parts[2]
-	}
-	return Resolved{Image: image, Path: rest}, nil
+	return n, true
 }
 
-// resolve splits a tree path into the disc and the path within it.
-func (t *Tree) resolve(path string) (*Disc, string, error) {
-	parts := strings.SplitN(strings.Trim(path, "/"), "/", 3)
-	if len(parts) < 2 {
-		return nil, "", fmt.Errorf("%s: %w", path, ErrNotFound)
+// number assigns an inode to every node without one, by a lexical
+// pre-order walk starting at the root's own well-known number. Numbering
+// only the unassigned means a file generated after the build appends
+// instead of shifting an inode a client has already seen.
+func (t *Tree) number() {
+	if t.nextIno < uint64(efs.RootIno) {
+		t.nextIno = uint64(efs.RootIno)
 	}
-	discs, ok := t.medias[parts[0]]
-	if !ok {
-		return nil, "", fmt.Errorf("media %q: %w", parts[0], ErrNotFound)
+	var walk func(*node)
+	walk = func(n *node) {
+		if n.ino == 0 {
+			n.ino = t.nextIno
+			t.nextIno++
+		}
+		for _, name := range sortedNames(n.children) {
+			walk(n.children[name])
+		}
 	}
-	d, ok := discs[parts[1]]
-	if !ok {
-		return nil, "", fmt.Errorf("disc %q: %w", parts[1], ErrNotFound)
-	}
-	rest := "/"
-	if len(parts) == 3 {
-		rest = parts[2]
-	}
-	return d, rest, nil
+	walk(t.root)
 }
 
-// Open opens a file by tree path, following symlinks within the disc.
-func (t *Tree) Open(path string) (File, error) {
-	if c, ok := t.synthetic[strings.Trim(path, "/")]; ok {
-		return &bytesFile{r: bytes.NewReader(c), size: int64(len(c))}, nil
+// entries returns a directory's children as sorted fs.DirEntry values.
+func (n *node) entries() []fs.DirEntry {
+	names := sortedNames(n.children)
+	out := make([]fs.DirEntry, 0, len(names))
+	for _, name := range names {
+		out = append(out, fs.FileInfoToDirEntry(fileInfo{n.children[name]}))
 	}
-	parts := strings.SplitN(strings.Trim(path, "/"), "/", 2)
-	if c, ok := t.combined[parts[0]]; ok {
-		rest := ""
-		if len(parts) == 2 {
-			rest = parts[1]
-		}
-		f, err := c.open(rest)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
-		}
-		return f, nil
-	}
-	d, rest, err := t.resolve(path)
-	if err != nil {
-		return nil, err
-	}
-	node, err := d.lookupFollow(rest, 8)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, ErrNotFound)
-	}
-	if !node.IsRegular() {
-		return nil, fmt.Errorf("%s: not a regular file", path)
-	}
-	return &efsFile{fs: d.FS(), node: node}, nil
+	return out
 }
 
-// ReadDir lists names at any level: media sets at the root, discs
-// within a media, EFS directories below.
-func (t *Tree) ReadDir(path string) ([]string, error) {
-	trimmed := strings.Trim(path, "/")
-	if trimmed == "" {
-		names := sortedKeys(t.medias)
-		names = append(names, sortedKeys(t.combined)...)
-		for n := range t.synthetic {
-			names = append(names, n)
-		}
-		sort.Strings(names)
-		return names, nil
-	}
-	if c, ok := t.combined[strings.SplitN(trimmed, "/", 2)[0]]; ok {
-		rest := ""
-		if i := strings.IndexByte(trimmed, '/'); i >= 0 {
-			rest = trimmed[i+1:]
-		}
-		return c.readdir(rest)
-	}
-	parts := strings.SplitN(trimmed, "/", 3)
-	discs, ok := t.medias[parts[0]]
-	if !ok {
-		return nil, fmt.Errorf("media %q: %w", parts[0], ErrNotFound)
-	}
-	if len(parts) == 1 {
-		return sortedKeys(discs), nil
-	}
-	d, ok := discs[parts[1]]
-	if !ok {
-		return nil, fmt.Errorf("disc %q: %w", parts[1], ErrNotFound)
-	}
-	rest := "/"
-	if len(parts) == 3 {
-		rest = parts[2]
-	}
-	node, err := d.lookupFollow(rest, 8)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, ErrNotFound)
-	}
-	ents, err := d.FS().ReadDir(node)
-	if err != nil {
-		return nil, err
-	}
-	var names []string
-	for _, e := range ents {
-		names = append(names, e.Name)
+func sortedNames(children map[string]*node) []string {
+	names := make([]string, 0, len(children))
+	for name := range children {
+		names = append(names, name)
 	}
 	sort.Strings(names)
-	return names, nil
+	return names
 }
 
-// lookupFollow resolves an EFS path, following symlinks up to depth.
-func (d *Disc) lookupFollow(path string, depth int) (*efs.Inode, error) {
-	node, err := d.FS().Lookup(path)
-	if err != nil {
-		return nil, err
+// open opens the node's contents from whichever source backs it.
+func (n *node) open() (fs.File, error) {
+	if n.dir {
+		return &dirFile{n: n, ents: n.entries()}, nil
 	}
-	for node.IsSymlink() {
-		if depth == 0 {
-			return nil, fmt.Errorf("%s: too many symlinks", path)
-		}
-		depth--
-		target, err := d.FS().Readlink(node)
+	return n.openRegular()
+}
+
+func (n *node) openRegular() (File, error) {
+	switch n.origin.Kind {
+	case OriginImage:
+		return &imageFile{n: n}, nil
+	case OriginDirectory:
+		f, err := n.root.Open(filepath.FromSlash(n.origin.Path))
 		if err != nil {
 			return nil, err
 		}
-		if !strings.HasPrefix(target, "/") {
-			target = filepath.Join(filepath.Dir("/"+strings.Trim(path, "/")), target)
-		}
-		path = target
-		if node, err = d.FS().Lookup(path); err != nil {
-			return nil, err
-		}
+		return &diskFile{n: n, f: f}, nil
+	default:
+		return &memFile{n: n, r: bytes.NewReader(n.data)}, nil
 	}
-	return node, nil
 }
 
-func sortedKeys[M ~map[string]V, V any](m M) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
+// fileInfo is a node's fs.FileInfo. A directory reports a fixed
+// read-only mode because it is a merge of layers rather than any one
+// layer's inode; a regular file reports its own source's metadata.
+type fileInfo struct{ n *node }
+
+func (i fileInfo) Name() string { return i.n.name }
+func (i fileInfo) Size() int64  { return i.n.size }
+
+func (i fileInfo) Mode() fs.FileMode {
+	if i.n.dir {
+		return fs.ModeDir | 0o755
 	}
-	sort.Strings(keys)
-	return keys
+	return i.n.perm
 }
 
-// efsFile adapts an EFS inode to the File interface.
-type efsFile struct {
-	fs   *efs.FS
-	node *efs.Inode
+func (i fileInfo) ModTime() time.Time { return i.n.mtime }
+func (i fileInfo) IsDir() bool        { return i.n.dir }
+
+func (i fileInfo) Sys() any {
+	return &Metadata{
+		Ino:    i.n.ino,
+		UID:    i.n.uid,
+		GID:    i.n.gid,
+		Nlink:  i.n.nlink,
+		Origin: i.n.origin,
+	}
 }
 
-func (f *efsFile) ReadAt(p []byte, off int64) (int, error) { return f.fs.ReadAt(f.node, p, off) }
-func (f *efsFile) Size() int64                             { return int64(f.node.Size) }
+// dirFile is an opened directory. ReadDir walks the snapshot taken at
+// open, so a listing stays consistent across partial reads.
+type dirFile struct {
+	n    *node
+	ents []fs.DirEntry
+	off  int
+}
+
+func (d *dirFile) Stat() (fs.FileInfo, error) { return fileInfo{d.n}, nil }
+func (d *dirFile) Close() error               { return nil }
+
+func (d *dirFile) Read([]byte) (int, error) {
+	return 0, &fs.PathError{Op: "read", Path: d.n.name, Err: errIsDir}
+}
+
+func (d *dirFile) ReadDir(count int) ([]fs.DirEntry, error) {
+	rest := d.ents[d.off:]
+	if count <= 0 {
+		d.off = len(d.ents)
+		return rest, nil
+	}
+	if len(rest) == 0 {
+		return nil, io.EOF
+	}
+	if count > len(rest) {
+		count = len(rest)
+	}
+	d.off += count
+	return rest[:count], nil
+}
+
+// imageFile reads a regular file straight out of its EFS image; nothing
+// is buffered, so serving a 600MB product file costs no memory.
+type imageFile struct {
+	n   *node
+	off int64
+}
+
+func (f *imageFile) Stat() (fs.FileInfo, error) { return fileInfo{f.n}, nil }
+func (f *imageFile) Close() error               { return nil }
+func (f *imageFile) Size() int64                { return f.n.size }
+
+func (f *imageFile) Read(p []byte) (int, error) {
+	n, err := f.n.image.ReadAt(f.n.inode, p, f.off)
+	f.off += int64(n)
+	return n, err
+}
+
+func (f *imageFile) ReadAt(p []byte, off int64) (int, error) {
+	return f.n.image.ReadAt(f.n.inode, p, off)
+}
+
+// diskFile reads a regular file from a directory layer, through the
+// os.Root that bounds it.
+type diskFile struct {
+	n *node
+	f *os.File
+}
+
+func (f *diskFile) Stat() (fs.FileInfo, error)              { return fileInfo{f.n}, nil }
+func (f *diskFile) Close() error                            { return f.f.Close() }
+func (f *diskFile) Size() int64                             { return f.n.size }
+func (f *diskFile) Read(p []byte) (int, error)              { return f.f.Read(p) }
+func (f *diskFile) ReadAt(p []byte, off int64) (int, error) { return f.f.ReadAt(p, off) }
+
+// memFile serves a generated file's bytes.
+type memFile struct {
+	n *node
+	r *bytes.Reader
+}
+
+func (f *memFile) Stat() (fs.FileInfo, error)              { return fileInfo{f.n}, nil }
+func (f *memFile) Close() error                            { return nil }
+func (f *memFile) Size() int64                             { return f.n.size }
+func (f *memFile) Read(p []byte) (int, error)              { return f.r.Read(p) }
+func (f *memFile) ReadAt(p []byte, off int64) (int, error) { return f.r.ReadAt(p, off) }
