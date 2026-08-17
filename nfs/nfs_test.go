@@ -5,27 +5,37 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/jamesbraid/instigator/internal/logging"
 	"github.com/jamesbraid/instigator/nfs"
 )
 
 // memNode / memFS implement nfs.FS in memory.
 type memNode struct {
-	id      uint64
-	mode    uint32 // unix mode incl type bits
-	size    int64
-	mtime   uint32
-	data    []byte
-	entries map[string]*memNode
-	target  string
+	id       uint64
+	mode     uint32 // unix mode incl type bits
+	size     int64
+	mtime    uint32
+	data     []byte
+	entries  map[string]*memNode
+	target   string
+	describe string // non-empty implements nfs.Describer, for the per-open log test
 }
 
 func (n *memNode) ID() uint64    { return n.id }
 func (n *memNode) Mode() uint32  { return n.mode }
 func (n *memNode) Size() int64   { return n.size }
 func (n *memNode) Mtime() uint32 { return n.mtime }
+
+// Describe implements nfs.Describer only when the fixture set one:
+// TestLookupLogsOpenOncePerRegularFile needs it, everything else
+// exercises the ordinary no-Describer path other FS implementations
+// take.
+func (n *memNode) Describe() string { return n.describe }
 
 type memFS struct {
 	root *memNode
@@ -94,8 +104,13 @@ func testFS() *memFS {
 
 // startNFS runs portmap, mountd and nfsd on loopback ephemeral ports.
 func startNFS(t *testing.T) (*nfs.Server, *net.UDPAddr) {
+	return startNFSServer(t, &nfs.Server{FS: testFS()})
+}
+
+// startNFSServer is startNFS for a caller that needs its own FS or
+// Logger on the Server, e.g. to capture the per-open log line.
+func startNFSServer(t *testing.T, s *nfs.Server) (*nfs.Server, *net.UDPAddr) {
 	t.Helper()
-	s := &nfs.Server{FS: testFS()}
 	pm, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -357,6 +372,78 @@ func TestWriteRefused(t *testing.T) {
 	rep := rpcCall(t, na, 100003, 2, 8, args.Bytes())
 	if st := u32(rep, 0); st != 30 { // NFSERR_ROFS
 		t.Fatalf("WRITE status = %d, want 30 (read-only fs)", st)
+	}
+}
+
+// syncLogBuf is a mutex-protected buffer: the server logs from its own
+// goroutines while a test is still making RPC calls on another.
+type syncLogBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncLogBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncLogBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestLookupLogsOpenOncePerRegularFile is the requirement: a per-open
+// manifest, not a per-RPC trace. One LOOKUP of a regular file logs one
+// INFO line naming it; GETATTR/READ against the handle LOOKUP already
+// returned add nothing more, and a LOOKUP that resolves to a directory
+// or a symlink - not the thing being "opened" - never logs at all.
+func TestLookupLogsOpenOncePerRegularFile(t *testing.T) {
+	var logbuf syncLogBuf
+	logger := logging.New(&logbuf, logging.LevelInfo)
+	fs := testFS()
+	fs.byID[10].describe = "test.iso:/hello.txt" // the regular file, id 10
+	s, pm := startNFSServer(t, &nfs.Server{FS: fs, Logger: logger})
+	root := mnt(t, s, pm, "/")
+	na := nfsAddr(t, s, pm)
+
+	lookup := func(fh []byte, name string) []byte {
+		var b bytes.Buffer
+		b.Write(fh)
+		binary.Write(&b, binary.BigEndian, uint32(len(name)))
+		b.WriteString(name)
+		for b.Len()%4 != 0 {
+			b.WriteByte(0)
+		}
+		return rpcCall(t, na, 100003, 2, 4, b.Bytes()) // LOOKUP
+	}
+
+	rep := lookup(root, "hello.txt")
+	if st := u32(rep, 0); st != 0 {
+		t.Fatalf("LOOKUP hello.txt status = %d", st)
+	}
+	fh := rep[4:36]
+	if got := strings.Count(logbuf.String(), "nfs: opened test.iso:/hello.txt"); got != 1 {
+		t.Fatalf("logged %d opens after one LOOKUP, want 1:\n%s", got, logbuf.String())
+	}
+
+	rpcCall(t, na, 100003, 2, 1, fh) // GETATTR
+	var readArgs bytes.Buffer
+	readArgs.Write(fh)
+	binary.Write(&readArgs, binary.BigEndian, uint32(0))
+	binary.Write(&readArgs, binary.BigEndian, uint32(100))
+	binary.Write(&readArgs, binary.BigEndian, uint32(0))
+	rpcCall(t, na, 100003, 2, 6, readArgs.Bytes()) // READ
+	if got := strings.Count(logbuf.String(), "nfs: opened"); got != 1 {
+		t.Fatalf("GETATTR/READ against an open handle logged again: %d opens, want 1:\n%s", got, logbuf.String())
+	}
+
+	if rep := lookup(root, "link"); u32(rep, 0) != 0 {
+		t.Fatalf("LOOKUP link status = %d", u32(rep, 0))
+	}
+	if got := strings.Count(logbuf.String(), "nfs: opened"); got != 1 {
+		t.Fatalf("LOOKUP of a symlink logged an open: %d opens, want still 1:\n%s", got, logbuf.String())
 	}
 }
 

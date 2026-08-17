@@ -38,6 +38,15 @@ type DirEntry struct {
 	Node Node
 }
 
+// Describer is optionally implemented by a Node that can render its
+// own path and backing image, for the per-open log line nfsLookup
+// emits when the resolved node is a regular file. An FS whose Node
+// doesn't back onto named media (a test double, say) need not
+// implement it; that log line is simply skipped.
+type Describer interface {
+	Describe() string
+}
+
 // FS is the tree the server exports. All methods are read-only. Node
 // IDs must be unique across everything the FS can mount, since the ID is
 // the filehandle the client keeps.
@@ -60,8 +69,10 @@ type Server struct {
 	AllowIP func(netip.Addr) bool
 
 	// Logger, when set, receives leveled log output: DEBUG for every
-	// RPC call (program, procedure, caller), INFO for a mount, WARN for
-	// a call refused by the client filter. A nil Logger is silent.
+	// RPC call (program, procedure, caller), INFO for a mount and each
+	// regular file opened (once per LOOKUP that resolves to one, not
+	// per read/getattr against an already-open handle), WARN for a
+	// call refused by the client filter. A nil Logger is silent.
 	Logger *logging.Logger
 
 	// Ports portmap hands out. Atomic because SetPorts can race the

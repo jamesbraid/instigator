@@ -157,6 +157,16 @@ func (s *Server) nfsLookup(_ net.Addr, r *xdrReader) []byte {
 		w.uint32(statusFor(err))
 		return w.b
 	}
+	// Log once, here, for a regular file - the NFSv2 equivalent of an
+	// open, since a client LOOKUPs a file once and READs the handle it
+	// gets back rather than reopening it. A directory component on the
+	// way there doesn't log: this is a manifest of files served, not a
+	// trace of every path element walked.
+	if ftype(child.Mode()) == nfREG {
+		if d, ok := child.(Describer); ok {
+			s.Logger.Infof("nfs: opened %s", d.Describe())
+		}
+	}
 	w.uint32(nfsOK)
 	w.fixed(encodeFH(child.ID()))
 	writeFattr(w, child)
