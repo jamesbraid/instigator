@@ -16,13 +16,50 @@ clients:
     mac: "08:00:69:0e:af:12"
     ip: 192.0.2.30
 
-# Each media set is a directory of CD images, served as-is. Disc serve
-# names are slugged from the filenames; override any of them here.
-media:
+# Each install set is one served IRIX distribution tree, assembled by
+# layering ordered CD images (or pre-extracted directories) on top of
+# each other. No disc name ever appears in the served path - a set's
+# layers merge into one tree at /<name>. Every configured set is always
+# built and browsable; "enabled" (true by default; see the second set
+# below) controls only whether a set is offered in the generated
+# inst.init/admin-source command file and the printed Inst>
+# instructions.
+install_sets:
+  # The base release. The first layer's whole root becomes the set
+  # root - source_dir and target_dir both default to "." - which is
+  # what keeps stand/ (the PROM boot files fx and sash) and
+  # installtools/ available alongside dist/. A later disc from the same
+  # release normally contributes only its own dist directory, merged
+  # into this set's dist.
   - name: "6.5.30"
-    discs: /media/6.5.30
-    # disc_names:
-    #   "IRIX 6.5.30 Installation Tools.iso": tools
+    layers:
+      - name: overlays1
+        image: /media/6.5.30/overlays1.image
+      - name: overlays2
+        image: /media/6.5.30/overlays2.image
+        source_dir: dist
+        target_dir: dist
+
+  # A second set, opened after the first at the Inst> prompt. Its
+  # second layer is a version-stub disc whose real distribution
+  # directory is dist6.5 - rebased here onto this set's logical dist,
+  # so inst never sees the "dist6.5" name. Both layers ship an
+  # inst.README with different text at the same served path,
+  # foundations/dist/inst.README; collisions names the layer whose
+  # copy wins. Any other file that differs at the same path with no
+  # entry here fails the build instead of guessing - only exact,
+  # reviewed overrides get to pick a winner.
+  - name: foundations
+    layers:
+      - name: foundation1
+        image: /media/foundations/foundation1.image
+      - name: onc3-nfs
+        image: /media/foundations/onc3-nfs.image
+        source_dir: dist6.5
+        target_dir: dist
+    collisions:
+      foundations/dist/inst.README: foundation1
+    # enabled: false   # still built and browsable; just not opened
 
 services:
   bootp: true
@@ -31,6 +68,3 @@ services:
     # transfer sockets low.
     port_range: [2048, 32767]
   rsh: true
-  # NFS is an alternative to rsh for the distribution. Off until proven
-  # against your miniroot.
-  nfs: false
