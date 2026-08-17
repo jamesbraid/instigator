@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"syscall"
 
+	"github.com/jamesbraid/instigator/internal/capture"
 	"github.com/jamesbraid/instigator/internal/logging"
 )
 
@@ -47,6 +48,10 @@ type Server struct {
 	// datagram decoded, INFO for each request answered or ignored,
 	// ERROR for a reply that failed to send. A nil Logger is silent.
 	Logger *logging.Logger
+
+	// Recorder, when set, receives a bootp_reply record for each request
+	// answered or ignored. A nil Recorder is a no-op.
+	Recorder *capture.Recorder
 }
 
 // Serve answers requests arriving on pc (conventionally bound to :67)
@@ -80,6 +85,13 @@ func (s *Server) Serve(pc net.PacketConn) error {
 		}
 		reply := s.handle(buf[:n])
 		if reply == nil {
+			// A well-formed request from a MAC we don't serve is a
+			// meaningful "ignored"; a non-request datagram is just noise.
+			if s.Recorder != nil {
+				if mac, file, ok := parseRequest(buf[:n]); ok {
+					s.Recorder.BootpReply("", mac.String(), file, "", "ignored")
+				}
+			}
 			continue
 		}
 		dst := s.ReplyAddr
@@ -103,10 +115,42 @@ func (s *Server) Serve(pc net.PacketConn) error {
 		if s.Logger.Enabled(logging.LevelDebug) {
 			s.Logger.Debugf("bootp: send %d bytes to %s (%s)\n%s", len(reply), dst, how, decodeReq(reply))
 		}
+		result := "answered"
 		if _, err := pc.WriteTo(reply, dst); err != nil {
 			s.Logger.Errorf("bootp: reply to %s: %v", dst, err)
+			result = "error"
+		}
+		if s.Recorder != nil {
+			if mac, file, ok := parseRequest(buf[:n]); ok {
+				alias, ip := "", ""
+				if c := s.lookupClient(mac); c != nil {
+					alias, ip = c.Name, c.IP.String()
+				}
+				s.Recorder.BootpReply(alias, mac.String(), file, ip, result)
+			}
 		}
 	}
+}
+
+// parseRequest validates a BOOTP packet and extracts the client MAC and
+// the boot file it asked for. ok is false for anything that is not a
+// well-formed ethernet BOOTREQUEST, so both handle and the Serve recorder
+// classify a datagram the same way.
+func parseRequest(req []byte) (mac net.HardwareAddr, file string, ok bool) {
+	if len(req) < packetLen || req[0] != 1 || req[1] != 1 || req[2] != 6 {
+		return nil, "", false
+	}
+	return net.HardwareAddr(req[28:34]), string(bytes.TrimRight(req[108:236], "\x00")), true
+}
+
+// lookupClient returns the configured client with the given MAC, or nil.
+func (s *Server) lookupClient(mac net.HardwareAddr) *Client {
+	for i := range s.Clients {
+		if bytes.Equal(s.Clients[i].MAC, mac) {
+			return &s.Clients[i]
+		}
+	}
+	return nil
 }
 
 // decodeReq renders the header fields of a BOOTP packet for verbose logs.
@@ -127,28 +171,15 @@ func decodeReq(p []byte) string {
 // handle builds the reply for one packet, or nil when the packet is not
 // a request from a configured client.
 func (s *Server) handle(req []byte) []byte {
-	if len(req) < packetLen {
+	mac, file, ok := parseRequest(req)
+	if !ok {
 		return nil
 	}
-	if req[0] != 1 { // BOOTREQUEST
-		return nil
-	}
-	if req[1] != 1 || req[2] != 6 { // ethernet, 6-byte MAC
-		return nil
-	}
-	mac := net.HardwareAddr(req[28:34])
-	var client *Client
-	for i := range s.Clients {
-		if bytes.Equal(s.Clients[i].MAC, mac) {
-			client = &s.Clients[i]
-			break
-		}
-	}
+	client := s.lookupClient(mac)
 	if client == nil {
 		s.Logger.Infof("bootp: ignoring request from %s (not configured)", mac)
 		return nil
 	}
-	file := string(bytes.TrimRight(req[108:236], "\x00"))
 	s.Logger.Infof("bootp: answering %s (%s): ip=%s file=%q", mac, client.Name, client.IP, file)
 
 	rep := make([]byte, packetLen)
