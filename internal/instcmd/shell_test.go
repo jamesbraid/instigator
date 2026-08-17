@@ -47,7 +47,7 @@ func runShellWithFS(t *testing.T, fsys FileSystem, level logging.Level, script s
 	t.Helper()
 	var outb, errbb, logbuf strings.Builder
 	logger := logging.New(&logbuf, level)
-	if err := RunShell(fsys, strings.NewReader(script), &outb, &errbb, logger); err != nil {
+	if err := RunShell(fsys, strings.NewReader(script), &outb, &errbb, logger, nil); err != nil {
 		t.Fatalf("RunShell: %v (stderr: %s)", err, errbb.String())
 	}
 	t.Logf("server log:\n%s", logbuf.String())
@@ -376,7 +376,7 @@ func TestShellRefusedCommandLogsErrorOnServerSide(t *testing.T) {
 	var out, errb, logbuf strings.Builder
 	logger := logging.New(&logbuf, logging.LevelInfo) // default level: no -v
 	script := "not-a-real-command foo\n"
-	if err := RunShell(shellTestFS(), strings.NewReader(script), &out, &errb, logger); err != nil {
+	if err := RunShell(shellTestFS(), strings.NewReader(script), &out, &errb, logger, nil); err != nil {
 		t.Fatal(err)
 	}
 

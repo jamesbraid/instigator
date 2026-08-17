@@ -191,7 +191,7 @@ func TestRunShellStreamsCommands(t *testing.T) {
 	var out, errb, logbuf strings.Builder
 	stdin := strings.NewReader("echo hello\nls /6.5.30/disc1/dist\ndd if=/6.5.30/disc1/dist/sa bs=512 count=1\n\ntrap \"\" 2 3\n")
 	logger := logging.New(&logbuf, logging.LevelDebug)
-	if err := RunShell(testFS(), stdin, &out, &errb, logger); err != nil {
+	if err := RunShell(testFS(), stdin, &out, &errb, logger, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(out.String(), "hello\n") {
@@ -209,7 +209,7 @@ func TestRunShellStreamsCommands(t *testing.T) {
 func TestRunShellContinuesPastUnknownCommand(t *testing.T) {
 	var out, errb strings.Builder
 	stdin := strings.NewReader("rm -rf /\necho survived\n")
-	if err := RunShell(testFS(), stdin, &out, &errb, nil); err != nil {
+	if err := RunShell(testFS(), stdin, &out, &errb, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "survived") {
@@ -226,7 +226,7 @@ func TestRunShellMarkerProtocol(t *testing.T) {
 	stdin := strings.NewReader(
 		"dd if=/6.5.30/disc1/dist/sa bs=512 count=1\n" +
 			"trap : 2 ; ( status=$? ; trap '' 2 ; echo 'o?_InstProc9IsDone\\c' ; echo 'o?_InstProc9IsDone'$status'\\c' 1>&2 )\n")
-	if err := RunShell(testFS(), stdin, &out, &errb, nil); err != nil {
+	if err := RunShell(testFS(), stdin, &out, &errb, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	// stdout: the dd data (512 bytes of 'S') then the marker with no newline
@@ -253,7 +253,7 @@ func TestShellFgrepFiltersMachLines(t *testing.T) {
 	// inst reports "No valid products in distribution".
 	var out, errb strings.Builder
 	stdin := strings.NewReader("echo 'x mach(IP30) y\\nplain line\\nz mach(IP32)' | fgrep ' mach('\n")
-	if err := RunShell(testFS(), stdin, &out, &errb, nil); err != nil {
+	if err := RunShell(testFS(), stdin, &out, &errb, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()
@@ -272,7 +272,7 @@ func TestShellGrepExitStatus(t *testing.T) {
 	stdin := strings.NewReader(
 		"echo 'nothing here' | fgrep ' mach(' ; echo \"miss=$?\"\n" +
 			"echo 'has mach( in it' | fgrep ' mach(' ; echo \"hit=$?\"\n")
-	if err := RunShell(testFS(), stdin, &out, &errb, nil); err != nil {
+	if err := RunShell(testFS(), stdin, &out, &errb, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	got := out.String()
@@ -289,7 +289,7 @@ func TestSplitMarkerFirstProbe(t *testing.T) {
 	var out, errb strings.Builder
 	stdin := strings.NewReader(
 		"trap : 2 ; ( status=$? ; trap '' 2 ; echo 'o?_InstProc1IsDone\\c' ; echo 'o?_InstProc1IsDone'$status'\\c' 1>&2 )\n")
-	if err := RunShell(testFS(), stdin, &out, &errb, nil); err != nil {
+	if err := RunShell(testFS(), stdin, &out, &errb, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if out.String() != "o?_InstProc1IsDone" || errb.String() != "o?_InstProc1IsDone0" {

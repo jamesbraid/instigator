@@ -21,8 +21,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
+	"github.com/jamesbraid/instigator/internal/capture"
 	"github.com/jamesbraid/instigator/internal/logging"
 	"mvdan.cc/sh/v3/expand"
 	"mvdan.cc/sh/v3/interp"
@@ -52,6 +54,15 @@ type shellEnv struct {
 	fsys   FileSystem
 	cwd    string // always an absolute, path.Clean'd vfs path
 	logger *logging.Logger
+	sess   *capture.Session // nil when capture is off; every use is nil-safe
+
+	// refused is set by any handler that refuses a command as policy (not
+	// whitelisted, a write attempt, an operand it won't accept), so the
+	// scanner loop can record the command's result as "refused" rather
+	// than an indistinguishable nonzero exit. It is per-command: the loop
+	// clears it before each line. Atomic because a pipeline's stages run
+	// in concurrent goroutines that may each refuse.
+	refused atomic.Bool
 }
 
 func newShellEnv(fsys FileSystem, logger *logging.Logger) *shellEnv {
@@ -99,10 +110,12 @@ func (e *shellEnv) logServed(rawPath string) {
 	if ir, ok := e.fsys.(ImageResolver); ok {
 		if r, err := ir.ResolveImage(e.fsPath(rawPath)); err == nil {
 			e.logger.Infof("instcmd: served %s  <-  %s:/%s", abs, r.Image, r.Path)
+			e.sess.RecordServed(abs, r.Image, r.Path)
 			return
 		}
 	}
 	e.logger.Infof("instcmd: served %s", abs)
+	e.sess.RecordServed(abs, "", "")
 }
 
 // baseName returns the last path component of a command name, so
@@ -125,8 +138,20 @@ func baseName(cmd string) string {
 // shell keeps going - a real shell continues past a ';'-separated
 // failure - matching inst's expectation that the trailing marker
 // wrapper always still runs.
-func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, logger *logging.Logger) error {
+func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, logger *logging.Logger, sess *capture.Session) error {
+	// With capture on, count every EFS backing read against the current
+	// command (countingFS) and every socket write - stdout and stderr both
+	// bind to the rsh connection - against the command and the session.
+	// countingFS keeps ImageResolver working by delegating, so logServed
+	// still reports the backing image. All of this is skipped when sess is
+	// nil so capture-off costs nothing.
+	if sess != nil {
+		fsys = countingFS{inner: fsys, sess: sess}
+		stdout = sess.WrapWriter(stdout, false)
+		stderr = sess.WrapWriter(stderr, true)
+	}
 	env := newShellEnv(fsys, logger)
+	env.sess = sess
 	runner, err := interp.New(
 		interp.StdIO(nil, stdout, stderr),
 		interp.Env(expand.ListEnviron("PATH=", "HOME=/", "IFS= \t\n")),
@@ -166,17 +191,28 @@ func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, logger
 			logger.Warnf("instcmd: rsh-sh: %q: parse error: %v", line, perr)
 			continue
 		}
+		// One scanner line is one command. Clear the per-command refusal
+		// flag, mark this command current so the counting wrappers
+		// attribute to it, run it, then record its exit status and whether
+		// a handler refused it.
+		env.refused.Store(false)
+		cmd := sess.BeginCommand(line)
+		status := 0
 		if err := runner.Run(ctx, file); err != nil {
 			var exit interp.ExitStatus
-			if !errors.As(err, &exit) {
+			if errors.As(err, &exit) {
+				status = int(exit)
+			} else {
 				// A command's own nonzero exit already wrote its
 				// diagnostic; this branch is a runner-level failure the
 				// leaf commands never produce (they only ever return
 				// ExitStatus), so it's worth surfacing on its own line.
+				status = -1
 				fmt.Fprintf(stderr, "%v\n", err)
 				logger.Errorf("instcmd: rsh-sh: %q: %v", line, err)
 			}
 		}
+		cmd.End(status, env.refused.Load())
 		if runner.Exited() {
 			break
 		}
@@ -256,6 +292,7 @@ func callHandler(env *shellEnv) interp.CallHandlerFunc {
 			// a side effect.
 			fmt.Fprintf(hc.Stderr, "%s: not supported\n", args[0])
 			env.logger.Errorf("instcmd: %s: not supported", args[0])
+			env.refused.Store(true)
 			return []string{"false"}, nil
 		default:
 			return args, nil
@@ -460,6 +497,7 @@ func execHandler(env *shellEnv) interp.ExecHandlerFunc {
 		default:
 			fmt.Fprintf(hc.Stderr, "%s: not supported\n", args[0])
 			env.logger.Errorf("instcmd: %s: not supported", args[0])
+			env.refused.Store(true)
 			return interp.ExitStatus(1)
 		}
 	}
@@ -778,6 +816,7 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 		case "of":
 			fmt.Fprintln(hc.Stderr, "dd: of=: not supported (read-only)")
 			env.logger.Errorf("instcmd: dd: of=: not supported (read-only)")
+			env.refused.Store(true)
 			return interp.ExitStatus(1)
 		case "bs":
 			n, err := parseSize(v)
@@ -826,6 +865,7 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 		default:
 			fmt.Fprintf(hc.Stderr, "dd: operand %q not supported\n", k)
 			env.logger.Errorf("instcmd: dd: operand %q not supported", k)
+			env.refused.Store(true)
 			return interp.ExitStatus(1)
 		}
 	}
@@ -910,6 +950,7 @@ func openHandler(env *shellEnv) interp.OpenHandlerFunc {
 		}
 		if flag&(os.O_WRONLY|os.O_RDWR|os.O_CREATE|os.O_APPEND|os.O_TRUNC|os.O_EXCL) != 0 {
 			env.logger.Errorf("instcmd: redirect: %s: not supported (read-only)", path)
+			env.refused.Store(true)
 			return nil, &os.PathError{Op: "open", Path: path, Err: errReadOnly}
 		}
 		f, err := env.fsys.Open(env.fsPath(path))
@@ -938,6 +979,44 @@ type devNull struct{}
 func (devNull) Read([]byte) (int, error)    { return 0, io.EOF }
 func (devNull) Write(p []byte) (int, error) { return len(p), nil }
 func (devNull) Close() error                { return nil }
+
+// countingFS wraps the FileSystem while capture is on, so every file a
+// leaf command opens counts its EFS backing reads against the command
+// current when it was opened. It delegates ImageResolver so logServed
+// still reports the backing image; ReadDir/Stat pass straight through
+// (they don't read file content, so they carry no read cost worth
+// counting).
+type countingFS struct {
+	inner FileSystem
+	sess  *capture.Session
+}
+
+func (c countingFS) Open(path string) (File, error) {
+	f, err := c.inner.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	return countingFile{ReaderAt: c.sess.WrapReaderAt(f), size: f.Size()}, nil
+}
+
+func (c countingFS) ReadDir(path string) ([]string, error) { return c.inner.ReadDir(path) }
+func (c countingFS) Stat(path string) (FileInfo, error)    { return c.inner.Stat(path) }
+
+func (c countingFS) ResolveImage(path string) (Resolved, error) {
+	if ir, ok := c.inner.(ImageResolver); ok {
+		return ir.ResolveImage(path)
+	}
+	return Resolved{}, ErrNotFound
+}
+
+// countingFile is an open file whose ReadAt calls are counted (via the
+// wrapped ReaderAt) while keeping the original Size.
+type countingFile struct {
+	io.ReaderAt
+	size int64
+}
+
+func (f countingFile) Size() int64 { return f.size }
 
 // readDirHandler backs shell globbing. inst's observed corpus doesn't
 // glob, but wiring it correctly costs little: each entry's metadata
