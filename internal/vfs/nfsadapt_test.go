@@ -63,6 +63,37 @@ func TestNFSExportRootLookupRead(t *testing.T) {
 	}
 }
 
+// Describe backs NFS's per-open log line, so it must name the real
+// image and build up the in-image path across Lookups, not just the
+// leaf name of whatever was last looked up.
+func TestNFSExportDescribe(t *testing.T) {
+	tree := singleDiscTree(t)
+	exp := tree.NFSExport()
+
+	root, err := exp.MountRoot("6.5.30/disc1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, ok := root.(interface{ Describe() string }); !ok || d.Describe() != "disc1.iso:/" {
+		t.Fatalf("root Describe = %v", root)
+	}
+	dist, err := exp.Lookup(root, "dist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sa, err := exp.Lookup(dist, "sa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, ok := sa.(interface{ Describe() string })
+	if !ok {
+		t.Fatal("sa does not implement Describe")
+	}
+	if got, want := d.Describe(), "disc1.iso:/dist/sa"; got != want {
+		t.Fatalf("Describe() = %q, want %q", got, want)
+	}
+}
+
 func TestNFSExportUnknownDisc(t *testing.T) {
 	tree := singleDiscTree(t)
 	if _, err := tree.NFSExport().MountRoot("6.5.30/absent"); err == nil {

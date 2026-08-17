@@ -133,6 +133,37 @@ func TestCombinedServesEachDiscWhole(t *testing.T) {
 	}
 }
 
+// ResolveImage over a combined set must name the actual image file
+// each disc came from, not the combined set's own synthesized name -
+// AddCombined's imagePaths are what's on disk, not what serves.
+func TestCombinedResolveImage(t *testing.T) {
+	dir := t.TempDir()
+	found := combImage(t, dir, "foundation1.iso", foundationDist)
+	primary := combImage(t, dir, "tools.image", primaryDist)
+
+	tree, _ := BuildTree(nil)
+	defer tree.Close()
+	if _, err := tree.AddCombined("full", []string{found, primary}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := tree.ResolveImage("full/foundation1/dist/foundation.sw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Image != "foundation1.iso" {
+		t.Fatalf("image = %q", r.Image)
+	}
+	if r.Path != "dist/foundation.sw" {
+		t.Fatalf("path = %q", r.Path)
+	}
+
+	// the synthesized .related_dists has no backing image
+	if _, err := tree.ResolveImage("full/tools/dist/.related_dists"); err == nil {
+		t.Fatal("resolved an image for the synthesized .related_dists")
+	}
+}
+
 func TestCombinedListsAndStats(t *testing.T) {
 	dir := t.TempDir()
 	found := combImage(t, dir, "foundation1.iso", foundationDist)

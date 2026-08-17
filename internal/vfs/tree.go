@@ -128,6 +128,56 @@ func (t *Tree) Close() error {
 // logging and PROM hints.
 func (t *Tree) DiscMap() map[string]map[string]string { return t.files }
 
+// Resolved is what ResolveImage reports: Image is the backing image's
+// filename, Path is the location within that image's own EFS
+// filesystem - the two facts a served-file manifest log line needs.
+type Resolved struct {
+	Image string
+	Path  string
+}
+
+// ResolveImage reports the image and in-image path a tree path maps
+// to, for a served-file log line. It repeats Open's own split without
+// opening anything, so a caller that already knows path is valid -
+// usually because it is about to read it, or just did - can say where
+// the bytes actually come from. A synthesized path (the generated
+// runbook, a combined set's synthesized .related_dists) has no
+// backing image and returns an error.
+func (t *Tree) ResolveImage(path string) (Resolved, error) {
+	trimmed := strings.Trim(path, "/")
+	if _, ok := t.synthetic[trimmed]; ok {
+		return Resolved{}, fmt.Errorf("%s: synthesized, no backing image", path)
+	}
+	if c, ok := t.combined[strings.SplitN(trimmed, "/", 2)[0]]; ok {
+		rest := ""
+		if i := strings.IndexByte(trimmed, '/'); i >= 0 {
+			rest = trimmed[i+1:]
+		}
+		r, err := c.resolveImage(rest)
+		if err != nil {
+			return Resolved{}, fmt.Errorf("%s: %w", path, err)
+		}
+		return r, nil
+	}
+	parts := strings.SplitN(trimmed, "/", 3)
+	if len(parts) < 2 {
+		return Resolved{}, fmt.Errorf("%s: %w", path, ErrNotFound)
+	}
+	names, ok := t.files[parts[0]]
+	if !ok {
+		return Resolved{}, fmt.Errorf("media %q: %w", parts[0], ErrNotFound)
+	}
+	image, ok := names[parts[1]]
+	if !ok {
+		return Resolved{}, fmt.Errorf("disc %q: %w", parts[1], ErrNotFound)
+	}
+	rest := "/"
+	if len(parts) == 3 {
+		rest = parts[2]
+	}
+	return Resolved{Image: image, Path: rest}, nil
+}
+
 // resolve splits a tree path into the disc and the path within it.
 func (t *Tree) resolve(path string) (*Disc, string, error) {
 	parts := strings.SplitN(strings.Trim(path, "/"), "/", 3)

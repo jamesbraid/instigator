@@ -26,10 +26,11 @@ import (
 // subdir; instigator only ever targets 6.5.x, so that branch is always
 // the right one.
 type combined struct {
-	discs   map[string]*Disc // slug -> disc, each mounted whole
-	order   []string         // slugs in config order
-	primary string           // slug of the disc bearing .related_dists
-	related []byte           // synthesized .related_dists for the primary
+	discs   map[string]*Disc  // slug -> disc, each mounted whole
+	images  map[string]string // slug -> image filename, for ResolveImage
+	order   []string          // slugs in config order
+	primary string            // slug of the disc bearing .related_dists
+	related []byte            // synthesized .related_dists for the primary
 }
 
 // relatedDistsName is the file inst reads to learn about sibling
@@ -51,7 +52,7 @@ func (t *Tree) AddCombined(name string, imagePaths []string, discNames map[strin
 	if _, dup := t.combined[name]; dup {
 		return "", fmt.Errorf("combined %q defined twice", name)
 	}
-	c := &combined{discs: map[string]*Disc{}}
+	c := &combined{discs: map[string]*Disc{}, images: map[string]string{}}
 	type entry struct{ slug, distPath string }
 	var entries []entry
 	for _, p := range imagePaths {
@@ -70,6 +71,7 @@ func (t *Tree) AddCombined(name string, imagePaths []string, discNames map[strin
 			return "", fmt.Errorf("combined %q: two images slug to %q", name, s)
 		}
 		c.discs[s] = d
+		c.images[s] = filepath.Base(p)
 		c.order = append(c.order, s)
 
 		dp, err := distPathFor(d)
@@ -176,6 +178,24 @@ func (c *combined) open(rest string) (File, error) {
 		return nil, ErrNotFound
 	}
 	return &efsFile{fs: d.FS(), node: node}, nil
+}
+
+// resolveImage is combined's half of Tree.ResolveImage: which image a
+// slug within this set backs onto, and the path within it. The
+// synthesized .related_dists has no backing image of its own.
+func (c *combined) resolveImage(rest string) (Resolved, error) {
+	slug, sub, ok := c.split(rest)
+	if !ok {
+		return Resolved{}, ErrNotFound
+	}
+	if c.isRelated(slug, sub) {
+		return Resolved{}, fmt.Errorf("synthesized, no backing image")
+	}
+	image, ok := c.images[slug]
+	if !ok {
+		return Resolved{}, fmt.Errorf("%s: %w", slug, ErrNotFound)
+	}
+	return Resolved{Image: image, Path: sub}, nil
 }
 
 func (c *combined) readdir(rest string) ([]string, error) {
