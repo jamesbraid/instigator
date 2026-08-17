@@ -68,6 +68,20 @@ func (f cmdFS) ReadDir(path string) ([]string, error) {
 	return names, err
 }
 
+// ResolveImage implements instcmd.ImageResolver, so a leaf command
+// (dd, cat) can log which image and in-image path a served path
+// actually came from, not just the tree path it was given.
+func (f cmdFS) ResolveImage(path string) (instcmd.Resolved, error) {
+	r, err := f.t.ResolveImage(path)
+	if errors.Is(err, vfs.ErrNotFound) {
+		return instcmd.Resolved{}, fmt.Errorf("%s: %w", path, instcmd.ErrNotFound)
+	}
+	if err != nil {
+		return instcmd.Resolved{}, err
+	}
+	return instcmd.Resolved{Image: r.Image, Path: r.Path}, nil
+}
+
 func (f cmdFS) Stat(path string) (instcmd.FileInfo, error) {
 	info, err := f.t.Stat(path)
 	if errors.Is(err, vfs.ErrNotFound) {
