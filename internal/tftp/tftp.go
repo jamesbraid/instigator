@@ -16,8 +16,10 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/jamesbraid/instigator/internal/capture"
 	"github.com/jamesbraid/instigator/internal/logging"
 )
 
@@ -33,6 +35,21 @@ type FileSystem interface {
 type File interface {
 	io.ReaderAt
 	Size() int64
+}
+
+// Resolved is what ImageResolver reports: the backing image's filename and
+// the location within that image's own filesystem.
+type Resolved struct {
+	Image string
+	Path  string
+}
+
+// ImageResolver is optionally implemented by a FileSystem that can say
+// which image file and in-image path a served path came from, so a
+// recorded transfer names the backing image. A FileSystem that doesn't
+// back onto named media need not implement it.
+type ImageResolver interface {
+	ResolveImage(path string) (Resolved, error)
 }
 
 const (
@@ -92,6 +109,19 @@ type Server struct {
 	// client stopped acking, ERROR for this side failing to read or
 	// send. A nil Logger is silent.
 	Logger *logging.Logger
+
+	// Recorder, when set, receives a tftp_transfer_end record for each
+	// completed or abandoned transfer. A nil Recorder is a no-op.
+	Recorder *capture.Recorder
+
+	// ClientName, when set, maps a client IP to its configured alias for
+	// the recorded transfer. Nil, or a miss, records the IP.
+	ClientName func(netip.Addr) string
+
+	mu     sync.Mutex
+	closed bool                    // set by Shutdown; stop spawning new transfers
+	xfers  map[net.PacketConn]bool // active transfer sockets, closed by Shutdown to cancel
+	wg     sync.WaitGroup          // active transfer goroutines
 }
 
 // Serve answers requests arriving on pc (conventionally bound to :69)
@@ -108,8 +138,57 @@ func (s *Server) Serve(pc net.PacketConn) error {
 		}
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
-		go s.handle(pc, addr, pkt)
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			continue
+		}
+		s.wg.Add(1)
+		s.mu.Unlock()
+		go func() {
+			defer s.wg.Done()
+			s.handle(pc, addr, pkt)
+		}()
 	}
+}
+
+// Shutdown stops accepting new transfers, closes every in-flight transfer
+// socket so a transfer stuck in its retry budget fails its next send or
+// read and aborts at once, and waits up to timeout for the handlers to
+// finish recording. A bare Wait would not cancel a transfer, whose default
+// retries can outlast the drain window. Returns false if the timeout still
+// elapsed with transfers running.
+func (s *Server) Shutdown(timeout time.Duration) bool {
+	s.mu.Lock()
+	s.closed = true
+	for pc := range s.xfers {
+		pc.Close()
+	}
+	s.mu.Unlock()
+	done := make(chan struct{})
+	go func() { s.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// trackXfer registers a transfer socket so Shutdown can cancel it.
+func (s *Server) trackXfer(pc net.PacketConn) {
+	s.mu.Lock()
+	if s.xfers == nil {
+		s.xfers = make(map[net.PacketConn]bool)
+	}
+	s.xfers[pc] = true
+	s.mu.Unlock()
+}
+
+func (s *Server) untrackXfer(pc net.PacketConn) {
+	s.mu.Lock()
+	delete(s.xfers, pc)
+	s.mu.Unlock()
 }
 
 func (s *Server) handle(pc net.PacketConn, addr net.Addr, pkt []byte) {
@@ -313,11 +392,14 @@ func (s *Server) listenTransfer() (*net.UDPConn, error) {
 // pre-converted so the hot loop never does it. Uses the AddrPort-flavored
 // UDPConn calls, not ReadFrom/WriteTo: those return/take a net.Addr
 // interface and allocate a new *net.UDPAddr for every single packet.
-func (s *Server) sendAndWaitAck(pc *net.UDPConn, client *net.UDPAddr, clientAP netip.AddrPort, ackbuf, pkt []byte, wantBlock uint16, timeout time.Duration, retries int) (acked, aborted bool) {
+// sendAndWaitAck sends pkt and waits for its ACK, resending up to retries
+// times. resends is how many retransmits it took (0 if the first send was
+// acked), so a transfer can report its total retry count.
+func (s *Server) sendAndWaitAck(pc *net.UDPConn, client *net.UDPAddr, clientAP netip.AddrPort, ackbuf, pkt []byte, wantBlock uint16, timeout time.Duration, retries int) (acked, aborted bool, resends int) {
 	for attempt := 0; attempt <= retries; attempt++ {
 		if _, err := pc.WriteToUDPAddrPort(pkt, clientAP); err != nil {
 			s.Logger.Errorf("tftp: %s: send: %v", client, err)
-			return false, true
+			return false, true, attempt
 		}
 		if attempt > 0 && s.Logger.Enabled(logging.LevelDebug) {
 			s.Logger.Debugf("tftp: %s: resend block %d (attempt %d)", client, wantBlock, attempt)
@@ -344,14 +426,14 @@ func (s *Server) sendAndWaitAck(pc *net.UDPConn, client *net.UDPAddr, clientAP n
 					if s.Logger.Enabled(logging.LevelDebug) {
 						s.Logger.Debugf("tftp: %s: ACK block %d", client, got)
 					}
-					return true, false
+					return true, false, attempt
 				}
 				if s.Logger.Enabled(logging.LevelDebug) {
 					s.Logger.Debugf("tftp: %s: ACK block %d (waiting for %d)", client, got, wantBlock)
 				}
 			case opERROR:
 				s.Logger.Warnf("tftp: %s: client ERROR code %d: %q", client, binary.BigEndian.Uint16(ackbuf[2:4]), ackbuf[4:n])
-				return false, true
+				return false, true, attempt
 			default:
 				if s.Logger.Enabled(logging.LevelDebug) {
 					s.Logger.Debugf("tftp: %s: unexpected opcode %d during transfer", client, binary.BigEndian.Uint16(ackbuf[0:2]))
@@ -359,12 +441,61 @@ func (s *Server) sendAndWaitAck(pc *net.UDPConn, client *net.UDPAddr, clientAP n
 			}
 		}
 	}
-	return false, false
+	return false, false, retries
 }
 
 func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[string]string) {
 	// PROMs disagree about the leading slash; accept both.
 	path := strings.TrimPrefix(name, "/")
+
+	// Transfer accounting for the capture record. These are read only by
+	// the deferred record below (registered only when capture is on), so
+	// they stay in scope across every early return and pick up their final
+	// values before it fires.
+	start := time.Now()
+	var (
+		size             int64
+		effBlockSize     = blockSize
+		blocksSent       int
+		bytesSent        int64 // put on the wire
+		bytesAcked       int64 // confirmed by the client
+		resendTotal      int
+		result           = "error"
+		image, imagePath string
+	)
+	if s.Recorder != nil {
+		if ir, ok := s.FS.(ImageResolver); ok {
+			if r, rerr := ir.ResolveImage(path); rerr == nil {
+				image, imagePath = r.Image, r.Path
+			}
+		}
+		clientID := client.IP.String()
+		if s.ClientName != nil {
+			if a, ok := netip.AddrFromSlice(client.IP); ok {
+				if name := s.ClientName(a.Unmap()); name != "" {
+					clientID = name
+				}
+			}
+		}
+		defer func() {
+			s.Recorder.TFTPTransferEnd(capture.TransferRecord{
+				Client:      clientID,
+				Name:        name,
+				TreePath:    path,
+				Image:       image,
+				ImagePath:   imagePath,
+				Size:        size,
+				BlockSize:   effBlockSize,
+				Blocks:      blocksSent,
+				BytesSent:   bytesSent,
+				BytesAcked:  bytesAcked,
+				Retransmits: resendTotal,
+				DurationMS:  time.Since(start).Milliseconds(),
+				Result:      result,
+			})
+		}()
+	}
+
 	f, err := s.FS.Open(path)
 	if err != nil {
 		s.Logger.Warnf("tftp: %s: %q: %v", client, name, err)
@@ -376,6 +507,7 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 		code := uint16(errNotDefined)
 		if errors.Is(err, ErrNotFound) {
 			code = errFileNotFound
+			result = "notfound"
 		}
 		s.sendError(pc, client, code, err.Error())
 		return
@@ -389,6 +521,10 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 		return
 	}
 	defer pc.Close()
+	// Register the transfer socket so a shutdown can cancel this transfer
+	// rather than wait out its retry budget.
+	s.trackXfer(pc)
+	defer s.untrackXfer(pc)
 
 	retry := s.RetryInterval
 	if retry == 0 {
@@ -399,8 +535,9 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 		retries = 5
 	}
 
-	size := f.Size()
-	oack, effBlockSize, effRetry := negotiateOptions(opts, size, blockSize, retry)
+	size = f.Size()
+	oack, negBlockSize, effRetry := negotiateOptions(opts, size, blockSize, retry)
+	effBlockSize = negBlockSize
 	retry = effRetry
 
 	finalRetries := s.FinalRetries
@@ -430,11 +567,14 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 		if s.Logger.Enabled(logging.LevelDebug) {
 			s.Logger.Debugf("tftp: %s: OACK %v", client, opts)
 		}
-		acked, aborted := s.sendAndWaitAck(pc, client, clientAP, ack, oack, 0, retry, retries)
+		acked, aborted, resends := s.sendAndWaitAck(pc, client, clientAP, ack, oack, 0, retry, retries)
+		resendTotal += resends
 		if aborted {
+			result = "aborted"
 			return
 		}
 		if !acked {
+			result = "gaveup"
 			s.Logger.Warnf("tftp: %s: %q: no ACK for OACK, giving up", client, name)
 			return
 		}
@@ -474,16 +614,34 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 			blockRetries, blockTimeout = finalRetries, finalTimeout
 		}
 
-		acked, aborted := s.sendAndWaitAck(pc, client, clientAP, ack, pkt, block, blockTimeout, blockRetries)
-		if aborted {
-			return
+		// The block is put on the wire by sendAndWaitAck, so count it as
+		// transmitted before we know whether it was acked.
+		blocksSent++
+		bytesSent += want
+		acked, aborted, resends := s.sendAndWaitAck(pc, client, clientAP, ack, pkt, block, blockTimeout, blockRetries)
+		resendTotal += resends
+		if acked {
+			bytesAcked += want
 		}
-		if !acked {
+		switch {
+		case aborted:
+			result = "aborted"
+			return
+		case isFinal:
+			// An unacked final block is the normal SGI PROM case, not a
+			// failure: the client stopped listening once it had the file.
+			// Give it its own result so the summary does not warn on it.
+			if acked {
+				result = "ok"
+				s.Logger.Infof("tftp: %s: %q done", client, name)
+			} else {
+				result = "unacked_final"
+				s.Logger.Infof("tftp: %s: %q sent; final block unacked (client done)", client, name)
+			}
+			return
+		case !acked:
+			result = "gaveup"
 			s.Logger.Warnf("tftp: %s: %q: no ACK for block %d, giving up", client, name, block)
-			return
-		}
-		if isFinal {
-			s.Logger.Infof("tftp: %s: %q done", client, name)
 			return
 		}
 		block++
