@@ -102,6 +102,30 @@ func TestTreeMissingPath(t *testing.T) {
 	}
 }
 
+// ResolveImage backs the served-file manifest log line: given the tree
+// path a command actually opened, it must say which image and which
+// in-image path the bytes came from.
+func TestTreeResolveImage(t *testing.T) {
+	tree := buildTestTree(t)
+	r, err := tree.ResolveImage("6.5.30/irix-6-5-30-overlay-1of3/stand/fx.64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Image != "IRIX 6.5.30 Overlay 1of3.iso" {
+		t.Fatalf("image = %q", r.Image)
+	}
+	if r.Path != "stand/fx.64" {
+		t.Fatalf("path = %q", r.Path)
+	}
+}
+
+func TestTreeResolveImageMissingPath(t *testing.T) {
+	tree := buildTestTree(t)
+	if _, err := tree.ResolveImage("6.5.30/no-such-disc/stand/fx.64"); err == nil {
+		t.Fatal("resolved a missing disc")
+	}
+}
+
 func TestTreeDiscMap(t *testing.T) {
 	tree := buildTestTree(t)
 	m := tree.DiscMap()
