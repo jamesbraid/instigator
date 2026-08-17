@@ -35,14 +35,39 @@ func shellTestFS() *fakeFS {
 // instead of the old per-line callback.
 func runShell(t *testing.T, script string) (string, string) {
 	t.Helper()
-	var out, errb strings.Builder
-	var logbuf bytes.Buffer
-	logger := logging.New(&logbuf, logging.LevelDebug)
-	if err := RunShell(shellTestFS(), strings.NewReader(script), &out, &errb, logger); err != nil {
-		t.Fatalf("RunShell: %v (stderr: %s)", err, errb.String())
+	out, errb, _ := runShellWithFS(t, shellTestFS(), logging.LevelDebug, script)
+	return out, errb
+}
+
+// runShellWithFS is runShell generalized over the FileSystem and log
+// level, for a test that needs the log itself - the served-file
+// manifest, or the default (non-verbose) level - rather than just
+// stdout/stderr.
+func runShellWithFS(t *testing.T, fsys FileSystem, level logging.Level, script string) (out, errb, log string) {
+	t.Helper()
+	var outb, errbb, logbuf strings.Builder
+	logger := logging.New(&logbuf, level)
+	if err := RunShell(fsys, strings.NewReader(script), &outb, &errbb, logger); err != nil {
+		t.Fatalf("RunShell: %v (stderr: %s)", err, errbb.String())
 	}
 	t.Logf("server log:\n%s", logbuf.String())
-	return out.String(), errb.String()
+	return outb.String(), errbb.String(), logbuf.String()
+}
+
+// resolvingFS wraps a *fakeFS with ImageResolver, so a test can check
+// the "served ... <- image:path" manifest line dd/cat emit when the
+// underlying FileSystem can say where a path's bytes actually live.
+type resolvingFS struct {
+	*fakeFS
+	images map[string]Resolved
+}
+
+func (f resolvingFS) ResolveImage(path string) (Resolved, error) {
+	r, ok := f.images[path]
+	if !ok {
+		return Resolved{}, ErrNotFound
+	}
+	return r, nil
 }
 
 // TestShellMarkerProtocol runs inst's real wrapper - a dd, then a
@@ -100,6 +125,53 @@ func TestShellDDReadsVFSByteExact(t *testing.T) {
 	}
 	if !bytes.Equal([]byte(out), want) {
 		t.Fatal("dd output is not byte-exact")
+	}
+}
+
+// TestShellDDLogsServedFileWithImage is the steady-state manifest this
+// logging overhaul exists for: at the default (non-verbose) level, dd
+// reading a real vfs path must log which file it served and which
+// image it actually came from, not the raw "dd if=..." command line -
+// that trace stays behind -v (DEBUG).
+func TestShellDDLogsServedFileWithImage(t *testing.T) {
+	fs := resolvingFS{
+		fakeFS: shellTestFS(),
+		images: map[string]Resolved{
+			"6.5.30/disc1/dist/sa": {Image: "Overlay 1of3.iso", Path: "dist/sa"},
+		},
+	}
+	_, _, log := runShellWithFS(t, fs, logging.LevelInfo, "dd if=/6.5.30/disc1/dist/sa bs=512 count=1\n")
+	want := "instcmd: served /6.5.30/disc1/dist/sa  <-  Overlay 1of3.iso:/dist/sa"
+	if !strings.Contains(log, want) {
+		t.Fatalf("log missing served line %q:\n%s", want, log)
+	}
+	if strings.Contains(log, "rsh-sh:") {
+		t.Fatalf("raw command trace leaked into the default-level log:\n%s", log)
+	}
+}
+
+// TestShellDDLogsServedFileWithoutImageResolver checks the fallback: a
+// FileSystem that can't say which image a path came from (fakeFS,
+// here) still gets the served-path line, just without the mapping.
+func TestShellDDLogsServedFileWithoutImageResolver(t *testing.T) {
+	_, _, log := runShellWithFS(t, shellTestFS(), logging.LevelInfo, "dd if=/6.5.30/disc1/dist/sa bs=512 count=1\n")
+	want := "instcmd: served /6.5.30/disc1/dist/sa"
+	if !strings.Contains(log, want) {
+		t.Fatalf("log missing served line %q:\n%s", want, log)
+	}
+	if strings.Contains(log, "<-") {
+		t.Fatalf("served line has an image mapping with no ImageResolver available:\n%s", log)
+	}
+}
+
+// TestShellCatLogsServedFile checks cat gets the same manifest
+// treatment as dd - it is the other leaf command that actually serves
+// a file's content.
+func TestShellCatLogsServedFile(t *testing.T) {
+	_, _, log := runShellWithFS(t, shellTestFS(), logging.LevelInfo, "cat /6.5.30/disc1/dist/PRODUCT.idb\n")
+	want := "instcmd: served /6.5.30/disc1/dist/PRODUCT.idb"
+	if !strings.Contains(log, want) {
+		t.Fatalf("log missing served line %q:\n%s", want, log)
 	}
 }
 

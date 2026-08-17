@@ -32,6 +32,23 @@ type File interface {
 	Size() int64
 }
 
+// Resolved is what ImageResolver reports: Image is the backing image's
+// filename, Path is the location within that image's own filesystem.
+type Resolved struct {
+	Image string
+	Path  string
+}
+
+// ImageResolver is optionally implemented by a FileSystem that can say
+// which image file and in-image path a served path came from, for the
+// steady-state served-file manifest line dd and cat emit at INFO. A
+// FileSystem that doesn't back onto named media (a test double, say)
+// need not implement it; a leaf command that wants it type-asserts and
+// only logs the manifest line when it can.
+type ImageResolver interface {
+	ResolveImage(path string) (Resolved, error)
+}
+
 // FileInfo is a path's metadata: what the rsh shell needs to answer
 // ls -l/-i and cd/test's file-type checks, not a full stat(2). A path
 // above the real filesystem's own boundary (a synthetic tree level)

@@ -84,6 +84,27 @@ func (e *shellEnv) fsPath(p string) string {
 	return strings.TrimPrefix(e.resolve(p), "/")
 }
 
+// logServed logs the steady-state INFO line for a file a leaf command
+// actually read: the served tree path and, when the FileSystem can
+// say, the image and in-image path it resolved to - "served
+// /irix6.5.30/foundation1/dist/eoe.sw  <-  irix6.5_foundation1.iso:/dist/eoe.sw".
+// This is what the default (non-verbose) log shows for a shell
+// session instead of the raw command line, which stays at DEBUG: a
+// running manifest of what's actually being installed, not a command
+// trace. rawPath is exactly what the leaf command was given (dd's
+// if=, cat's operand), resolved and reported the same way the command
+// itself resolved it.
+func (e *shellEnv) logServed(rawPath string) {
+	abs := e.resolve(rawPath)
+	if ir, ok := e.fsys.(ImageResolver); ok {
+		if r, err := ir.ResolveImage(e.fsPath(rawPath)); err == nil {
+			e.logger.Infof("instcmd: served %s  <-  %s:/%s", abs, r.Image, r.Path)
+			return
+		}
+	}
+	e.logger.Infof("instcmd: served %s", abs)
+}
+
 // baseName returns the last path component of a command name, so
 // /usr/5bin/ls and /bin/ls are recognized the same as ls: inst invokes
 // ls from more than one absolute path.
@@ -540,6 +561,7 @@ func shGrep(env *shellEnv, hc interp.HandlerContext, name string, args []string)
 				env.logger.Warnf("instcmd: %s: %s: %v", name, p, err)
 				continue
 			}
+			env.logServed(p)
 			sources = append(sources, source{p, io.NewSectionReader(f, 0, f.Size())})
 		}
 	}
@@ -722,6 +744,7 @@ func shCat(env *shellEnv, hc interp.HandlerContext, args []string) error {
 			env.logger.Warnf("instcmd: cat: %s: %v", p, err)
 			return interp.ExitStatus(1)
 		}
+		env.logServed(p)
 		if _, err := io.Copy(hc.Stdout, io.NewSectionReader(f, 0, f.Size())); err != nil {
 			return err
 		}
@@ -819,6 +842,7 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 			env.logger.Warnf("instcmd: dd: %s: %v", file, err)
 			return interp.ExitStatus(1)
 		}
+		env.logServed(file)
 		off := skip * ibs
 		size := f.Size() - off
 		if size < 0 {
