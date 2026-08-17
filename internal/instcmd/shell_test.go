@@ -363,7 +363,7 @@ func TestShellLsPlainStaysNameOnly(t *testing.T) {
 // logLineRE matches one leveled log line: an ISO8601 timestamp, a
 // level word, then the message - the same shape internal/logging's own
 // tests check.
-var logLineRE = regexp.MustCompile(`(?m)^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2} +(DEBUG|INFO|WARN|ERROR) +(.*)$`)
+var logLineRE = regexp.MustCompile(`(?m)^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}) +(DEBUG|INFO|WARN|ERROR) +(.*)$`)
 
 // TestShellRefusedCommandLogsErrorOnServerSide is the headline fix this
 // package's logging overhaul exists for: instcmd refusing fgrep went
