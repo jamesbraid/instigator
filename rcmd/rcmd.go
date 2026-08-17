@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -79,6 +80,17 @@ type Server struct {
 	// reading Stdin for as long as the client holds the connection open
 	// and stays silent - stuck, hostile, or simply gone.
 	IdleTimeout time.Duration
+
+	// RejectHook, when set, is called when a connection is refused before
+	// any command runs - a non-reserved source port or a client outside the
+	// filter - with the client address and a short reason. It lets a caller
+	// record a refusal the Handler never sees.
+	RejectHook func(addr netip.Addr, reason string)
+
+	mu     sync.Mutex
+	conns  map[net.Conn]struct{} // active connections, for Shutdown to close
+	closed bool                  // set by Shutdown; refuse to track new work after
+	wg     sync.WaitGroup        // active handler goroutines
 }
 
 // Serve accepts connections on l (conventionally bound to :514) until l
@@ -92,7 +104,48 @@ func (s *Server) Serve(l net.Listener) error {
 			}
 			return err
 		}
-		go s.handle(c)
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			c.Close()
+			continue
+		}
+		if s.conns == nil {
+			s.conns = make(map[net.Conn]struct{})
+		}
+		s.conns[c] = struct{}{}
+		s.wg.Add(1)
+		s.mu.Unlock()
+		go func() {
+			defer s.wg.Done()
+			defer func() {
+				s.mu.Lock()
+				delete(s.conns, c)
+				s.mu.Unlock()
+			}()
+			s.handle(c)
+		}()
+	}
+}
+
+// Shutdown closes every active connection - unblocking any session sitting
+// on a Stdin read - and waits up to timeout for the handler goroutines to
+// finish, so their final events are emitted before the caller finalizes.
+// It returns false if the timeout elapsed with handlers still running.
+func (s *Server) Shutdown(timeout time.Duration) bool {
+	s.mu.Lock()
+	s.closed = true
+	for c := range s.conns {
+		c.Close()
+	}
+	s.mu.Unlock()
+	done := make(chan struct{})
+	go func() { s.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
 	}
 }
 
@@ -113,11 +166,17 @@ func (s *Server) handle(c net.Conn) {
 	ip = ip.Unmap()
 	if s.AllowIP != nil && !s.AllowIP(ip) {
 		s.Logger.Warnf("rcmd: %s: denied by client filter", tcp)
+		if s.RejectHook != nil {
+			s.RejectHook(ip, "filter")
+		}
 		refuse(c, "permission denied")
 		return
 	}
 	if !s.AllowHighPorts && (tcp.Port >= 1024 || tcp.Port < 512) {
 		s.Logger.Warnf("rcmd: %s: source port not reserved", tcp)
+		if s.RejectHook != nil {
+			s.RejectHook(ip, "reserved_port")
+		}
 		refuse(c, "permission denied")
 		return
 	}

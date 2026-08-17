@@ -13,10 +13,16 @@ import (
 	"io/fs"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/jamesbraid/instigator/internal/bootp"
+	"github.com/jamesbraid/instigator/internal/capture"
 	"github.com/jamesbraid/instigator/internal/config"
 	"github.com/jamesbraid/instigator/internal/instcmd"
 	"github.com/jamesbraid/instigator/internal/instscript"
@@ -26,10 +32,34 @@ import (
 	"github.com/jamesbraid/instigator/rcmd"
 )
 
+// defaultRSHIdleTimeout bounds how long a silent rsh session is tolerated
+// before it is closed and recorded as idle. It is deliberately generous:
+// it exists to reclaim a session whose client has crashed or gone away, not
+// to cut off an operator pausing to read a conflict list, so it must
+// comfortably exceed any real think-time between inst commands.
+const defaultRSHIdleTimeout = 30 * time.Minute
+
+// drainTimeout bounds how long Close waits for in-flight requests to finish
+// and record their end events before the capture is finalized.
+const drainTimeout = 5 * time.Second
+
 // Servers is a running instigator instance.
 type Servers struct {
-	tree  *vfs.Tree
-	bootp *bootp.Server
+	tree   *vfs.Tree
+	bootp  *bootp.Server
+	logger *logging.Logger
+	rec    *capture.Recorder // nil when --capture-dir is unset
+
+	// closing distinguishes a listener returning because Close shut it down
+	// (expected, silent) from one exiting on its own (unexpected, logged and
+	// recorded). started guards the capture finalize: it is set once
+	// server_start is emitted, so a failed Start never writes a clean summary.
+	closing atomic.Bool
+	started atomic.Bool
+
+	tftpSrv    *tftp.Server   // retained so Close can drain in-flight transfers
+	rshSrv     *rcmd.Server   // retained so Close can drain active sessions
+	listenerWG sync.WaitGroup // the accept/serve-loop goroutines, joined at Close
 
 	bootpConn net.PacketConn
 	tftpConn  net.PacketConn
@@ -89,6 +119,22 @@ func (f treeFS) Open(path string) (tftp.File, error) {
 		return nil, notFound(path, err, tftp.ErrNotFound)
 	}
 	return file, nil
+}
+
+// ResolveImage implements tftp.ImageResolver, so a recorded boot transfer
+// names the layer and in-layer path a served path came from, resolving
+// through the same tree.Resolve every served file does.
+func (f treeFS) ResolveImage(path string) (tftp.Resolved, error) {
+	origin, err := f.t.Resolve(fsName(path))
+	if err != nil {
+		return tftp.Resolved{}, err
+	}
+	switch origin.Kind {
+	case vfs.OriginImage, vfs.OriginDirectory:
+		return tftp.Resolved{Image: origin.Source, Path: origin.Path}, nil
+	default:
+		return tftp.Resolved{}, fmt.Errorf("%s: not backed by media", path)
+	}
 }
 
 // cmdFS adapts the install-set tree to the rsh command interpreter's
@@ -164,6 +210,9 @@ type options struct {
 	bootpReplyAddr net.Addr
 	rshHighPorts   bool
 	instructions   io.Writer
+	captureDir     string
+	recorder       *capture.Recorder // injected pre-built recorder, for tests
+	rshIdleTimeout time.Duration
 }
 
 // WithBootpReplyAddr redirects bootp replies away from the broadcast
@@ -184,6 +233,25 @@ func WithRSHHighPorts() Option {
 // timestamp, no level, and never written unless a caller asks for them.
 func WithInstructions(w io.Writer) Option {
 	return func(o *options) { o.instructions = w }
+}
+
+// WithCapture turns on the install recorder, writing the run's bundle
+// (run.json, events.jsonl, summary.json) under dir. Unset means no
+// recording and no overhead.
+func WithCapture(dir string) Option {
+	return func(o *options) { o.captureDir = dir }
+}
+
+// withRecorder injects a pre-built recorder, letting a test supply an
+// injected clock and summary sink. It takes precedence over WithCapture.
+func withRecorder(r *capture.Recorder) Option {
+	return func(o *options) { o.recorder = r }
+}
+
+// WithRSHIdleTimeout overrides how long a silent rsh session is tolerated
+// before it is closed and recorded as idle. Zero keeps defaultRSHIdleTimeout.
+func WithRSHIdleTimeout(d time.Duration) Option {
+	return func(o *options) { o.rshIdleTimeout = d }
 }
 
 // Start assembles the configured install sets, generates the operator
@@ -207,15 +275,48 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 		tree.Close()
 		return nil, err
 	}
-	s := &Servers{tree: tree}
+	s := &Servers{tree: tree, logger: logger}
+
+	// The recorder, if any, is built before the listeners so its
+	// server_start (emitted at the end of Start) marks the true start of
+	// serving. A pre-built recorder (tests) wins over --capture-dir.
+	switch {
+	case o.recorder != nil:
+		s.rec = o.recorder
+	case o.captureDir != "":
+		rec, err := capture.New(o.captureDir)
+		if err != nil {
+			tree.Close()
+			return nil, fmt.Errorf("capture: %w", err)
+		}
+		s.rec = rec
+	}
+	if s.rec != nil {
+		// A capture that cannot even write its provenance is broken from the
+		// start; fail rather than serve a run that will not be recorded.
+		if err := s.rec.WriteRun(buildProvenance(cfg)); err != nil {
+			s.Close()
+			return nil, fmt.Errorf("capture: run.json: %w", err)
+		}
+	}
 
 	allowed := make(map[netip.Addr]bool, len(cfg.Clients))
+	aliasByIP := make(map[netip.Addr]string, len(cfg.Clients))
 	for _, c := range cfg.Clients {
 		allowed[c.IP] = true
+		aliasByIP[c.IP] = c.Name
 	}
 	allow := func(a netip.Addr) bool { return allowed[a] }
 
 	logStartup(cfg, tree, prof, logger, o.instructions)
+
+	// Listeners are bound now but their serve loops are launched only after
+	// server_start is emitted, so no bootp/tftp/rsh event can precede it.
+	type listenerFn struct {
+		name string
+		fn   func() error
+	}
+	var listeners []listenerFn
 
 	if cfg.Services.BOOTP {
 		var clients []bootp.Client
@@ -228,6 +329,7 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 			Clients:   clients,
 			ReplyAddr: o.bootpReplyAddr,
 			Logger:    logger,
+			Recorder:  s.rec,
 		}
 		pc, err := bootp.ListenBroadcast(fmt.Sprintf(":%d", cfg.Ports.BOOTP))
 		if err != nil {
@@ -235,16 +337,18 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 			return nil, fmt.Errorf("bootp: %w", err)
 		}
 		s.bootpConn = pc
-		go s.bootp.Serve(pc)
+		listeners = append(listeners, listenerFn{"bootp", func() error { return s.bootp.Serve(pc) }})
 	}
 
 	if cfg.Services.TFTP.Enabled {
 		srv := &tftp.Server{
-			FS:      treeFS{tree},
-			AllowIP: allow,
-			PortMin: cfg.Services.TFTP.PortRange[0],
-			PortMax: cfg.Services.TFTP.PortRange[1],
-			Logger:  logger,
+			FS:         treeFS{tree},
+			AllowIP:    allow,
+			PortMin:    cfg.Services.TFTP.PortRange[0],
+			PortMax:    cfg.Services.TFTP.PortRange[1],
+			Logger:     logger,
+			Recorder:   s.rec,
+			ClientName: func(a netip.Addr) string { return aliasByIP[a] },
 		}
 		pc, err := net.ListenPacket("udp4", fmt.Sprintf(":%d", cfg.Ports.TFTP))
 		if err != nil {
@@ -252,20 +356,32 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 			return nil, fmt.Errorf("tftp: %w", err)
 		}
 		s.tftpConn = pc
-		go srv.Serve(pc)
+		s.tftpSrv = srv
+		listeners = append(listeners, listenerFn{"tftp", func() error { return srv.Serve(pc) }})
 	}
 
 	if cfg.Services.RSH {
+		idle := o.rshIdleTimeout
+		if idle == 0 {
+			idle = defaultRSHIdleTimeout
+		}
 		srv := &rcmd.Server{
 			AllowIP:        allow,
 			AllowHighPorts: o.rshHighPorts,
+			IdleTimeout:    idle,
 			Logger:         logger,
+			RejectHook: func(addr netip.Addr, reason string) {
+				s.rec.RSHRejected(aliasByIP[addr], addr.String(), reason)
+			},
 			Handler: func(req *rcmd.Request) error {
 				// inst drives the install by opening a shell over rsh
 				// (exec /bin/sh) and streaming commands to it, rather than
 				// issuing each as its own rsh command.
 				if isShell(req.Command) {
-					return instcmd.RunShell(cmdFS{tree}, req.Stdin, req.Stdout, req.Stderr, logger)
+					sess := s.rec.BeginSession(aliasByIP[req.Addr], req.Addr.String(), req.RemoteUser, req.LocalUser)
+					err := instcmd.RunShell(cmdFS{tree}, req.Stdin, req.Stdout, req.Stderr, logger, sess)
+					sess.End(err)
+					return err
 				}
 				return instcmd.Run(cmdFS{tree}, req.Command, req.Stdout, req.Stderr)
 			},
@@ -276,9 +392,24 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 			return nil, fmt.Errorf("rsh: %w", err)
 		}
 		s.rshLn = ln
-		go srv.Serve(ln)
+		s.rshSrv = srv
+		listeners = append(listeners, listenerFn{"rsh", func() error { return srv.Serve(ln) }})
 	}
 
+	// Every listener is bound. Emit server_start, then launch the serve
+	// loops, so the first recorded event is always the start. Each loop is
+	// tracked so Close can join it before finalizing the capture.
+	if s.rec != nil {
+		s.rec.ServerStart()
+		s.started.Store(true)
+	}
+	for _, l := range listeners {
+		s.listenerWG.Add(1)
+		go func(l listenerFn) {
+			defer s.listenerWG.Done()
+			s.runListener(l.name, l.fn)
+		}(l)
+	}
 	return s, nil
 }
 
@@ -507,6 +638,7 @@ func (s *Servers) RSHAddr() net.Addr { return s.rshLn.Addr() }
 
 // Close shuts every listener and releases the media.
 func (s *Servers) Close() error {
+	s.closing.Store(true)
 	if s.bootpConn != nil {
 		s.bootpConn.Close()
 	}
@@ -516,5 +648,125 @@ func (s *Servers) Close() error {
 	if s.rshLn != nil {
 		s.rshLn.Close()
 	}
-	return s.tree.Close()
+	// Drain active work so an interrupted install still records its last
+	// command, session, and transfer. Join the serve loops first (this is
+	// where bootp does its inline work), then force-close and drain the
+	// per-request handlers. drained stays true only if every stage finished
+	// within its window; otherwise the capture is incomplete.
+	drained := true
+	if !waitTimeout(&s.listenerWG, drainTimeout) {
+		s.logger.Warnf("serve: serve loops still running after %s", drainTimeout)
+		drained = false
+	}
+	if s.rshSrv != nil && !s.rshSrv.Shutdown(drainTimeout) {
+		s.logger.Warnf("serve: rsh sessions still active after %s drain", drainTimeout)
+		drained = false
+	}
+	if s.tftpSrv != nil && !s.tftpSrv.Shutdown(drainTimeout) {
+		s.logger.Warnf("serve: tftp transfers still active after %s drain", drainTimeout)
+		drained = false
+	}
+
+	var recErr error
+	if s.rec != nil {
+		if s.started.Load() {
+			reason := "clean"
+			if !drained {
+				reason = "incomplete"
+			}
+			if recErr = s.rec.Finish(reason); recErr != nil {
+				s.logger.Errorf("capture: finish: %v", recErr)
+			}
+		} else {
+			// The server never finished starting; close the events file
+			// without writing a summary that would imply a clean run.
+			recErr = s.rec.Close()
+		}
+	}
+
+	treeErr := s.tree.Close()
+	switch {
+	case !drained:
+		return fmt.Errorf("shutdown drained incompletely within %s; capture may be missing events", drainTimeout)
+	case recErr != nil:
+		return recErr
+	default:
+		return treeErr
+	}
+}
+
+// runListener runs one protocol listener and reports an unexpected exit -
+// Serve returning while the server is not shutting down - to both the log
+// and the trace. A return after Close has set closing is the normal
+// shutdown path and is silent.
+func (s *Servers) runListener(name string, serve func() error) {
+	err := serve()
+	if s.closing.Load() {
+		return
+	}
+	s.logger.Errorf("serve: %s listener exited unexpectedly: %v", name, err)
+	s.rec.ListenerExit(name, true, "error")
+}
+
+// waitTimeout waits for wg up to timeout, returning true if it completed.
+func waitTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// buildProvenance assembles run.json's provenance from the config. Each
+// configured layer's backing source (a disc image or a directory) becomes
+// a media-manifest entry with its basename, size, and mtime - never the
+// operator's absolute path, and never a content hash (hashing multi-GB
+// ISOs at startup is out of scope).
+func buildProvenance(cfg *config.Config) capture.Provenance {
+	var media []capture.Media
+	for _, set := range cfg.InstallSets {
+		for _, layer := range set.Layers {
+			src := layer.Image
+			if src == "" {
+				src = layer.Dir
+			}
+			m := capture.Media{Media: set.Name, Disc: layer.Name, Image: filepath.Base(src)}
+			if fi, err := os.Stat(src); err == nil {
+				m.Size = fi.Size()
+				m.Mtime = fi.ModTime().UTC().Format(time.RFC3339)
+			}
+			media = append(media, m)
+		}
+	}
+
+	var clients []capture.Client
+	for _, c := range cfg.Clients {
+		clients = append(clients, capture.Client{Alias: c.Name, MAC: c.MAC.String(), IP: c.IP.String()})
+	}
+
+	return capture.Provenance{
+		Start:  time.Now().UTC().Format(time.RFC3339Nano),
+		Binary: capture.BuildInfo(),
+		Services: capture.Services{
+			BOOTP:         cfg.Services.BOOTP,
+			TFTP:          cfg.Services.TFTP.Enabled,
+			RSH:           cfg.Services.RSH,
+			NFS:           false, // NFS is no longer served from the binary
+			TFTPPortRange: cfg.Services.TFTP.PortRange,
+		},
+		Config: capture.ConfigInfo{
+			ServerIP: cfg.ServerIP.String(),
+			Netmask:  cfg.Netmask.String(),
+			Ports: map[string]int{
+				"bootp": cfg.Ports.BOOTP,
+				"tftp":  cfg.Ports.TFTP,
+				"rsh":   cfg.Ports.RSH,
+			},
+		},
+		Clients: clients,
+		Media:   media,
+	}
 }
