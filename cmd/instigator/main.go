@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/jamesbraid/instigator/internal/config"
@@ -16,7 +17,10 @@ import (
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  instigator serve [-v] <config.yaml>     serve the configured IRIX install sets (-v: decode every packet)
+  instigator serve [-v] [--capture-dir <dir>] <config.yaml>
+                                          serve the configured IRIX install sets
+                                          (-v: decode every packet; --capture-dir: record the run)
+  instigator trace summary <capture-dir>  summarize a recorded run (regenerates summary.json)
   instigator ls <image> [path]            list an SGI CD image (volume header + EFS)
   instigator dump <image> <src> <outdir>  extract an EFS subtree to a host directory`)
 	os.Exit(2)
@@ -30,14 +34,37 @@ func main() {
 	case "serve":
 		args := os.Args[2:]
 		verbose := false
-		if len(args) > 0 && (args[0] == "-v" || args[0] == "--verbose") {
-			verbose = true
-			args = args[1:]
+		captureDir := ""
+		for len(args) > 0 && strings.HasPrefix(args[0], "-") {
+			switch {
+			case args[0] == "-v" || args[0] == "--verbose":
+				verbose = true
+				args = args[1:]
+			case args[0] == "--capture-dir":
+				if len(args) < 2 {
+					usage()
+				}
+				captureDir = args[1]
+				args = args[2:]
+			case strings.HasPrefix(args[0], "--capture-dir="):
+				captureDir = strings.TrimPrefix(args[0], "--capture-dir=")
+				args = args[1:]
+			default:
+				usage()
+			}
 		}
 		if len(args) != 1 {
 			usage()
 		}
-		if err := runServe(args[0], verbose); err != nil {
+		if err := runServe(args[0], verbose, captureDir); err != nil {
+			fmt.Fprintln(os.Stderr, "instigator:", err)
+			os.Exit(1)
+		}
+	case "trace":
+		if len(os.Args) != 4 || os.Args[2] != "summary" {
+			usage()
+		}
+		if err := runTraceSummary(os.Stdout, os.Args[3]); err != nil {
 			fmt.Fprintln(os.Stderr, "instigator:", err)
 			os.Exit(1)
 		}
@@ -66,7 +93,7 @@ func main() {
 	}
 }
 
-func runServe(configPath string, verbose bool) error {
+func runServe(configPath string, verbose bool, captureDir string) error {
 	b, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
@@ -86,16 +113,23 @@ func runServe(configPath string, verbose bool) error {
 	// The operator's PROM/Inst> commands are console UX, not server log
 	// content, so they go to stdout directly rather than through the
 	// leveled logger - see serve.WithInstructions.
-	s, err := serve.Start(cfg, logger, serve.WithInstructions(os.Stdout))
+	opts := []serve.Option{serve.WithInstructions(os.Stdout)}
+	if captureDir != "" {
+		opts = append(opts, serve.WithCapture(captureDir))
+		logger.Infof("recording this run to %s", captureDir)
+	}
+	s, err := serve.Start(cfg, logger, opts...)
 	if err != nil {
 		return err
 	}
-	defer s.Close()
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	logger.Infof("serving; stop with SIGINT/SIGTERM")
 	<-sig
 	logger.Infof("shutting down")
-	return nil
+	// Close drains, finalizes the capture, and returns a non-nil error if
+	// the capture came out incomplete or a recorder write failed - surface
+	// it so the run exits non-zero and the operator knows not to trust it.
+	return s.Close()
 }
