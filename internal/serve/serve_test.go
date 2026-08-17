@@ -3,6 +3,7 @@ package serve
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,7 +16,9 @@ import (
 
 	"github.com/jamesbraid/instigator/efs/efstest"
 	"github.com/jamesbraid/instigator/internal/config"
+	"github.com/jamesbraid/instigator/internal/instcmd"
 	"github.com/jamesbraid/instigator/internal/logging"
+	"github.com/jamesbraid/instigator/internal/tftp"
 )
 
 // testLogWriter routes leveled log lines to t.Log, so a test failure's
@@ -58,9 +61,20 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// mediaDir builds a media directory holding one synthetic disc with
-// stand/fx.64 and dist/sa.
-func mediaDir(t *testing.T) string {
+// writeImage lays a built image out as CD media on disk.
+func writeImage(t *testing.T, dir, name string, img *efstest.Builder) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, img.CDImage(64, nil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// baseImage writes the image a set's first layer maps whole: the
+// miniroot partitioner at stand/fx.64 and a distribution at dist/sa,
+// which is the shape the Installation Tools disc has in miniature.
+func baseImage(t *testing.T, dir, name string) string {
 	t.Helper()
 	img := efstest.New()
 	fx := img.AddFile(0o755, []byte("fake fx binary"))
@@ -68,29 +82,42 @@ func mediaDir(t *testing.T) string {
 	sa := img.AddFile(0o644, bytes.Repeat([]byte("S"), 1024))
 	dist := img.AddDir(map[string]uint32{"sa": sa})
 	img.SetRoot(map[string]uint32{"stand": stand, "dist": dist})
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "Overlay 1of3.iso"), img.CDImage(64, nil), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return dir
+	return writeImage(t, dir, name, img)
 }
 
+// distImage writes a later layer's image: one product under dist and
+// nothing else, the shape every set after the base contributes.
+func distImage(t *testing.T, dir, name, product string) string {
+	t.Helper()
+	img := efstest.New()
+	f := img.AddFile(0o644, []byte(product))
+	img.SetRoot(map[string]uint32{"dist": img.AddDir(map[string]uint32{product: f})})
+	return writeImage(t, dir, name, img)
+}
+
+// testConfig serves two install sets: a base set mapped whole from one
+// image, and an applications set contributing only its dist.
 func testConfig(t *testing.T) *config.Config {
+	t.Helper()
+	dir := t.TempDir()
 	yaml := fmt.Sprintf(`
 server_ip: 127.0.0.1
 clients:
   - {name: octane, mac: "08:00:69:0e:af:12", ip: 127.0.0.1}
-media:
-  - {name: "6.5.30", discs: %q}
-ports: {bootp: 0, tftp: 0, rsh: 0}
-`, mediaDir(t))
+install_sets:
+  - name: "6.5.30"
+    layers:
+      - {name: base, image: %q}
+  - name: applications
+    layers:
+      - {name: apps, image: %q, source_dir: dist, target_dir: dist}
+`, baseImage(t, dir, "base.image"), distImage(t, dir, "apps.image", "apps.sw"))
 	c, err := config.Parse([]byte(yaml))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// port 0 = kernel-assigned, for unprivileged tests
 	c.Ports = config.Ports{}
-	c.Services.NFS = true
 	return c
 }
 
@@ -115,7 +142,7 @@ func TestTFTPServesFx(t *testing.T) {
 	defer c.Close()
 	var req bytes.Buffer
 	binary.Write(&req, binary.BigEndian, uint16(1))
-	req.WriteString("/6.5.30/overlay-1of3/stand/fx.64")
+	req.WriteString("/6.5.30/stand/fx.64")
 	req.WriteByte(0)
 	req.WriteString("octet")
 	req.WriteByte(0)
@@ -147,7 +174,7 @@ func TestRSHServesDD(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	fmt.Fprintf(c, "0\x00guest\x00guest\x00dd if=/6.5.30/overlay-1of3/dist/sa bs=512\x00")
+	fmt.Fprintf(c, "0\x00guest\x00guest\x00dd if=/6.5.30/dist/sa bs=512\x00")
 	c.SetReadDeadline(time.Now().Add(2 * time.Second))
 	b, _ := io.ReadAll(c)
 	if len(b) < 1 || b[0] != 0 {
@@ -162,117 +189,6 @@ func TestRSHServesDD(t *testing.T) {
 	if !bytes.Contains(payload, []byte("records out")) {
 		t.Fatal("records summary missing")
 	}
-}
-
-func TestNFSMountAndRead(t *testing.T) {
-	s, _ := startAll(t)
-	pm := s.PortmapAddr().(*net.UDPAddr)
-
-	// portmap GETPORT(mount) -> mountd, MNT(/6.5.30/overlay-1of3) -> fh
-	mountPort := getport(t, pm, 100005, 1)
-	fh := mountRoot(t, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: mountPort}, "/6.5.30/overlay-1of3")
-
-	// portmap GETPORT(nfs), LOOKUP dist -> sa, READ
-	nfsPort := getport(t, pm, 100003, 2)
-	na := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: nfsPort}
-	dist := nfsLookup(t, na, fh, "dist")
-	sa := nfsLookup(t, na, dist, "sa")
-	data := nfsRead(t, na, sa, 0, 1024)
-	if len(data) != 1024 || data[0] != 'S' {
-		t.Fatalf("read %d bytes of dist/sa", len(data))
-	}
-}
-
-func getport(t *testing.T, pm *net.UDPAddr, prog, vers uint32) int {
-	t.Helper()
-	var a bytes.Buffer
-	binary.Write(&a, binary.BigEndian, prog)
-	binary.Write(&a, binary.BigEndian, vers)
-	binary.Write(&a, binary.BigEndian, uint32(17))
-	binary.Write(&a, binary.BigEndian, uint32(0))
-	rep := rpcCall(t, pm, 100000, 2, 3, a.Bytes())
-	return int(binary.BigEndian.Uint32(rep))
-}
-
-func mountRoot(t *testing.T, mnt *net.UDPAddr, path string) []byte {
-	t.Helper()
-	var a bytes.Buffer
-	binary.Write(&a, binary.BigEndian, uint32(len(path)))
-	a.WriteString(path)
-	for a.Len()%4 != 0 {
-		a.WriteByte(0)
-	}
-	rep := rpcCall(t, mnt, 100005, 1, 1, a.Bytes())
-	if st := binary.BigEndian.Uint32(rep); st != 0 {
-		t.Fatalf("MNT status %d", st)
-	}
-	return rep[4:36]
-}
-
-func nfsLookup(t *testing.T, na *net.UDPAddr, fh []byte, name string) []byte {
-	t.Helper()
-	var a bytes.Buffer
-	a.Write(fh)
-	binary.Write(&a, binary.BigEndian, uint32(len(name)))
-	a.WriteString(name)
-	for a.Len()%4 != 0 {
-		a.WriteByte(0)
-	}
-	rep := rpcCall(t, na, 100003, 2, 4, a.Bytes())
-	if st := binary.BigEndian.Uint32(rep); st != 0 {
-		t.Fatalf("LOOKUP %q status %d", name, st)
-	}
-	return rep[4:36]
-}
-
-func nfsRead(t *testing.T, na *net.UDPAddr, fh []byte, off, count uint32) []byte {
-	t.Helper()
-	var a bytes.Buffer
-	a.Write(fh)
-	binary.Write(&a, binary.BigEndian, off)
-	binary.Write(&a, binary.BigEndian, count)
-	binary.Write(&a, binary.BigEndian, uint32(0))
-	rep := rpcCall(t, na, 100003, 2, 6, a.Bytes())
-	if st := binary.BigEndian.Uint32(rep); st != 0 {
-		t.Fatalf("READ status %d", st)
-	}
-	// after status(4) + fattr(68): opaque data
-	dlen := binary.BigEndian.Uint32(rep[72:])
-	return rep[76 : 76+dlen]
-}
-
-// rpcCall sends one ONC-RPC/UDP call and returns the body after the
-// accepted-reply header.
-func rpcCall(t *testing.T, addr *net.UDPAddr, prog, vers, proc uint32, args []byte) []byte {
-	t.Helper()
-	c, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-	var b bytes.Buffer
-	w := func(v uint32) { binary.Write(&b, binary.BigEndian, v) }
-	w(0x33445566)
-	w(0)
-	w(2)
-	w(prog)
-	w(vers)
-	w(proc)
-	w(0)
-	w(0)
-	w(0)
-	w(0)
-	b.Write(args)
-	if _, err := c.WriteTo(b.Bytes(), addr); err != nil {
-		t.Fatal(err)
-	}
-	buf := make([]byte, 65536)
-	c.SetReadDeadline(time.Now().Add(2 * time.Second))
-	n, _, err := c.ReadFrom(buf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return buf[24:n]
 }
 
 func TestBOOTPAnswersConfiguredMAC(t *testing.T) {
@@ -308,5 +224,87 @@ func TestBOOTPAnswersConfiguredMAC(t *testing.T) {
 	}
 	if got := net.IP(buf[16:20]).String(); got != "127.0.0.1" {
 		t.Fatalf("yiaddr = %s", got)
+	}
+}
+
+// A tree directory is a legitimate path, but neither protocol can send
+// one as a byte stream, so the adapters have to refuse it as something
+// other than "not found" - a client that asked for a directory should
+// not be told the path is missing.
+func TestAdaptersRefuseDirectories(t *testing.T) {
+	s, _ := startAll(t)
+	if _, err := (treeFS{s.tree}).Open("/6.5.30/dist"); err == nil {
+		t.Error("tftp adapter opened a directory")
+	} else if errors.Is(err, tftp.ErrNotFound) {
+		t.Errorf("tftp adapter reported a directory as missing: %v", err)
+	}
+	if _, err := (cmdFS{s.tree}).Open("/6.5.30/dist"); err == nil {
+		t.Error("instcmd adapter opened a directory")
+	} else if errors.Is(err, instcmd.ErrNotFound) {
+		t.Errorf("instcmd adapter reported a directory as missing: %v", err)
+	}
+}
+
+func TestAdaptersReportMissingPaths(t *testing.T) {
+	s, _ := startAll(t)
+	if _, err := (treeFS{s.tree}).Open("/6.5.30/stand/fx.32"); !errors.Is(err, tftp.ErrNotFound) {
+		t.Errorf("tftp adapter: err = %v, want tftp.ErrNotFound", err)
+	}
+	if _, err := (cmdFS{s.tree}).Open("/6.5.30/stand/fx.32"); !errors.Is(err, instcmd.ErrNotFound) {
+		t.Errorf("instcmd adapter: err = %v, want instcmd.ErrNotFound", err)
+	}
+	if _, err := (cmdFS{s.tree}).ReadDir("/nowhere"); !errors.Is(err, instcmd.ErrNotFound) {
+		t.Errorf("instcmd adapter ReadDir: err = %v, want instcmd.ErrNotFound", err)
+	}
+	if _, err := (cmdFS{s.tree}).Stat("/nowhere"); !errors.Is(err, instcmd.ErrNotFound) {
+		t.Errorf("instcmd adapter Stat: err = %v, want instcmd.ErrNotFound", err)
+	}
+}
+
+// The rsh shell lists a directory by name and stats each entry, and it
+// addresses the tree root as "" once the leading slash is stripped.
+func TestCmdFSListsAndStats(t *testing.T) {
+	s, _ := startAll(t)
+	f := cmdFS{s.tree}
+	names, err := f.ReadDir("")
+	if err != nil {
+		t.Fatalf("ReadDir(root): %v", err)
+	}
+	for _, want := range []string{"6.5.30", "applications"} {
+		if !hasLine(names, want) {
+			t.Errorf("root listing missing %q, got %v", want, names)
+		}
+	}
+	info, err := f.Stat("/6.5.30/dist/sa")
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if info.IsDir || info.Size != 1024 || info.Ino == 0 || info.Nlink == 0 {
+		t.Errorf("stat of dist/sa = %+v", info)
+	}
+	dir, err := f.Stat("/6.5.30/dist")
+	if err != nil {
+		t.Fatalf("Stat(dir): %v", err)
+	}
+	if !dir.IsDir {
+		t.Errorf("stat of dist = %+v, want a directory", dir)
+	}
+}
+
+// The served-file manifest line names the layer a file came from, so a
+// media-backed path resolves and a generated one - which has no backing
+// layer to name - reports an error instead of a made-up source.
+func TestCmdFSResolvesOrigins(t *testing.T) {
+	s, _ := startAll(t)
+	f := cmdFS{s.tree}
+	r, err := f.ResolveImage("/6.5.30/dist/sa")
+	if err != nil {
+		t.Fatalf("ResolveImage: %v", err)
+	}
+	if r.Image != "base" || r.Path != "dist/sa" {
+		t.Errorf("ResolveImage = %+v, want layer base, path dist/sa", r)
+	}
+	if _, err := f.ResolveImage("install.cmds"); err == nil {
+		t.Error("a generated file resolved to a backing image")
 	}
 }

@@ -2,67 +2,52 @@ package serve
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/jamesbraid/instigator/efs/efstest"
 	"github.com/jamesbraid/instigator/internal/config"
+	"github.com/jamesbraid/instigator/internal/instscript"
 	"github.com/jamesbraid/instigator/internal/logging"
 )
 
-// combinedImage writes one CD image: dist/ holds the given entries, and
-// stand/fx.64 is present only when withStand, so a test can cover both
-// the disc that can boot the miniroot and the one that cannot.
-func combinedImage(t *testing.T, dir, filename string, withStand bool, dist func(img *efstest.Builder) map[string]uint32) string {
+// primaryImage writes the image the first set's first layer maps whole.
+// It carries the stock dist/.related_dists a real Installation Tools
+// disc ships - which the generated menu aid has to shadow - and
+// stand/fx.64 only when withStand, so a test can cover both the set that
+// can boot the miniroot and the one that cannot.
+func primaryImage(t *testing.T, dir, name string, withStand bool) string {
 	t.Helper()
 	img := efstest.New()
-	root := map[string]uint32{"dist": img.AddDir(dist(img))}
+	dist := map[string]uint32{
+		"sa":             img.AddFile(0o644, []byte("SA")),
+		".related_dists": img.AddFile(0o555, []byte("stock media copy\n")),
+	}
+	root := map[string]uint32{"dist": img.AddDir(dist)}
 	if withStand {
 		fx := img.AddFile(0o755, []byte("fake fx binary"))
 		root["stand"] = img.AddDir(map[string]uint32{"fx.64": fx})
 	}
 	img.SetRoot(root)
-	p := filepath.Join(dir, filename)
-	if err := os.WriteFile(p, img.CDImage(64, nil), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return p
-}
-
-// combinedSet writes the two-disc shape a real 6.5.30 set has in
-// miniature: a plain foundation disc, and the Installation-Tools disc
-// that carries both dist/.related_dists (which makes it the primary) and
-// the miniroot's stand/fx.64. Returned in config order.
-func combinedSet(t *testing.T) (foundation, primary string) {
-	t.Helper()
-	dir := t.TempDir()
-	foundation = combinedImage(t, dir, "foundation1.iso", false, func(img *efstest.Builder) map[string]uint32 {
-		return map[string]uint32{"foundation.sw": img.AddFile(0o644, []byte("F"))}
-	})
-	primary = combinedImage(t, dir, "tools.image", true, func(img *efstest.Builder) map[string]uint32 {
-		return map[string]uint32{
-			"sa":             img.AddFile(0o644, []byte("SA")),
-			".related_dists": img.AddFile(0o555, []byte("CD\n")),
-		}
-	})
-	return foundation, primary
+	return writeImage(t, dir, name, img)
 }
 
 // startupCapture separates Start's two output audiences: log is the
-// leveled server log (media map, client config - what this server is
-// doing), instructions is the operator's PROM/Inst> commands (what a
-// human does next). They used to be the same stream; James's directive
-// was that they never should have been - see logStartup's own comment.
+// leveled server log (the install-set inventory, client config - what
+// this server is doing), instructions is the operator's PROM/Inst>
+// commands (what a human does next). They used to be the same stream;
+// James's directive was that they never should have been - see
+// logStartup's own comment.
 type startupCapture struct {
 	log          []string
 	instructions []string
 }
 
-// captureStart runs Start over the given config and returns both output
-// streams as lines, with the servers closed again.
-func captureStart(t *testing.T, cfg *config.Config) startupCapture {
+// captureStart runs Start over the given config and returns the running
+// servers - so a test can read what they serve - alongside both output
+// streams as lines.
+func captureStart(t *testing.T, cfg *config.Config) (*Servers, startupCapture) {
 	t.Helper()
 	var logbuf, instrbuf syncBuffer
 	logger := logging.New(&logbuf, logging.LevelDebug)
@@ -70,10 +55,10 @@ func captureStart(t *testing.T, cfg *config.Config) startupCapture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Close()
+	t.Cleanup(func() { s.Close() })
 	t.Logf("server log:\n%s", logbuf.String())
 	t.Logf("operator instructions:\n%s", instrbuf.String())
-	return startupCapture{
+	return s, startupCapture{
 		log:          splitNonEmpty(logbuf.String()),
 		instructions: splitNonEmpty(instrbuf.String()),
 	}
@@ -98,40 +83,84 @@ func hasLine(lines []string, want string) bool {
 	return false
 }
 
-// combinedConfig serves the media set the other serve tests use plus a
-// combined set named irix6.5.30 whose primary disc is slugged "tools".
-func combinedConfig(t *testing.T) *config.Config {
+func hasSubstring(lines []string, want string) bool {
+	for _, l := range lines {
+		if strings.Contains(l, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// served returns what the running server serves at a tree path.
+func served(t *testing.T, s *Servers, name string) string {
 	t.Helper()
-	foundation, primary := combinedSet(t)
+	f, err := s.tree.Open(name)
+	if err != nil {
+		t.Fatalf("open %q: %v", name, err)
+	}
+	defer f.Close()
+	b, err := io.ReadAll(f)
+	if err != nil {
+		t.Fatalf("read %q: %v", name, err)
+	}
+	return string(b)
+}
+
+// fourSetConfig is the served profile in miniature: a primary set mapped
+// whole from one image, then three sets contributing only their dist,
+// exactly the four-set shape the generated commands open.
+func fourSetConfig(t *testing.T, withStand bool) *config.Config {
+	t.Helper()
+	dir := t.TempDir()
 	yaml := fmt.Sprintf(`
 server_ip: 192.0.2.10
 clients:
   - {name: octane, mac: "08:00:69:0e:af:12", ip: 127.0.0.1}
-media:
-  - {name: "6.5.30", discs: %q}
-combined:
-  - name: irix6.5.30
-    layers: [%q, %q]
-    disc_names: {"foundation1.iso": foundation1, "tools.image": tools}
-`, mediaDir(t), foundation, primary)
-	c, err := config.Parse([]byte(yaml))
+install_sets:
+  - name: "6.5.30"
+    layers:
+      - {name: base, image: %q}
+  - name: foundations
+    layers:
+      - {name: foundations1, image: %q, source_dir: dist, target_dir: dist}
+  - name: applications
+    layers:
+      - {name: apps, image: %q, source_dir: dist, target_dir: dist}
+  - name: development
+    layers:
+      - {name: dev, image: %q, source_dir: dist, target_dir: dist}
+`,
+		primaryImage(t, dir, "base.image", withStand),
+		distImage(t, dir, "foundations.image", "eoe.sw"),
+		distImage(t, dir, "apps.image", "apps.sw"),
+		distImage(t, dir, "dev.image", "dev.sw"))
+	cfg, err := config.Parse([]byte(yaml))
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.Ports = config.Ports{}
-	return c
+	cfg.Ports = config.Ports{}
+	return cfg
 }
 
-// The whole point of a combined set is that one "from" opens every disc,
-// so the startup log has to hand the operator that exact command next to
-// the PROM line that boots the same disc's miniroot - not leave them to
-// assemble it from the "combined:" line and a media disc's boot hint.
-func TestStartupLogsCombinedRecipe(t *testing.T) {
-	c := captureStart(t, combinedConfig(t))
+// distPaths is the served dist path of every set the instructions open,
+// in config order - what instscript is called with.
+var fourSetDists = []string{"/6.5.30/dist", "/foundations/dist", "/applications/dist", "/development/dist"}
+
+// inst has no way to discover that four sets belong together, so the
+// operator instructions have to hand over every "from"/"open" line, next
+// to the PROM lines that get the machine there in the first place.
+func TestStartupInstructionsOpenEverySet(t *testing.T) {
+	_, c := captureStart(t, fourSetConfig(t, true))
 
 	for _, want := range []string{
-		"  PROM: boot -f bootp():/irix6.5.30/tools/stand/fx.64",
-		"  Inst>: from 192.0.2.10:/irix6.5.30/tools/dist",
+		"  PROM: setenv netaddr 127.0.0.1",
+		"  PROM: boot -f bootp():/6.5.30/stand/fx.64",
+		"  PROM: Remote Directory: /6.5.30/dist/",
+		"  Inst>: from 192.0.2.10:/6.5.30/dist",
+		"  Inst>: open 192.0.2.10:/foundations/dist",
+		"  Inst>: open 192.0.2.10:/applications/dist",
+		"  Inst>: open 192.0.2.10:/development/dist",
 	} {
 		if !hasLine(c.instructions, want) {
 			t.Errorf("operator instructions missing %q, got:\n%s", want, strings.Join(c.instructions, "\n"))
@@ -147,52 +176,196 @@ func TestStartupLogsCombinedRecipe(t *testing.T) {
 	}
 }
 
-// A combined set whose primary disc carries no miniroot still has a valid
-// "from" - the operator boots fx from a media disc instead - so the Inst>
-// line must survive on its own rather than be suppressed with the PROM
-// line it normally accompanies.
-func TestStartupOmitsCombinedPROMLineWithoutFx(t *testing.T) {
+// The PROM's Remote Directory prompt wants the trailing slash; without
+// it the PROM silently looks in the parent directory.
+func TestStartupRemoteDirectoryKeepsTrailingSlash(t *testing.T) {
+	_, c := captureStart(t, fourSetConfig(t, true))
+	for _, l := range c.instructions {
+		if !strings.Contains(l, "Remote Directory") {
+			continue
+		}
+		if !strings.HasSuffix(l, "/") {
+			t.Errorf("Remote Directory line has no trailing slash: %q", l)
+		}
+		return
+	}
+	t.Errorf("no Remote Directory line, got:\n%s", strings.Join(c.instructions, "\n"))
+}
+
+// A set whose media carries no miniroot still has a valid "from" - the
+// operator boots fx from a CD in the drive instead - so the Inst> lines
+// must survive on their own rather than be suppressed along with a boot
+// artifact this server cannot actually serve. The Remote Directory does
+// go with the boot line: the PROM only asks for it during the netboot
+// this server just declined to offer, and the served runbook drops it in
+// exactly the same case.
+func TestStartupOmitsPROMBootLineWithoutFx(t *testing.T) {
+	_, c := captureStart(t, fourSetConfig(t, false))
+	for _, l := range c.instructions {
+		if strings.Contains(l, "boot -f bootp()") {
+			t.Errorf("boot line printed for a set with no stand/fx.64: %q", l)
+		}
+		if strings.Contains(l, "Remote Directory") {
+			t.Errorf("Remote Directory printed with no boot line to go with it: %q", l)
+		}
+	}
+	if !hasLine(c.instructions, "  Inst>: from 192.0.2.10:/6.5.30/dist") {
+		t.Errorf("Inst> lines dropped along with the PROM boot line, got:\n%s", strings.Join(c.instructions, "\n"))
+	}
+}
+
+// The startup report is what an operator checks when a set serves
+// something unexpected: which layers went into it, in what order, which
+// collisions were settled by configuration, and where a representative
+// file's bytes actually came from.
+func TestStartupLogsInstallSetInventory(t *testing.T) {
 	dir := t.TempDir()
-	foundation := combinedImage(t, dir, "foundation1.iso", false, func(img *efstest.Builder) map[string]uint32 {
-		return map[string]uint32{"foundation.sw": img.AddFile(0o644, []byte("F"))}
-	})
-	primary := combinedImage(t, dir, "tools.image", false, func(img *efstest.Builder) map[string]uint32 {
-		return map[string]uint32{".related_dists": img.AddFile(0o555, []byte("CD\n"))}
-	})
+	base := primaryImage(t, dir, "base.image", true)
+	// two layers writing the same path with different bytes: a collision
+	// the config settles by naming the winning layer.
+	one := readmeImage(t, dir, "apps1.image", "one\n")
+	two := readmeImage(t, dir, "apps2.image", "two\n")
 	yaml := fmt.Sprintf(`
 server_ip: 192.0.2.10
 clients:
   - {name: octane, mac: "08:00:69:0e:af:12", ip: 127.0.0.1}
-media:
-  - {name: "6.5.30", discs: %q}
-combined:
-  - name: irix6.5.30
-    layers: [%q, %q]
-    disc_names: {"foundation1.iso": foundation1, "tools.image": tools}
-`, mediaDir(t), foundation, primary)
+install_sets:
+  - name: "6.5.30"
+    layers:
+      - {name: base, image: %q}
+  - name: applications
+    layers:
+      - {name: apps1, image: %q, source_dir: dist, target_dir: dist}
+      - {name: apps2, image: %q, source_dir: dist, target_dir: dist}
+    collisions: {"applications/dist/inst.README": apps2}
+`, base, one, two)
 	cfg, err := config.Parse([]byte(yaml))
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg.Ports = config.Ports{}
 
-	c := captureStart(t, cfg)
-	if hasLine(c.instructions, "  PROM: boot -f bootp():/irix6.5.30/tools/stand/fx.64") {
-		t.Errorf("PROM line logged for a primary disc with no stand/fx.64, got:\n%s", strings.Join(c.instructions, "\n"))
+	_, c := captureStart(t, cfg)
+	for _, want := range []string{
+		"set 6.5.30: enabled, 1 layer",
+		fmt.Sprintf("set 6.5.30: layer base  <-  image %q  . -> .", base),
+		"set applications: enabled, 2 layers",
+		fmt.Sprintf("set applications: layer apps2  <-  image %q  dist -> dist", two),
+		"set applications: collision applications/dist/inst.README  <-  layer apps2",
+		"set 6.5.30: /6.5.30/stand/fx.64  <-  image base:/stand/fx.64",
+		"set 6.5.30: /6.5.30/dist/sa  <-  image base:/dist/sa",
+	} {
+		if !hasSubstring(c.log, want) {
+			t.Errorf("server log missing %q, got:\n%s", want, strings.Join(c.log, "\n"))
+		}
 	}
-	if !hasLine(c.instructions, "  Inst>: from 192.0.2.10:/irix6.5.30/tools/dist") {
-		t.Errorf("Inst> line dropped along with the PROM line, got:\n%s", strings.Join(c.instructions, "\n"))
+	// the inventory is server log content, not console UX
+	if hasSubstring(c.instructions, "layer base") {
+		t.Errorf("inventory leaked into the operator instructions:\n%s", strings.Join(c.instructions, "\n"))
 	}
 }
 
-// Without a combined set there is nothing to point inst at, so the
-// operator instructions must not grow a bare "Inst>:" line with an
-// empty path.
-func TestStartupLogsNoInstLineWithoutCombined(t *testing.T) {
-	c := captureStart(t, testConfig(t))
+// readmeImage writes a dist-only layer carrying one inst.README, so two
+// of them collide on the same logical path with different bytes.
+func readmeImage(t *testing.T, dir, name, readme string) string {
+	t.Helper()
+	img := efstest.New()
+	entries := map[string]uint32{"inst.README": img.AddFile(0o644, []byte(readme))}
+	img.SetRoot(map[string]uint32{"dist": img.AddDir(entries)})
+	return writeImage(t, dir, name, img)
+}
+
+// inst.init is picked up automatically by a machine that boots straight
+// into inst; install.cmds is the same bytes at a stable path an operator
+// loads by hand with "admin source". One generator, one byte sequence -
+// if they ever diverge, an unattended boot and a hand-driven one install
+// different things.
+func TestGeneratedCommandFilesAreTheSameBytes(t *testing.T) {
+	s, _ := captureStart(t, fourSetConfig(t, true))
+	want := instscript.Commands(instscript.Params{
+		ServerIP: "192.0.2.10",
+		Sets:     fourSetDists,
+	})
+	init := served(t, s, "6.5.30/dist/inst.init")
+	admin := served(t, s, "install.cmds")
+	if init != want {
+		t.Errorf("inst.init =\n%q\nwant\n%q", init, want)
+	}
+	if admin != init {
+		t.Errorf("install.cmds =\n%q\ndiffers from inst.init\n%q", admin, init)
+	}
+}
+
+// The runbook is served with this server's real address, the real set
+// paths, and the boot artifact and Remote Directory that actually
+// resolve here.
+func TestGeneratedRunbookMatchesTheServedProfile(t *testing.T) {
+	s, _ := captureStart(t, fourSetConfig(t, true))
+	want := instscript.Generate(instscript.Params{
+		ServerIP:  "192.0.2.10",
+		Sets:      fourSetDists,
+		BootPath:  "/6.5.30/stand/fx.64",
+		RemoteDir: "/6.5.30/dist/",
+	})
+	if got := served(t, s, "install"); got != want {
+		t.Errorf("/install runbook =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// The primary layer's media ships its own .related_dists naming the
+// discs of a CD set; ours has to win, or the Inst "Open Dist" menu
+// offers paths this server does not serve.
+func TestGeneratedRelatedDistsShadowsTheMediaCopy(t *testing.T) {
+	s, _ := captureStart(t, fourSetConfig(t, true))
+	want := instscript.RelatedDists(fourSetDists)
+	if got := served(t, s, "6.5.30/dist/.related_dists"); got != want {
+		t.Errorf(".related_dists = %q, want %q", got, want)
+	}
+}
+
+// A disabled set stays browsable - that is the point of building every
+// configured set - but nothing offers it: not the generated commands,
+// not the Inst> lines.
+func TestDisabledSetIsServedButNotOffered(t *testing.T) {
+	cfg := fourSetConfig(t, true)
+	cfg.InstallSets[2].Enabled = false // applications
+	s, c := captureStart(t, cfg)
+
+	if got := served(t, s, "applications/dist/apps.sw"); got != "apps.sw" {
+		t.Errorf("disabled set is not served: %q", got)
+	}
 	for _, l := range c.instructions {
-		if strings.Contains(l, "Inst>:") {
-			t.Errorf("media-only config produced an Inst> line: %q", l)
+		if strings.Contains(l, "/applications/dist") {
+			t.Errorf("disabled set offered to the operator: %q", l)
 		}
+	}
+	if strings.Contains(served(t, s, "install.cmds"), "/applications/dist") {
+		t.Error("disabled set opened by the generated commands")
+	}
+}
+
+// With nothing enabled there is no first set to build a command file
+// around: generation is skipped entirely rather than reaching for a set
+// that isn't there, and the operator gets no command pointing at one.
+func TestNoEnabledSetsGeneratesNothing(t *testing.T) {
+	cfg := fourSetConfig(t, true)
+	for i := range cfg.InstallSets {
+		cfg.InstallSets[i].Enabled = false
+	}
+	s, c := captureStart(t, cfg)
+
+	for _, name := range []string{"install", "install.cmds", "6.5.30/dist/inst.init"} {
+		if _, err := s.tree.Open(name); err == nil {
+			t.Errorf("%s generated with no enabled set", name)
+		}
+	}
+	for _, l := range c.instructions {
+		if strings.Contains(l, "Inst>:") || strings.Contains(l, "boot -f") {
+			t.Errorf("operator instruction with no enabled set: %q", l)
+		}
+	}
+	// every configured set is still built and browsable
+	if got := served(t, s, "applications/dist/apps.sw"); got != "apps.sw" {
+		t.Errorf("disabled set is not served: %q", got)
 	}
 }

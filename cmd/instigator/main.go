@@ -1,5 +1,6 @@
 // Command instigator is a network install server for SGI IRIX systems,
-// serving untouched CD images over BOOTP, TFTP, and rsh.
+// serving install sets assembled from untouched CD images over BOOTP,
+// TFTP, and rsh.
 package main
 
 import (
@@ -15,7 +16,7 @@ import (
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  instigator serve [-v] <config.yaml>     serve IRIX netinstalls from CD images (-v: decode every packet)
+  instigator serve [-v] <config.yaml>     serve the configured IRIX install sets (-v: decode every packet)
   instigator ls <image> [path]            list an SGI CD image (volume header + EFS)
   instigator dump <image> <src> <outdir>  extract an EFS subtree to a host directory`)
 	os.Exit(2)

@@ -1,6 +1,9 @@
-// Package vfs assembles the serve tree instigator exports: SGI CD images
-// opened in place, named, and addressed by path. Protocol servers (tftp,
-// rsh, nfs) all read through this layer.
+// Package vfs assembles the read-only filesystem instigator exports: one
+// logical install set per configured name, each the ordered merge of its
+// layers - SGI CD images opened in place and pre-extracted directories -
+// plus the files instigator generates in memory. The assembled tree is an
+// io/fs.FS, and every path in it resolves to exactly one Origin naming the
+// layer or generator its bytes came from.
 package vfs
 
 import (
