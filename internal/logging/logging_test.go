@@ -10,10 +10,12 @@ import (
 	"github.com/jamesbraid/instigator/internal/logging"
 )
 
-// lineRE matches one log line: an RFC3339/ISO8601 timestamp (with a
-// numeric zone offset, e.g. 2026-08-16T16:07:38-07:00), a level word,
-// then the message.
-var lineRE = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}) +(DEBUG|INFO|WARN|ERROR) +(.*)$`)
+// lineRE matches one log line: an RFC3339/ISO8601 timestamp, a level
+// word, then the message. The zone is either a numeric offset
+// (2026-08-16T16:07:38-07:00) or Z for UTC (2026-08-16T23:07:38Z) - both
+// are valid RFC3339, and which one Format produces depends on the host's
+// zone, so a server running in UTC prints Z.
+var lineRE = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})) +(DEBUG|INFO|WARN|ERROR) +(.*)$`)
 
 func TestLevelsFilterBelowThreshold(t *testing.T) {
 	var buf bytes.Buffer
