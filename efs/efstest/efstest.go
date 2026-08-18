@@ -104,6 +104,17 @@ func (b *Builder) AddSymlink(target string) uint32 {
 	return ino
 }
 
+// AddFIFO stores a named pipe and returns its inode number. It exists so
+// a test can aim a symlink at something that is neither a directory nor a
+// regular file, which is the one shape real media occasionally carries
+// and the tree refuses to serve.
+func (b *Builder) AddFIFO() uint32 {
+	ino := b.nextinode
+	b.nextinode++
+	b.PutInode(ino, 0x1000|0o644, 0, 1000+ino, nil)
+	return ino
+}
+
 // AddFileExtents stores a file whose extent list is given explicitly.
 func (b *Builder) AddFileExtents(size int32, extents [][3]uint32) uint32 {
 	ino := b.nextinode
