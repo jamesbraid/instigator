@@ -272,17 +272,16 @@ func TestBuildRebasesDist65WithoutLeakingRedirect(t *testing.T) {
 	}
 }
 
-// TestBuildFollowsSymlinksWithinTheSource: an EFS symlink to a file in its
-// own image materializes as that file, while one aimed outside the image
-// resolves to nothing and is skipped rather than serving a host path.
+// TestBuildFollowsSymlinksWithinTheSource: an EFS symlink to a regular
+// file in its own image materializes as that file, which is the only
+// symlink shape the tree serves.
 func TestBuildFollowsSymlinksWithinTheSource(t *testing.T) {
 	dir := t.TempDir()
 
 	img := efstest.New()
 	sa := img.AddFile(0o644, []byte("SA"))
 	inside := img.AddSymlink("sa")
-	outside := img.AddSymlink("../../../../etc/passwd")
-	dist := img.AddDir(map[string]uint32{"sa": sa, "inside": inside, "outside": outside})
+	dist := img.AddDir(map[string]uint32{"sa": sa, "inside": inside})
 	img.SetRoot(map[string]uint32{"dist": dist})
 	image := writeCD(t, dir, "links.iso", img)
 
@@ -295,28 +294,76 @@ func TestBuildFollowsSymlinksWithinTheSource(t *testing.T) {
 		t.Fatalf("in-source symlink = %q, want SA", got)
 	}
 	if got := dirNames(t, tree, "6.5.30/dist"); !equalStrings(got, []string{"inside", "sa"}) {
-		t.Fatalf("ReadDir = %v, want [inside sa]: the escaping link must be dropped", got)
-	}
-	if _, err := tree.Open("6.5.30/dist/outside"); err == nil {
-		t.Fatal("a symlink pointing out of the image resolved")
+		t.Fatalf("ReadDir = %v, want [inside sa]", got)
 	}
 }
 
-// TestBuildDropsEscapingLinksInDirectoryLayers is the directory-layer half
-// of containment. A pre-extracted layer sits on the host filesystem, where
-// a symlink really can reach /etc/passwd, so the layer is opened under
-// os.OpenRoot: a link that stays inside resolves, one that leaves is
-// refused and its entry never enters the tree.
-func TestBuildDropsEscapingLinksInDirectoryLayers(t *testing.T) {
+// TestBuildRejectsUnresolvableLinksInImageLayers: a link aimed outside
+// its own image resolves to nothing - Lookup never leaves the image's
+// inode graph - so no host path can be served through it. Dropping the
+// entry silently would still hand the operator an install set missing a
+// file the media carries, so the build fails and names the link.
+func TestBuildRejectsUnresolvableLinksInImageLayers(t *testing.T) {
+	dir := t.TempDir()
+
+	img := efstest.New()
+	sa := img.AddFile(0o644, []byte("SA"))
+	outside := img.AddSymlink("../../../../etc/passwd")
+	dist := img.AddDir(map[string]uint32{"sa": sa, "outside": outside})
+	img.SetRoot(map[string]uint32{"dist": dist})
+	image := writeCD(t, dir, "escape.iso", img)
+
+	_, err := Build([]SetSpec{{
+		Name:   "6.5.30",
+		Layers: []LayerSpec{distLayer("links", image)},
+	}})
+	if err == nil {
+		t.Fatal("Build accepted a layer whose symlink resolves to nothing")
+	}
+	for _, want := range []string{"links", "dist/outside"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
+// TestBuildRejectsDirectoryLinksInImageLayers: a link to a directory
+// would duplicate a subtree and could cycle, so the tree does not follow
+// one. Traversing it is deferred work, not a silent drop: the build stops
+// and says so.
+func TestBuildRejectsDirectoryLinksInImageLayers(t *testing.T) {
+	dir := t.TempDir()
+
+	img := efstest.New()
+	sa := img.AddFile(0o644, []byte("SA"))
+	sub := img.AddDir(map[string]uint32{"sa": sa})
+	dirlink := img.AddSymlink("sub")
+	dist := img.AddDir(map[string]uint32{"sub": sub, "dirlink": dirlink})
+	img.SetRoot(map[string]uint32{"dist": dist})
+	image := writeCD(t, dir, "dirlink.iso", img)
+
+	_, err := Build([]SetSpec{{
+		Name:   "6.5.30",
+		Layers: []LayerSpec{distLayer("links", image)},
+	}})
+	if err == nil {
+		t.Fatal("Build accepted a layer whose symlink resolves to a directory")
+	}
+	for _, want := range []string{"links", "dist/dirlink", "directory"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
+// TestBuildFollowsLinksWithinDirectoryLayers is the directory-layer half
+// of containment. A pre-extracted layer sits on the host filesystem, so
+// it is opened under os.OpenRoot: a link that stays inside and lands on a
+// regular file resolves and is served.
+func TestBuildFollowsLinksWithinDirectoryLayers(t *testing.T) {
 	dir := t.TempDir()
 	layer := makeDir(t, filepath.Join(dir, "found"), map[string]string{"dist/foundation.sw": "F"})
 	if err := os.Symlink("foundation.sw", filepath.Join(layer, "dist", "inside")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("../../../../etc/passwd", filepath.Join(layer, "dist", "outside")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("/etc/passwd", filepath.Join(layer, "dist", "absolute")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -327,14 +374,65 @@ func TestBuildDropsEscapingLinksInDirectoryLayers(t *testing.T) {
 
 	want := []string{"foundation.sw", "inside"}
 	if got := dirNames(t, tree, "foundations/dist"); !equalStrings(got, want) {
-		t.Fatalf("ReadDir = %v, want %v: the escaping links must be dropped", got, want)
+		t.Fatalf("ReadDir = %v, want %v", got, want)
 	}
 	if got := readTree(t, tree, "foundations/dist/inside"); got != "F" {
 		t.Fatalf("in-layer symlink = %q, want F", got)
 	}
-	for _, name := range []string{"foundations/dist/outside", "foundations/dist/absolute"} {
-		if _, err := tree.Open(name); err == nil {
-			t.Fatalf("Open(%q) served a host path through a symlink", name)
+}
+
+// TestBuildRejectsEscapingLinksInDirectoryLayers: os.Root refuses a link
+// that leaves the layer, whether relative or absolute, so no host path is
+// ever served. The build then fails rather than serve a set quietly
+// missing those entries.
+func TestBuildRejectsEscapingLinksInDirectoryLayers(t *testing.T) {
+	for _, tc := range []struct{ name, target string }{
+		{"relative", "../../../../etc/passwd"},
+		{"absolute", "/etc/passwd"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			layer := makeDir(t, filepath.Join(dir, "found"), map[string]string{"dist/foundation.sw": "F"})
+			if err := os.Symlink(tc.target, filepath.Join(layer, "dist", "escape")); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := Build([]SetSpec{{
+				Name:   "foundations",
+				Layers: []LayerSpec{{Name: "found", Dir: layer, SourceDir: "dist", TargetDir: "dist"}},
+			}})
+			if err == nil {
+				t.Fatalf("Build accepted a layer whose symlink escapes to %s", tc.target)
+			}
+			for _, want := range []string{"found", "dist/escape"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestBuildRejectsDirectoryLinksInDirectoryLayers is the directory-layer
+// half of the deferred directory-link traversal: an in-bounds link to a
+// directory stops the build too.
+func TestBuildRejectsDirectoryLinksInDirectoryLayers(t *testing.T) {
+	dir := t.TempDir()
+	layer := makeDir(t, filepath.Join(dir, "found"), map[string]string{"dist/sub/foundation.sw": "F"})
+	if err := os.Symlink("sub", filepath.Join(layer, "dist", "dirlink")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Build([]SetSpec{{
+		Name:   "foundations",
+		Layers: []LayerSpec{{Name: "found", Dir: layer, SourceDir: "dist", TargetDir: "dist"}},
+	}})
+	if err == nil {
+		t.Fatal("Build accepted a layer whose symlink resolves to a directory")
+	}
+	for _, want := range []string{"found", "dist/dirlink", "directory"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
 		}
 	}
 }

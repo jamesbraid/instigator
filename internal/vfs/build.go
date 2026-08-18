@@ -29,9 +29,10 @@ const compareBlock = 64 << 10
 //
 // Build fails rather than guess: a layer whose source or SourceDir is
 // missing, a file present with different bytes in two layers and no
-// configured winner for that exact path, or a configured winner no layer
-// delivers all stop the build. Content is read lazily on Open; only files
-// two layers both claim are read here, to compare them.
+// configured winner for that exact path, a configured winner no layer
+// delivers, or a symlink that does not resolve, contained, to a regular
+// file all stop the build. Content is read lazily on Open; only files two
+// layers both claim are read here, to compare them.
 func Build(sets []SetSpec) (*Tree, error) {
 	t := &Tree{root: newDir(".", Origin{})}
 	images := map[string]*Disc{}
@@ -176,15 +177,17 @@ func (t *Tree) walkImage(set SetSpec, layer LayerSpec, fsys *efs.FS, ino *efs.In
 		if child.IsSymlink() {
 			// A link resolves within its own image - Lookup never leaves
 			// the image's inode graph - so one aimed outside simply finds
-			// nothing, and the entry is dropped rather than served.
-			child, childSrc, err = lookupFollow(fsys, childSrc, maxSymlinks)
+			// nothing. Serving the set without it would be a quiet lie
+			// about what the media holds, so say which link it was.
+			linkSrc := childSrc
+			child, childSrc, err = lookupFollow(fsys, linkSrc, maxSymlinks)
 			if err != nil {
-				continue
+				return fmt.Errorf("symlink %s does not resolve within the image: %w", linkSrc, err)
 			}
 			// A link to a directory would duplicate a subtree and could
 			// cycle; the tree materializes files, not link graphs.
 			if child.IsDir() {
-				continue
+				return fmt.Errorf("symlink %s resolves to a directory; directory-link traversal is unsupported", linkSrc)
 			}
 		}
 		switch {
@@ -250,10 +253,14 @@ func (t *Tree) walkDir(set SetSpec, layer LayerSpec, root *os.Root, fsys fs.FS, 
 		if info.Mode()&fs.ModeSymlink != 0 {
 			// os.Root follows a link that stays inside the layer and
 			// refuses one that escapes, so a failed Stat here is exactly
-			// the escape case: drop the entry.
+			// the escape case. Skipping it would serve a set missing an
+			// entry the layer lists, so fail and name the link.
 			info, err = fs.Stat(fsys, childSrc)
-			if err != nil || info.IsDir() {
-				continue
+			if err != nil {
+				return fmt.Errorf("symlink %s escapes the layer or does not resolve: %w", childSrc, err)
+			}
+			if info.IsDir() {
+				return fmt.Errorf("symlink %s resolves to a directory; directory-link traversal is unsupported", childSrc)
 			}
 		}
 		switch {
