@@ -384,25 +384,23 @@ func (s *Server) listenTransfer() (*net.UDPConn, error) {
 }
 
 // sendAndWaitAck sends pkt up to retries+1 times, spaced by timeout, until
-// an ACK for wantBlock arrives from client (block 0 acknowledges an OACK).
-// acked reports success; aborted reports the send itself failing or the
-// client sending a TFTP ERROR -- both end the transfer immediately, with
-// no further attempts. ackbuf is caller-owned and reused across calls so a
-// transfer allocates it once, not per block; clientAP is client's address
-// pre-converted so the hot loop never does it. Uses the AddrPort-flavored
-// UDPConn calls, not ReadFrom/WriteTo: those return/take a net.Addr
-// interface and allocate a new *net.UDPAddr for every single packet.
-// sendAndWaitAck sends pkt and waits for its ACK, resending up to retries
-// times. resends is how many retransmits it took (0 if the first send was
-// acked), so a transfer can report its total retry count.
-func (s *Server) sendAndWaitAck(pc *net.UDPConn, client *net.UDPAddr, clientAP netip.AddrPort, ackbuf, pkt []byte, wantBlock uint16, timeout time.Duration, retries int) (acked, aborted bool, resends int) {
+// an ACK for wantBlock arrives from the client (block 0 acknowledges an
+// OACK). acked reports success; aborted reports the send itself failing or
+// the client sending a TFTP ERROR - both end the transfer immediately.
+// resends is how many retransmits it took (0 if the first send was acked),
+// so a transfer can report its total retry count. ackbuf is caller-owned
+// and reused across calls so a transfer allocates it once, not per block.
+// Uses the AddrPort-flavored UDPConn calls, not ReadFrom/WriteTo: those
+// return/take a net.Addr interface and allocate a new *net.UDPAddr for
+// every single packet.
+func (s *Server) sendAndWaitAck(pc *net.UDPConn, clientAP netip.AddrPort, ackbuf, pkt []byte, wantBlock uint16, timeout time.Duration, retries int) (acked, aborted bool, resends int) {
 	for attempt := 0; attempt <= retries; attempt++ {
 		if _, err := pc.WriteToUDPAddrPort(pkt, clientAP); err != nil {
-			s.Logger.Errorf("tftp: %s: send: %v", client, err)
+			s.Logger.Errorf("tftp: %s: send: %v", clientAP, err)
 			return false, true, attempt
 		}
 		if attempt > 0 && s.Logger.Enabled(logging.LevelDebug) {
-			s.Logger.Debugf("tftp: %s: resend block %d (attempt %d)", client, wantBlock, attempt)
+			s.Logger.Debugf("tftp: %s: resend block %d (attempt %d)", clientAP, wantBlock, attempt)
 		}
 		pc.SetReadDeadline(time.Now().Add(timeout))
 		for {
@@ -412,7 +410,7 @@ func (s *Server) sendAndWaitAck(pc *net.UDPConn, client *net.UDPAddr, clientAP n
 			}
 			if from.Addr().Unmap() != clientAP.Addr() || from.Port() != clientAP.Port() {
 				if s.Logger.Enabled(logging.LevelDebug) {
-					s.Logger.Debugf("tftp: %s: stray packet from %s, ignoring", client, from)
+					s.Logger.Debugf("tftp: %s: stray packet from %s, ignoring", clientAP, from)
 				}
 				continue // stray packet from elsewhere
 			}
@@ -424,24 +422,60 @@ func (s *Server) sendAndWaitAck(pc *net.UDPConn, client *net.UDPAddr, clientAP n
 				got := binary.BigEndian.Uint16(ackbuf[2:4])
 				if got == wantBlock {
 					if s.Logger.Enabled(logging.LevelDebug) {
-						s.Logger.Debugf("tftp: %s: ACK block %d", client, got)
+						s.Logger.Debugf("tftp: %s: ACK block %d", clientAP, got)
 					}
 					return true, false, attempt
 				}
 				if s.Logger.Enabled(logging.LevelDebug) {
-					s.Logger.Debugf("tftp: %s: ACK block %d (waiting for %d)", client, got, wantBlock)
+					s.Logger.Debugf("tftp: %s: ACK block %d (waiting for %d)", clientAP, got, wantBlock)
 				}
 			case opERROR:
-				s.Logger.Warnf("tftp: %s: client ERROR code %d: %q", client, binary.BigEndian.Uint16(ackbuf[2:4]), ackbuf[4:n])
+				s.Logger.Warnf("tftp: %s: client ERROR code %d: %q", clientAP, binary.BigEndian.Uint16(ackbuf[2:4]), ackbuf[4:n])
 				return false, true, attempt
 			default:
 				if s.Logger.Enabled(logging.LevelDebug) {
-					s.Logger.Debugf("tftp: %s: unexpected opcode %d during transfer", client, binary.BigEndian.Uint16(ackbuf[0:2]))
+					s.Logger.Debugf("tftp: %s: unexpected opcode %d during transfer", clientAP, binary.BigEndian.Uint16(ackbuf[0:2]))
 				}
 			}
 		}
 	}
 	return false, false, retries
+}
+
+// transferClient is the client identity recorded for a transfer: the
+// configured alias when known, the IP otherwise.
+func (s *Server) transferClient(client *net.UDPAddr) string {
+	if s.ClientName != nil {
+		if a, ok := netip.AddrFromSlice(client.IP); ok {
+			if name := s.ClientName(a.Unmap()); name != "" {
+				return name
+			}
+		}
+	}
+	return client.IP.String()
+}
+
+// retryPolicy is the per-transfer retransmit budget with defaults applied:
+// the ordinary per-block interval and count, and the cheaper final-block
+// budget (see FinalRetries).
+func (s *Server) retryPolicy() (retry time.Duration, retries int, finalRetries int, finalTimeout time.Duration) {
+	retry = s.RetryInterval
+	if retry == 0 {
+		retry = time.Second
+	}
+	retries = s.Retries
+	if retries == 0 {
+		retries = 5
+	}
+	finalRetries = s.FinalRetries
+	if finalRetries == 0 {
+		finalRetries = 1
+	}
+	finalTimeout = s.FinalTimeout
+	if finalTimeout == 0 {
+		finalTimeout = 300 * time.Millisecond
+	}
+	return retry, retries, finalRetries, finalTimeout
 }
 
 func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[string]string) {
@@ -469,14 +503,7 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 				image, imagePath = r.Image, r.Path
 			}
 		}
-		clientID := client.IP.String()
-		if s.ClientName != nil {
-			if a, ok := netip.AddrFromSlice(client.IP); ok {
-				if name := s.ClientName(a.Unmap()); name != "" {
-					clientID = name
-				}
-			}
-		}
+		clientID := s.transferClient(client)
 		defer func() {
 			s.Recorder.TFTPTransferEnd(capture.TransferRecord{
 				Client:      clientID,
@@ -526,30 +553,12 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 	s.trackXfer(pc)
 	defer s.untrackXfer(pc)
 
-	retry := s.RetryInterval
-	if retry == 0 {
-		retry = time.Second
-	}
-	retries := s.Retries
-	if retries == 0 {
-		retries = 5
-	}
-
+	retry, retries, finalRetries, finalTimeout := s.retryPolicy()
 	size = f.Size()
-	oack, negBlockSize, effRetry := negotiateOptions(opts, size, blockSize, retry)
-	effBlockSize = negBlockSize
-	retry = effRetry
-
-	finalRetries := s.FinalRetries
-	if finalRetries == 0 {
-		finalRetries = 1
-	}
-	finalTimeout := s.FinalTimeout
-	if finalTimeout == 0 {
-		finalTimeout = 300 * time.Millisecond
-	}
+	var oack []byte
+	oack, effBlockSize, retry = negotiateOptions(opts, size, effBlockSize, retry)
 	if finalTimeout > retry {
-		finalTimeout = retry
+		finalTimeout = retry // a negotiated timeout bounds the final-block wait too
 	}
 
 	s.Logger.Infof("tftp: %s: sending %q (%d bytes) from port %d",
@@ -567,7 +576,7 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 		if s.Logger.Enabled(logging.LevelDebug) {
 			s.Logger.Debugf("tftp: %s: OACK %v", client, opts)
 		}
-		acked, aborted, resends := s.sendAndWaitAck(pc, client, clientAP, ack, oack, 0, retry, retries)
+		acked, aborted, resends := s.sendAndWaitAck(pc, clientAP, ack, oack, 0, retry, retries)
 		resendTotal += resends
 		if aborted {
 			result = "aborted"
@@ -618,7 +627,7 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 		// transmitted before we know whether it was acked.
 		blocksSent++
 		bytesSent += want
-		acked, aborted, resends := s.sendAndWaitAck(pc, client, clientAP, ack, pkt, block, blockTimeout, blockRetries)
+		acked, aborted, resends := s.sendAndWaitAck(pc, clientAP, ack, pkt, block, blockTimeout, blockRetries)
 		resendTotal += resends
 		if acked {
 			bytesAcked += want
