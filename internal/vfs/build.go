@@ -189,6 +189,13 @@ func (t *Tree) walkImage(set SetSpec, layer LayerSpec, fsys *efs.FS, ino *efs.In
 			if child.IsDir() {
 				return fmt.Errorf("symlink %s resolves to a directory; directory-link traversal is unsupported", linkSrc)
 			}
+			// Nothing else is materializable. A device node or a pipe
+			// reached directly is skipped below, but a link is followed
+			// only to a regular file, so one aimed at a special file is
+			// as much an incomplete set as an unresolvable one.
+			if !child.IsRegular() {
+				return fmt.Errorf("symlink %s resolves to a special file (mode %#o); only a link to a regular file is served", linkSrc, child.Mode)
+			}
 		}
 		switch {
 		case child.IsDir():
@@ -261,6 +268,9 @@ func (t *Tree) walkDir(set SetSpec, layer LayerSpec, root *os.Root, fsys fs.FS, 
 			}
 			if info.IsDir() {
 				return fmt.Errorf("symlink %s resolves to a directory; directory-link traversal is unsupported", childSrc)
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("symlink %s resolves to a special file (%s); only a link to a regular file is served", childSrc, info.Mode())
 			}
 		}
 		switch {

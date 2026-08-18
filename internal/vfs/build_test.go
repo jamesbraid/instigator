@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/jamesbraid/instigator/efs/efstest"
@@ -356,6 +357,52 @@ func TestBuildRejectsDirectoryLinksInImageLayers(t *testing.T) {
 	}
 }
 
+// TestBuildRejectsSpecialFileLinksInImageLayers: a link is followed only
+// to a regular file, so one aimed at a device node or a named pipe stops
+// the build like a directory link does. Nothing but a directory and a
+// regular file is materializable, and dropping the entry would be the
+// same quiet lie.
+func TestBuildRejectsSpecialFileLinksInImageLayers(t *testing.T) {
+	dir := t.TempDir()
+
+	img := efstest.New()
+	sa := img.AddFile(0o644, []byte("SA"))
+	fifo := img.AddFIFO()
+	fifolink := img.AddSymlink("pipe")
+	dist := img.AddDir(map[string]uint32{"sa": sa, "pipe": fifo, "fifolink": fifolink})
+	img.SetRoot(map[string]uint32{"dist": dist})
+	image := writeCD(t, dir, "fifolink.iso", img)
+
+	_, err := Build([]SetSpec{{
+		Name:   "6.5.30",
+		Layers: []LayerSpec{distLayer("links", image)},
+	}})
+	if err == nil {
+		t.Fatal("Build accepted a layer whose symlink resolves to a named pipe")
+	}
+	for _, want := range []string{"links", "dist/fifolink"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+
+	// The pipe reached directly, with no link aimed at it, is skipped as
+	// it always was. Refusing to start over a device node a disc happens
+	// to carry is not this rule's job.
+	plain := efstest.New()
+	psa := plain.AddFile(0o644, []byte("SA"))
+	pdist := plain.AddDir(map[string]uint32{"sa": psa, "pipe": plain.AddFIFO()})
+	plain.SetRoot(map[string]uint32{"dist": pdist})
+
+	tree := build(t, []SetSpec{{
+		Name:   "6.5.30",
+		Layers: []LayerSpec{distLayer("links", writeCD(t, dir, "fifo.iso", plain))},
+	}})
+	if got := dirNames(t, tree, "6.5.30/dist"); !equalStrings(got, []string{"sa"}) {
+		t.Fatalf("ReadDir = %v, want [sa]: a bare special file is skipped, not served", got)
+	}
+}
+
 // TestBuildFollowsLinksWithinDirectoryLayers is the directory-layer half
 // of containment. A pre-extracted layer sits on the host filesystem, so
 // it is opened under os.OpenRoot: a link that stays inside and lands on a
@@ -434,6 +481,48 @@ func TestBuildRejectsDirectoryLinksInDirectoryLayers(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %q", err, want)
 		}
+	}
+}
+
+// TestBuildRejectsSpecialFileLinksInDirectoryLayers is the
+// directory-layer half: a link to an in-layer named pipe stops the build
+// too. The pipe itself, reached directly rather than through a link, is
+// left alone - real media carries the odd device node, and refusing to
+// start over one is not this rule's job.
+func TestBuildRejectsSpecialFileLinksInDirectoryLayers(t *testing.T) {
+	dir := t.TempDir()
+	layer := makeDir(t, filepath.Join(dir, "found"), map[string]string{"dist/foundation.sw": "F"})
+	if err := syscall.Mkfifo(filepath.Join(layer, "dist", "pipe"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("pipe", filepath.Join(layer, "dist", "fifolink")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Build([]SetSpec{{
+		Name:   "foundations",
+		Layers: []LayerSpec{{Name: "found", Dir: layer, SourceDir: "dist", TargetDir: "dist"}},
+	}})
+	if err == nil {
+		t.Fatal("Build accepted a layer whose symlink resolves to a named pipe")
+	}
+	for _, want := range []string{"found", "dist/fifolink"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+
+	// Same as the image half: the pipe on its own, with the link removed,
+	// is skipped and the layer builds.
+	if err := os.Remove(filepath.Join(layer, "dist", "fifolink")); err != nil {
+		t.Fatal(err)
+	}
+	tree := build(t, []SetSpec{{
+		Name:   "foundations",
+		Layers: []LayerSpec{{Name: "found", Dir: layer, SourceDir: "dist", TargetDir: "dist"}},
+	}})
+	if got := dirNames(t, tree, "foundations/dist"); !equalStrings(got, []string{"foundation.sw"}) {
+		t.Fatalf("ReadDir = %v, want [foundation.sw]: a bare special file is skipped, not served", got)
 	}
 }
 
