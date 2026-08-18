@@ -63,8 +63,9 @@ type Params struct {
 	// PROM boot line entirely rather than guess at one.
 	BootPath string
 	// RemoteDir is the value to enter at the PROM's "Remote Directory"
-	// prompt, WITH the trailing slash the PROM requires, e.g.
-	// "6.5.30/dist/". Printed exactly as given.
+	// prompt, the primary set's dist path with its leading slash - matching
+	// the from/open and boot paths - and the trailing slash the PROM
+	// requires, e.g. "/6.5.30/dist/". Printed exactly as given.
 	RemoteDir string
 }
 

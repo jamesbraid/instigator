@@ -128,7 +128,7 @@ set's `dist` path **with the trailing slash** — the PROM's tftp request
 fails before the server ever sees it if the slash is missing:
 
 ```
-6.5.30/dist/
+/6.5.30/dist/
 ```
 
 `fx` partitions the disk and drops into the miniroot's `Inst>` prompt.
