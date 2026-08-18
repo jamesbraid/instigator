@@ -99,3 +99,126 @@ func TestRealMediaApplicationsCollisionOverrideResolves(t *testing.T) {
 		}
 	}
 }
+
+// realBaseMediaDir holds the IRIX 6.5 base ISO set the foundations and
+// development sets are assembled from - the 2004 pressing, alongside the
+// 2006 6.5.30 overlays in realMediaDir. Like realMediaDir it is only
+// present on a developer's machine with the media.
+const realBaseMediaDir = "/storage/software/os/irix/irix_6.5base_iso"
+
+// fullProfileSets is the whole four-set profile a Fuel install actually
+// browses: the 6.5.30 overlays, the 6.5 foundations with ONC3/NFS folded
+// in, the applications pair, and the development discs. Ten real images
+// across two pressings, which is the scale the collision and merge policy
+// has to hold at - the applications-only audit above exercises two.
+//
+// Two layer shapes repeat. A set's first layer maps the whole disc root
+// onto the set root, so stand/ and the disc's top level come along; every
+// later layer contributes only its dist. The ONC3/NFS disc is the
+// exception the reviewed profile already names: its 6.5 products live in
+// dist6.5 behind a dist/.redirect, so it is rebased dist6.5 -> dist and
+// its .redirect never reaches the set.
+func fullProfileSets() []SetSpec {
+	return []SetSpec{
+		{Name: "6.5.30", Layers: []LayerSpec{
+			{Name: "overlays1", Image: filepath.Join(realMediaDir, "Instalation_Tools_and_Overlays1.image"), SourceDir: ".", TargetDir: "."},
+			{Name: "overlays2", Image: filepath.Join(realMediaDir, "Overlays2.image"), SourceDir: "dist", TargetDir: "dist"},
+			{Name: "overlays3", Image: filepath.Join(realMediaDir, "Overlays3.image"), SourceDir: "dist", TargetDir: "dist"},
+		}},
+		{Name: "foundations", Layers: []LayerSpec{
+			{Name: "foundation1", Image: filepath.Join(realBaseMediaDir, "irix6.5_foundation1.iso"), SourceDir: ".", TargetDir: "."},
+			{Name: "foundation2", Image: filepath.Join(realBaseMediaDir, "irix6.5_foundation2.iso"), SourceDir: "dist", TargetDir: "dist"},
+			{Name: "nfs", Image: filepath.Join(realBaseMediaDir, "irix6.5_nfs.iso"), SourceDir: "dist6.5", TargetDir: "dist"},
+		}},
+		applicationsSpec(realMediaDir, map[string]string{
+			realAppsInstREADME: "applications",
+			realAppsSwmgr:      "applications",
+		}),
+		{Name: "development", Layers: []LayerSpec{
+			{Name: "devfoundation", Image: filepath.Join(realBaseMediaDir, "irix6.5_devfoundation.iso"), SourceDir: ".", TargetDir: "."},
+			{Name: "devlibs", Image: filepath.Join(realBaseMediaDir, "irix6.5_devlibs.iso"), SourceDir: "dist", TargetDir: "dist"},
+		}},
+	}
+}
+
+// TestRealMediaFullProfileBuild asks the question the applications audit
+// could not: does the policy hold across the whole profile, or only over
+// the one pair of discs it was written from? It builds all four sets from
+// both pressings at once and checks a file from each layer shape resolves
+// to the layer that really delivered it.
+//
+// Two results are worth the run on their own. The only override the whole
+// profile needs is the reviewed applications pair - the other eight images
+// merge with no configured winner, so every path two of them share is
+// byte-identical. And no symlink anywhere on the ten discs fails the
+// fail-closed rule vfs now enforces, so the media carry no directory link
+// and no link out of their own image.
+//
+// The logged time is the server's cold-start cost: Build walks every
+// directory on all ten images before it serves anything, which on cold
+// media here is over twenty seconds and on warm media a few milliseconds.
+func TestRealMediaFullProfileBuild(t *testing.T) {
+	for _, dir := range []string{realMediaDir, realBaseMediaDir} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Skipf("real IRIX media not present: %s", dir)
+		}
+	}
+
+	start := time.Now()
+	tree, err := Build(fullProfileSets())
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Build of the four-set profile: %v", err)
+	}
+	defer tree.Close()
+	t.Logf("Build of the four-set profile (10 real images) took %s, %d files", elapsed, len(treePaths(t, tree)))
+
+	for _, tc := range []struct{ path, layer string }{
+		// Set root from the first layer, and the same layer's dist.
+		{"6.5.30/stand/fx.64", "overlays1"},
+		{"6.5.30/dist/sa", "overlays1"},
+		// The overridden applications collision, both halves.
+		{realAppsInstREADME, "applications"},
+		{realAppsSwmgr, "applications"},
+		// A foundation product, and one from the rebased ONC3/NFS disc
+		// landing beside it in the same dist.
+		{"foundations/dist/eoe.sw", "foundation1"},
+		{"foundations/dist/nfs.sw", "nfs"},
+		// A development product from the later layer.
+		{"development/dist/ViewKit_dev.sw", "devlibs"},
+	} {
+		origin, err := tree.Resolve(tc.path)
+		if err != nil {
+			t.Errorf("Resolve(%s): %v", tc.path, err)
+			continue
+		}
+		if origin.Source != tc.layer {
+			t.Errorf("Resolve(%s).Source = %q, want %q", tc.path, origin.Source, tc.layer)
+		}
+	}
+
+	// Finding for the hardware run, asserted rather than left in prose.
+	// The development foundation disc has the same shape as the ONC3/NFS
+	// one - products in dist/dist6.5 behind a dist/.redirect - but the
+	// reviewed profile maps it whole-root, so the compiler products land
+	// a directory deeper than inst expects and the .redirect is served at
+	// the set's own dist. Serving it there is what the nfs rebase exists
+	// to avoid: inst reading it jumps to dist6.5 and stops seeing the
+	// devlibs products merged alongside.
+	for _, tc := range []struct{ path, layer string }{
+		{"development/dist/dist6.5/WorkShop.sw", "devfoundation"},
+		{"development/dist/.redirect", "devfoundation"},
+	} {
+		origin, err := tree.Resolve(tc.path)
+		if err != nil {
+			t.Errorf("Resolve(%s): %v", tc.path, err)
+			continue
+		}
+		if origin.Source != tc.layer {
+			t.Errorf("Resolve(%s).Source = %q, want %q", tc.path, origin.Source, tc.layer)
+		}
+	}
+	t.Log("development: devfoundation needs the dist6.5 -> dist rebase the nfs disc gets; " +
+		"as mapped whole-root its products sit at development/dist/dist6.5 and its .redirect " +
+		"is served at development/dist")
+}
