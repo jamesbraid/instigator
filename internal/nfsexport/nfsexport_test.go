@@ -310,3 +310,87 @@ func TestExportReadlinkRefused(t *testing.T) {
 		t.Fatalf("Readlink(sa) = %v, want ErrIO", err)
 	}
 }
+
+// buildTwoSetTree assembles a tree with two sets, so a lookup that walks
+// out of a mounted subtree lands somewhere observable: escaping "6.5.30"
+// reaches the export root, from which the whole "applications" set is
+// readable.
+func buildTwoSetTree(t *testing.T) *vfs.Tree {
+	t.Helper()
+	dir := t.TempDir()
+
+	img := efstest.New()
+	sa := img.AddFile(0o644, []byte("distribution"))
+	nested := img.AddFile(0o644, []byte("nested content"))
+	sub := img.AddDir(map[string]uint32{"nested.txt": nested})
+	dist := img.AddDir(map[string]uint32{"sa": sa, "sub": sub})
+	img.SetRoot(map[string]uint32{"dist": dist})
+
+	imgPath := filepath.Join(dir, "disc1.iso")
+	if err := os.WriteFile(imgPath, img.CDImage(64, nil), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tree, err := vfs.Build([]vfs.SetSpec{
+		{Name: "6.5.30", Layers: []vfs.LayerSpec{
+			{Name: "media", Image: imgPath, SourceDir: ".", TargetDir: "."},
+		}},
+		{Name: "applications", Layers: []vfs.LayerSpec{
+			{Name: "apps", Image: imgPath, SourceDir: "dist", TargetDir: "dist"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { tree.Close() })
+	return tree
+}
+
+// TestExportLookupRejectsNonComponentNames holds the mount boundary. NFS
+// LOOKUP takes one directory entry name, never a path: a client mounted
+// at /6.5.30 that asks for ".." must not be handed the export root, from
+// which every other install set is reachable. "." and any name carrying a
+// slash are equally not entry names.
+func TestExportLookupRejectsNonComponentNames(t *testing.T) {
+	tree := buildTwoSetTree(t)
+	fsys := nfsexport.Export(tree)
+
+	root, err := fsys.MountRoot("6.5.30")
+	if err != nil {
+		t.Fatalf("MountRoot: %v", err)
+	}
+	dist := lookup(t, fsys, root, "dist")
+
+	for _, tc := range []struct {
+		dir  nfs.Node
+		name string
+	}{
+		{root, ".."},
+		{root, "."},
+		{root, ""},
+		{root, "dist/sa"},
+		{dist, ".."},
+		{dist, "sub/nested.txt"},
+		{dist, "/sa"},
+	} {
+		n, err := fsys.Lookup(tc.dir, tc.name)
+		if err != nfs.ErrNotFound {
+			t.Errorf("Lookup(%q) = (%v, %v), want ErrNotFound", tc.name, n, err)
+		}
+		if n != nil {
+			t.Errorf("Lookup(%q) returned node %#x; the mount boundary leaked", tc.name, n.ID())
+		}
+	}
+
+	// The escape must not be reachable by id either: the export root is
+	// simply never handed to a client that mounted a subtree.
+	if _, err := fsys.Lookup(root, ".."); err == nil {
+		t.Fatal("Lookup(\"..\") escaped the mounted subtree")
+	}
+
+	// A single ordinary component still resolves.
+	sa := lookup(t, fsys, dist, "sa")
+	if got := readAll(t, fsys, sa); string(got) != "distribution" {
+		t.Fatalf("ReadAt(sa) = %q, want distribution", got)
+	}
+}
