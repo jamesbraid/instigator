@@ -35,9 +35,22 @@ func request(mac net.HardwareAddr, xid uint32, file string) []byte {
 	return b
 }
 
+// handle mirrors Serve's per-packet path: parse, filter, build.
+func handle(s *Server, pkt []byte) []byte {
+	mac, _, ok := parseRequest(pkt)
+	if !ok {
+		return nil
+	}
+	client := s.lookupClient(mac)
+	if client == nil {
+		return nil
+	}
+	return s.buildReply(pkt, client)
+}
+
 func TestReplyToKnownMAC(t *testing.T) {
 	s := testServer()
-	reply := s.handle(request(octaneMAC, 0xdeadbeef, "/6.5.30/disc1/stand/fx.64"))
+	reply := handle(s, request(octaneMAC, 0xdeadbeef, "/6.5.30/disc1/stand/fx.64"))
 	if reply == nil {
 		t.Fatal("no reply for configured MAC")
 	}
@@ -64,7 +77,7 @@ func TestReplyToKnownMAC(t *testing.T) {
 func TestIgnoresUnknownMAC(t *testing.T) {
 	s := testServer()
 	stranger := net.HardwareAddr{0xde, 0xad, 0xbe, 0xef, 0x00, 0x01}
-	if reply := s.handle(request(stranger, 1, "")); reply != nil {
+	if reply := handle(s, request(stranger, 1, "")); reply != nil {
 		t.Fatal("replied to a MAC not in the client list")
 	}
 }
@@ -73,14 +86,14 @@ func TestIgnoresBootReply(t *testing.T) {
 	s := testServer()
 	req := request(octaneMAC, 1, "")
 	req[0] = 2 // another server's reply must not be answered
-	if reply := s.handle(req); reply != nil {
+	if reply := handle(s, req); reply != nil {
 		t.Fatal("replied to a BOOTREPLY")
 	}
 }
 
 func TestVendorAreaCarriesNetmask(t *testing.T) {
 	s := testServer()
-	reply := s.handle(request(octaneMAC, 1, ""))
+	reply := handle(s, request(octaneMAC, 1, ""))
 	vend := reply[236:300]
 	if !bytes.Equal(vend[0:4], []byte{99, 130, 83, 99}) {
 		t.Fatalf("vendor magic = %v", vend[0:4])
@@ -122,5 +135,35 @@ func TestServeRepliesOverUDP(t *testing.T) {
 	}
 	if n < 300 || buf[0] != 2 {
 		t.Fatalf("reply %d bytes op %d", n, buf[0])
+	}
+}
+
+func TestServeIgnoresUnknownWithoutRecorder(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		pc.Close()
+		t.Fatal(err)
+	}
+
+	s := testServer()
+	s.ReplyAddr = c.LocalAddr().(*net.UDPAddr)
+	done := make(chan error, 1)
+	go func() { done <- s.Serve(pc) }()
+
+	stranger := net.HardwareAddr{0xde, 0xad, 0xbe, 0xef, 0x00, 0x01}
+	if _, err := c.WriteTo(request(stranger, 8, "fx"), pc.LocalAddr()); err != nil {
+		pc.Close()
+		c.Close()
+		t.Fatal(err)
+	}
+	pc.Close()
+	c.Close()
+	if err := <-done; err != nil {
+		t.Fatalf("Serve: %v", err)
 	}
 }

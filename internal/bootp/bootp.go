@@ -83,17 +83,24 @@ func (s *Server) Serve(pc net.PacketConn) error {
 			}
 			continue
 		}
-		reply := s.handle(buf[:n])
-		if reply == nil {
-			// A well-formed request from a MAC we don't serve is a
-			// meaningful "ignored"; a non-request datagram is just noise.
+		mac, file, ok := parseRequest(buf[:n])
+		if !ok {
+			// a non-request datagram is just noise
+			continue
+		}
+		client := s.lookupClient(mac)
+		if client == nil {
+			// a well-formed request from a MAC we don't serve is a
+			// meaningful "ignored"
+			s.Logger.Infof("bootp: ignoring request from %s (not configured)", mac)
 			if s.Recorder != nil {
-				if mac, file, ok := parseRequest(buf[:n]); ok {
-					s.Recorder.BootpReply("", mac.String(), file, "", "ignored")
-				}
+				s.Recorder.BootpReply("", mac.String(), file, "", "ignored")
 			}
 			continue
 		}
+		s.Logger.Infof("bootp: answering %s (%s): ip=%s file=%q", mac, client.Name, client.IP, file)
+		reply := s.buildReply(buf[:n], client)
+
 		dst := s.ReplyAddr
 		how := "broadcast"
 		if dst == nil {
@@ -101,15 +108,14 @@ func (s *Server) Serve(pc net.PacketConn) error {
 			// e.g. the PROM's netaddr) listens for a unicast reply to that
 			// address, not a broadcast. Reply straight back to the request's
 			// source when it has a real IP; broadcast only when it doesn't.
-			if u, ok := src.(*net.UDPAddr); ok && u.IP != nil && !u.IP.IsUnspecified() {
-				dst = u
-				how = "unicast to sender"
-			} else {
-				port := 68
-				if u, ok := src.(*net.UDPAddr); ok {
-					port = u.Port
-				}
-				dst = &net.UDPAddr{IP: net.IPv4bcast, Port: port}
+			u, _ := src.(*net.UDPAddr)
+			switch {
+			case u != nil && u.IP != nil && !u.IP.IsUnspecified():
+				dst, how = u, "unicast to sender"
+			case u != nil:
+				dst = &net.UDPAddr{IP: net.IPv4bcast, Port: u.Port}
+			default:
+				dst = &net.UDPAddr{IP: net.IPv4bcast, Port: 68}
 			}
 		}
 		if s.Logger.Enabled(logging.LevelDebug) {
@@ -121,13 +127,7 @@ func (s *Server) Serve(pc net.PacketConn) error {
 			result = "error"
 		}
 		if s.Recorder != nil {
-			if mac, file, ok := parseRequest(buf[:n]); ok {
-				alias, ip := "", ""
-				if c := s.lookupClient(mac); c != nil {
-					alias, ip = c.Name, c.IP.String()
-				}
-				s.Recorder.BootpReply(alias, mac.String(), file, ip, result)
-			}
+			s.Recorder.BootpReply(client.Name, mac.String(), file, client.IP.String(), result)
 		}
 	}
 }
@@ -168,35 +168,19 @@ func decodeReq(p []byte) string {
 		ip(12), ip(16), ip(20), ip(24), mac, file)
 }
 
-// handle builds the reply for one packet, or nil when the packet is not
-// a request from a configured client.
-func (s *Server) handle(req []byte) []byte {
-	mac, file, ok := parseRequest(req)
-	if !ok {
-		return nil
-	}
-	client := s.lookupClient(mac)
-	if client == nil {
-		s.Logger.Infof("bootp: ignoring request from %s (not configured)", mac)
-		return nil
-	}
-	s.Logger.Infof("bootp: answering %s (%s): ip=%s file=%q", mac, client.Name, client.IP, file)
-
+// buildReply turns a validated BOOTREQUEST into the BOOTREPLY for client.
+func (s *Server) buildReply(req []byte, client *Client) []byte {
 	rep := make([]byte, packetLen)
 	copy(rep, req[:packetLen])
 	rep[0] = 2                             // BOOTREPLY
 	rep[3] = 0                             // hops
 	copy(rep[16:20], client.IP.AsSlice())  // yiaddr
 	copy(rep[20:24], s.ServerIP.AsSlice()) // siaddr
-	for i := 44; i < 108; i++ {            // sname: clear
-		rep[i] = 0
-	}
+	clear(rep[44:108])                     // sname
 	// file: echo the request's path (the PROM chose it)
 	// vendor area: RFC 1048 magic, subnet mask when configured, end
 	vend := rep[236:packetLen]
-	for i := range vend {
-		vend[i] = 0
-	}
+	clear(vend)
 	copy(vend[0:4], []byte{99, 130, 83, 99})
 	w := 4
 	if s.Netmask.IsValid() {
