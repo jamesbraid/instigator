@@ -291,9 +291,9 @@ func (e *export) ReadAt(n nfs.Node, p []byte, off int64) (int, error) {
 }
 
 // Readlink always refuses: the assembled tree materializes files, never
-// symlinks (build.go resolves every symlink it walks and drops any that
-// can't be followed to a regular file), so there is never a link target
-// to report.
+// symlinks (build.go resolves every symlink it walks and fails the build
+// on any that can't be followed to a regular file), so there is never a
+// link target to report.
 func (e *export) Readlink(nfs.Node) (string, error) {
 	return "", nfs.ErrIO
 }
