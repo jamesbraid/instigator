@@ -137,16 +137,19 @@ func (r *Recorder) emit(ev envelopeSetter) {
 	}
 	ev.setEnvelope(schemaVersion, r.now().UTC().Format(time.RFC3339Nano), r.runID)
 	b, err := json.Marshal(ev)
-	if err != nil {
-		return
-	}
-	b = append(b, '\n')
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if err != nil {
+		// A dropped event must not be silent: sticky, surfaced at Close.
+		if r.writeErr == nil {
+			r.writeErr = err
+		}
+		return
+	}
 	if r.events == nil {
 		return
 	}
-	if _, err := r.events.Write(b); err != nil && r.writeErr == nil {
+	if _, err := r.events.Write(append(b, '\n')); err != nil && r.writeErr == nil {
 		r.writeErr = err
 	}
 }

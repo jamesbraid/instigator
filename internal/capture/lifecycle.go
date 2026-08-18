@@ -27,38 +27,40 @@ func (r *Recorder) ListenerExit(name string, unexpected bool, errClass string) {
 	r.emit(e)
 }
 
-// Finish closes the run at a clean shutdown: it emits server_stop, flushes
-// and closes events.jsonl, rewrites run.json with the end time, then reads
-// the events back to write summary.json and render the human summary. It
-// must run after every session and transfer has ended; a late event from an
+// Finish closes the run at a clean shutdown: it emits server_stop, closes
+// events.jsonl, rewrites run.json with the end time, then reads the events
+// back to write summary.json and render the human summary. It must run
+// after every session and transfer has ended; a late event from an
 // in-flight goroutine is safely dropped once events.jsonl is closed.
+//
+// An event dropped mid-run means the summary was computed from an
+// incomplete file, so that error outranks anything that goes wrong here.
 func (r *Recorder) Finish(reason string) error {
 	if r == nil {
 		return nil
 	}
 	r.ServerStop(reason)
+	err := r.Close()
 
 	r.mu.Lock()
-	var closeErr error
-	if r.events != nil {
-		closeErr = r.events.Close()
-		r.events = nil
-	}
 	prov := r.prov
-	writeErr := r.writeErr
 	r.mu.Unlock()
-	if writeErr == nil {
-		writeErr = closeErr // a failed flush-on-close also means events.jsonl is suspect
-	}
-
 	// run.json gets its end time only if provenance was written at all.
 	if prov.Schema != 0 {
 		prov.End = r.now().UTC().Format(time.RFC3339Nano)
-		if err := r.writeRunLocked(prov); err != nil {
-			return err
+		if werr := r.writeRun(prov); werr != nil && err == nil {
+			err = werr
 		}
 	}
+	if serr := r.writeSummary(); serr != nil && err == nil {
+		err = serr
+	}
+	return err
+}
 
+// writeSummary reads the closed events file back, writes summary.json, and
+// renders the human report.
+func (r *Recorder) writeSummary() error {
 	f, err := os.Open(filepath.Join(r.dir, "events.jsonl"))
 	if err != nil {
 		return err
@@ -68,7 +70,6 @@ func (r *Recorder) Finish(reason string) error {
 	if err != nil {
 		return err
 	}
-
 	b, err := json.MarshalIndent(sum, "", "  ")
 	if err != nil {
 		return err
@@ -77,11 +78,6 @@ func (r *Recorder) Finish(reason string) error {
 	if err := os.WriteFile(filepath.Join(r.dir, "summary.json"), b, 0o600); err != nil {
 		return err
 	}
-
-	if r.summaryW != nil {
-		sum.WriteText(r.summaryW)
-	}
-	// An event dropped mid-run means the summary is computed from an
-	// incomplete file; report it so the operator does not trust it blindly.
-	return writeErr
+	sum.WriteText(r.summaryW)
+	return nil
 }

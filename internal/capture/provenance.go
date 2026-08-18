@@ -113,15 +113,19 @@ func (r *Recorder) WriteRun(p Provenance) error {
 	r.mu.Lock()
 	r.prov = p
 	r.mu.Unlock()
-	return r.writeRunLocked(p)
+	return r.writeRun(p)
 }
 
-func (r *Recorder) writeRunLocked(p Provenance) error {
+func (r *Recorder) writeRun(p Provenance) error {
 	b, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
 		return err
 	}
 	b = append(b, '\n')
+	// Serialized so a startup WriteRun and a shutdown rewrite can never
+	// interleave on the file.
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return os.WriteFile(filepath.Join(r.dir, "run.json"), b, 0o600)
 }
 
