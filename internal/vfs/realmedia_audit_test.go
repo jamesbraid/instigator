@@ -112,12 +112,17 @@ const realBaseMediaDir = "/storage/software/os/irix/irix_6.5base_iso"
 // across two pressings, which is the scale the collision and merge policy
 // has to hold at - the applications-only audit above exercises two.
 //
-// Two layer shapes repeat. A set's first layer maps the whole disc root
-// onto the set root, so stand/ and the disc's top level come along; every
-// later layer contributes only its dist. The ONC3/NFS disc is the
-// exception the reviewed profile already names: its 6.5 products live in
-// dist6.5 behind a dist/.redirect, so it is rebased dist6.5 -> dist and
-// its .redirect never reaches the set.
+// Three layer shapes repeat. A set's first layer usually maps the whole
+// disc root onto the set root, so stand/ and the disc's top level come
+// along; every later layer contributes only its dist. The third is the dist6.5 rebase,
+// for a disc whose 6.5 products sit in dist6.5 behind a dist/.redirect
+// that would send inst chasing the subdirectory: the layer draws from
+// dist6.5 and lands on the set's dist, so the products merge with the
+// rest and the .redirect stub never reaches the set. Both the ONC3/NFS
+// disc and the development foundation disc have that shape.
+//
+// The development set needs no whole-root layer - neither dev disc
+// carries a stand/, and inst boots from the 6.5.30 set.
 func fullProfileSets() []SetSpec {
 	return []SetSpec{
 		{Name: "6.5.30", Layers: []LayerSpec{
@@ -135,8 +140,8 @@ func fullProfileSets() []SetSpec {
 			realAppsSwmgr:      "applications",
 		}),
 		{Name: "development", Layers: []LayerSpec{
-			{Name: "devfoundation", Image: filepath.Join(realBaseMediaDir, "irix6.5_devfoundation.iso"), SourceDir: ".", TargetDir: "."},
 			{Name: "devlibs", Image: filepath.Join(realBaseMediaDir, "irix6.5_devlibs.iso"), SourceDir: "dist", TargetDir: "dist"},
+			{Name: "devfoundation", Image: filepath.Join(realBaseMediaDir, "irix6.5_devfoundation.iso"), SourceDir: "dist/dist6.5", TargetDir: "dist"},
 		}},
 	}
 }
@@ -184,8 +189,11 @@ func TestRealMediaFullProfileBuild(t *testing.T) {
 		// landing beside it in the same dist.
 		{"foundations/dist/eoe.sw", "foundation1"},
 		{"foundations/dist/nfs.sw", "nfs"},
-		// A development product from the later layer.
+		// A development product from each disc, both landing in the one
+		// dist: the libraries from devlibs, the compilers from the
+		// rebased development foundation disc.
 		{"development/dist/ViewKit_dev.sw", "devlibs"},
+		{"development/dist/WorkShop.sw", "devfoundation"},
 	} {
 		origin, err := tree.Resolve(tc.path)
 		if err != nil {
@@ -197,28 +205,18 @@ func TestRealMediaFullProfileBuild(t *testing.T) {
 		}
 	}
 
-	// Finding for the hardware run, asserted rather than left in prose.
-	// The development foundation disc has the same shape as the ONC3/NFS
-	// one - products in dist/dist6.5 behind a dist/.redirect - but the
-	// reviewed profile maps it whole-root, so the compiler products land
-	// a directory deeper than inst expects and the .redirect is served at
-	// the set's own dist. Serving it there is what the nfs rebase exists
-	// to avoid: inst reading it jumps to dist6.5 and stops seeing the
-	// devlibs products merged alongside.
-	for _, tc := range []struct{ path, layer string }{
-		{"development/dist/dist6.5/WorkShop.sw", "devfoundation"},
-		{"development/dist/.redirect", "devfoundation"},
+	// Both rebased discs must leave their .redirect stub behind. inst
+	// reading one at a set's own dist would chase the subdirectory and
+	// stop seeing the products the other layers merged alongside, which
+	// is the whole reason those two layers draw from dist6.5 rather than
+	// dist.
+	for _, p := range []string{
+		"development/dist/.redirect",
+		"development/dist/dist6.5",
+		"foundations/dist/.redirect",
 	} {
-		origin, err := tree.Resolve(tc.path)
-		if err != nil {
-			t.Errorf("Resolve(%s): %v", tc.path, err)
-			continue
-		}
-		if origin.Source != tc.layer {
-			t.Errorf("Resolve(%s).Source = %q, want %q", tc.path, origin.Source, tc.layer)
+		if origin, err := tree.Resolve(p); err == nil {
+			t.Errorf("Resolve(%s) = %+v; the rebase should have left it behind", p, origin)
 		}
 	}
-	t.Log("development: devfoundation needs the dist6.5 -> dist rebase the nfs disc gets; " +
-		"as mapped whole-root its products sit at development/dist/dist6.5 and its .redirect " +
-		"is served at development/dist")
 }
