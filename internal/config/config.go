@@ -5,8 +5,10 @@ package config
 
 import (
 	"fmt"
+	"io/fs"
 	"net"
 	"net/netip"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -163,10 +165,22 @@ func Parse(b []byte) (*Config, error) {
 	if len(r.InstallSets) == 0 {
 		return nil, fmt.Errorf("config: at least one install set is required")
 	}
+	setNames := make(map[string]bool, len(r.InstallSets))
 	for i, rs := range r.InstallSets {
 		if rs.Name == "" || len(rs.Layers) == 0 {
 			return nil, fmt.Errorf("config: install_sets[%d]: name and at least one layer are required", i)
 		}
+		// A set is served as one directory directly under the tree root,
+		// so its name has to be a single path element. "." and ".." name
+		// the root and its parent, and "a/b" would build a nested root no
+		// set owns.
+		if !fs.ValidPath(rs.Name) || rs.Name == "." || strings.Contains(rs.Name, "/") {
+			return nil, fmt.Errorf("config: install_sets[%d] (%s): name must be a single directory name", i, rs.Name)
+		}
+		if setNames[rs.Name] {
+			return nil, fmt.Errorf("config: install_sets[%d]: duplicate install set name %q", i, rs.Name)
+		}
+		setNames[rs.Name] = true
 		enabled := true
 		if rs.Enabled != nil {
 			enabled = *rs.Enabled

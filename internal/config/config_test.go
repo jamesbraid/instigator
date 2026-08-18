@@ -148,6 +148,23 @@ func TestRejects(t *testing.T) {
 		"duplicate layer names": "server_ip: 192.0.2.10\n" +
 			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
 			"install_sets: [{name: m, layers: [{name: base, image: /media/m/a.iso}, {name: base, image: /media/m/b.iso}]}]",
+		// A set name is one directory under the served root, so anything
+		// that is not a single path element cannot be one: "." and ".."
+		// name the root and its parent, and a slashed name would build a
+		// nested root no set owns.
+		"set named dot": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: \".\", layers: [{name: base, image: /media/m/base.iso}]}]",
+		"set named dotdot": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: \"..\", layers: [{name: base, image: /media/m/base.iso}]}]",
+		"set name with a slash": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: a/b, layers: [{name: base, image: /media/m/base.iso}]}]",
+		"duplicate set names": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: a, image: /media/m/a.iso}]}, " +
+			"{name: m, layers: [{name: b, image: /media/m/b.iso}]}]",
 	}
 	for name, y := range cases {
 		if _, err := Parse([]byte(y)); err == nil {
