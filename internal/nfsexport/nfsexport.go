@@ -217,10 +217,24 @@ func (e *export) NodeByID(id uint64) (nfs.Node, error) {
 	return e.node(rec), nil
 }
 
+// isComponent reports whether name is one ordinary directory entry, which
+// is the only thing NFS LOOKUP may be given. Everything else is refused
+// before the join below, because path.Join would resolve it: ".." joined
+// onto a mounted subtree yields its parent, so a client mounted at
+// /6.5.30 could otherwise walk up to the export root and read every other
+// install set. "." and a name carrying a slash are the same mistake in a
+// milder form - neither is an entry name.
+func isComponent(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.Contains(name, "/")
+}
+
 func (e *export) Lookup(dir nfs.Node, name string) (nfs.Node, error) {
 	drec, ok := recordOf(dir)
 	if !ok || !drec.isDir {
 		return nil, nfs.ErrNotDir
+	}
+	if !isComponent(name) {
+		return nil, nfs.ErrNotFound
 	}
 	crec, ok := e.byPath[path.Join(drec.path, name)]
 	if !ok {
