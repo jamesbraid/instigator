@@ -111,17 +111,18 @@ const realBaseMediaDir = "/storage/software/os/irix/irix_6.5base_iso"
 // across two pressings, which is the scale the collision and merge policy
 // has to hold at - the applications-only audit above exercises two.
 //
-// Three layer shapes repeat. A set's first layer usually maps the whole
-// disc root onto the set root, so stand/ and the disc's top level come
-// along; every later layer contributes only its dist. The third is the dist6.5 rebase,
-// for a disc whose 6.5 products sit in dist6.5 behind a dist/.redirect
-// that would send inst chasing the subdirectory: the layer draws from
-// dist6.5 and lands on the set's dist, so the products merge with the
-// rest and the .redirect stub never reaches the set. Both the ONC3/NFS
-// disc and the development foundation disc have that shape.
+// Three layer shapes repeat. Every layer contributes its dist directory
+// to the set's dist; a boot layer additionally serves its stand/, where
+// the PROM fetches fx.64 - only the 6.5.30 set names one. The third shape
+// is the dist6.5 rebase, for a disc whose 6.5 products sit in dist6.5
+// behind a dist/.redirect that would send inst chasing the subdirectory:
+// the layer names dist6.5 as its dist and lands on the set's dist, so the
+// products merge with the rest and the .redirect stub never reaches the
+// set. Both the ONC3/NFS disc and the development foundation disc have
+// that shape.
 //
-// The development set needs no whole-root layer - neither dev disc
-// carries a stand/, and inst boots from the 6.5.30 set.
+// The development set names no boot layer - neither dev disc carries a
+// stand/, and inst boots from the 6.5.30 set.
 func fullProfileSets() []SetSpec {
 	return []SetSpec{
 		{Name: "6.5.30", Layers: []LayerSpec{

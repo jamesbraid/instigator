@@ -14,8 +14,8 @@ import (
 
 // buildTestTree assembles a small synthetic install-set tree: one set
 // ("6.5.30") whose single layer is an EFS image holding dist/sa and a
-// nested dist/sub/nested.txt, mapped whole-root onto the set. That gives
-// Export something with a merged directory (the set root, no single
+// nested dist/sub/nested.txt, its dist merged into the set's dist. That
+// gives Export something with a merged directory (the set root, no single
 // layer origin), an image-backed regular file, and a subdirectory to
 // exercise nested Lookup/ReadDir.
 func buildTestTree(t *testing.T) *vfs.Tree {

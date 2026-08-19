@@ -71,9 +71,10 @@ func writeImage(t *testing.T, dir, name string, img *efstest.Builder) string {
 	return p
 }
 
-// baseImage writes the image a set's first layer maps whole: the
-// miniroot partitioner at stand/fx.64 and a distribution at dist/sa,
-// which is the shape the Installation Tools disc has in miniature.
+// baseImage writes the image a set's boot layer draws from: the miniroot
+// partitioner at stand/fx.64 (served at the set's stand because the layer
+// is boot) and a distribution at dist/sa, which is the shape the
+// Installation Tools disc has in miniature.
 func baseImage(t *testing.T, dir, name string) string {
 	t.Helper()
 	img := efstest.New()
