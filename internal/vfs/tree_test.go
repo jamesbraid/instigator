@@ -9,8 +9,8 @@ import (
 )
 
 // standardTree is the shape the rest of these tests read against: one set
-// merged from a whole-root image layer and a dist-only directory layer,
-// plus a generated command file.
+// merged from an image boot layer (dist plus stand) and a dist-only
+// directory layer, plus a generated command file.
 func standardTree(t *testing.T) *Tree {
 	t.Helper()
 	dir := t.TempDir()

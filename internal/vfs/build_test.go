@@ -39,9 +39,9 @@ func TestBuildRootListsOnlySetNames(t *testing.T) {
 	}
 }
 
-// TestBuildMergesDisjointLayers merges an image layer mapped whole-root
-// with a directory layer contributing only dist, and checks both origins
-// report the source and the source-relative path they came from.
+// TestBuildMergesDisjointLayers merges an image boot layer (its dist plus
+// its stand) with a directory layer contributing only its dist, and checks
+// both origins report the source and the source-relative path they came from.
 func TestBuildMergesDisjointLayers(t *testing.T) {
 	dir := t.TempDir()
 	img := makeImage(t, dir, "tools.image", map[string]string{
