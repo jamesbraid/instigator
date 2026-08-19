@@ -14,8 +14,8 @@ clients:
 install_sets:
   - name: "6.5.30"
     layers:
-      - {name: overlays1, image: /media/6.5.30/overlay1.iso, source_dir: ".", target_dir: "."}
-      - {name: overlays2, dir: /media/6.5.30/overlay2, source_dir: dist, target_dir: dist}
+      - {name: overlays1, image: /media/6.5.30/overlay1.iso, boot: true}
+      - {name: overlays2, dir: /media/6.5.30/overlay2, dist: dist6.5}
     collisions:
       "applications/dist/inst.README": overlays1
   - name: "6.5.22"
@@ -65,14 +65,17 @@ func TestParseSample(t *testing.T) {
 	if l0.Name != "overlays1" || l0.Image != "/media/6.5.30/overlay1.iso" || l0.Dir != "" {
 		t.Fatalf("layer 0 = %+v", l0)
 	}
-	if l0.SourceDir != "." || l0.TargetDir != "." {
-		t.Fatalf("layer 0 dirs = %+v", l0)
+	// dist omitted: the ordinary "dist" every layer merges into.
+	if l0.Dist != "dist" || !l0.Boot {
+		t.Fatalf("layer 0 dist/boot = %+v", l0)
 	}
 	if l1.Name != "overlays2" || l1.Dir != "/media/6.5.30/overlay2" || l1.Image != "" {
 		t.Fatalf("layer 1 = %+v", l1)
 	}
-	if l1.SourceDir != "dist" || l1.TargetDir != "dist" {
-		t.Fatalf("layer 1 dirs = %+v", l1)
+	// A version-stub layer names the catalog it really carries; only the
+	// primary layer boots.
+	if l1.Dist != "dist6.5" || l1.Boot {
+		t.Fatalf("layer 1 dist/boot = %+v", l1)
 	}
 	if len(first.Collisions) != 1 || first.Collisions["applications/dist/inst.README"] != "overlays1" {
 		t.Fatalf("install_sets[0].Collisions = %+v", first.Collisions)
@@ -88,9 +91,10 @@ func TestParseSample(t *testing.T) {
 	if len(second.Layers) != 1 {
 		t.Fatalf("install_sets[1].Layers = %+v", second.Layers)
 	}
-	// source_dir/target_dir omitted in YAML: must default to "."
-	if second.Layers[0].SourceDir != "." || second.Layers[0].TargetDir != "." {
-		t.Fatalf("install_sets[1].Layers[0] default dirs = %+v", second.Layers[0])
+	// dist omitted in YAML: must default to "dist", and a set nobody
+	// netboots carries no boot layer at all.
+	if second.Layers[0].Dist != "dist" || second.Layers[0].Boot {
+		t.Fatalf("install_sets[1].Layers[0] default dist/boot = %+v", second.Layers[0])
 	}
 
 	if !c.Services.BOOTP || !c.Services.RSH {
@@ -161,6 +165,12 @@ func TestRejects(t *testing.T) {
 		"set name with a slash": "server_ip: 192.0.2.10\n" +
 			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
 			"install_sets: [{name: a/b, layers: [{name: base, image: /media/m/base.iso}]}]",
+		// Only one stand directory can be served per set, so two layers
+		// claiming it would leave the PROM's fx.64 to layer order.
+		"two boot layers in one set": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: a, image: /media/m/a.iso, boot: true}, " +
+			"{name: b, image: /media/m/b.iso, boot: true}]}]",
 		"duplicate set names": "server_ip: 192.0.2.10\n" +
 			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
 			"install_sets: [{name: m, layers: [{name: a, image: /media/m/a.iso}]}, " +

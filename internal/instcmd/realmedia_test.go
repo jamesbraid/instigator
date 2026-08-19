@@ -120,7 +120,7 @@ func TestRSHRealMediaDD(t *testing.T) {
 	}
 	tree, err := vfs.Build([]vfs.SetSpec{{
 		Name:   "6.5.30",
-		Layers: []vfs.LayerSpec{{Name: "tools", Image: realMediaImage, SourceDir: ".", TargetDir: "."}},
+		Layers: []vfs.LayerSpec{{Name: "tools", Image: realMediaImage, Boot: true}},
 	}})
 	if err != nil {
 		t.Fatal(err)

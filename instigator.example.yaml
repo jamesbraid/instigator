@@ -24,24 +24,23 @@ clients:
 # shows the option. It controls only whether a set is offered in the generated
 # admin-source command file. See docs/install.md for the operator guide.
 install_sets:
-  # The base release. The first layer's whole root becomes the set
-  # root - source_dir and target_dir both default to "." - which is
-  # what keeps stand/ (the PROM boot files fx and sash) and
-  # installtools/ available alongside dist/. A later disc from the same
-  # release normally contributes only its own dist directory, merged
-  # into this set's dist.
+  # The base release, and the one set the PROM boots. Every layer
+  # contributes its distribution directory to this set's single dist;
+  # "dist" is the default, so ordinary media name nothing. boot: true
+  # additionally serves that layer's stand/ at /6.5.30/stand, which is
+  # where the PROM fetches fx.64 - at most one layer per set may set it,
+  # and a set nobody netboots needs none at all.
   - name: "6.5.30"
     layers:
       - name: overlays1
         image: /media/6.5.30/overlays1.image
+        boot: true
       - name: overlays2
         image: /media/6.5.30/overlays2.image
-        source_dir: dist
-        target_dir: dist
+        dist: dist
       - name: overlays3
         image: /media/6.5.30/overlays3.image
-        source_dir: dist
-        target_dir: dist
+        dist: dist
 
   # A second set, opened after the first at the Inst> prompt. Its
   # second layer is a version-stub disc whose real distribution
@@ -58,12 +57,10 @@ install_sets:
         image: /media/foundations/foundation1.image
       - name: foundation2
         image: /media/foundations/foundation2.image
-        source_dir: dist
-        target_dir: dist
+        dist: dist
       - name: onc3-nfs
         image: /media/foundations/onc3-nfs.image
-        source_dir: dist6.5
-        target_dir: dist
+        dist: dist6.5
     collisions:
       foundations/dist/inst.README: foundation1
     # enabled: false   # still built and browsable, just not opened
@@ -86,12 +83,10 @@ install_sets:
     layers:
       - name: devlibs
         image: /media/foundations/devlibs.image
-        source_dir: dist
-        target_dir: dist
+        dist: dist
       - name: devfoundation
         image: /media/foundations/devfoundation.image
-        source_dir: dist/dist6.5
-        target_dir: dist
+        dist: dist/dist6.5
 
 services:
   bootp: true

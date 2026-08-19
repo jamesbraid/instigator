@@ -12,7 +12,7 @@ import (
 	"github.com/jamesbraid/instigator/internal/logging"
 )
 
-// primaryImage writes the image the first set's first layer maps whole.
+// primaryImage writes the image the first set's first layer draws from.
 // It carries the stock dist/.related_dists a real Installation Tools
 // disc ships - which the generated menu aid has to shadow - and
 // stand/fx.64 only when withStand, so a test can cover both the set that
@@ -107,12 +107,19 @@ func served(t *testing.T, s *Servers, name string) string {
 	return string(b)
 }
 
-// fourSetConfig is the served profile in miniature: a primary set mapped
-// whole from one image, then three sets contributing only their dist,
-// exactly the four-set shape the generated commands open.
+// fourSetConfig is the served profile in miniature: a primary set from
+// one image, then three sets merging only their dist, exactly the
+// four-set shape the generated commands open. The primary layer boots
+// only when its media carry a stand - a boot layer whose source has none
+// fails the build, which is the config mistake, not the scenario this
+// wants.
 func fourSetConfig(t *testing.T, withStand bool) *config.Config {
 	t.Helper()
 	dir := t.TempDir()
+	boot := ""
+	if withStand {
+		boot = ", boot: true"
+	}
 	yaml := fmt.Sprintf(`
 server_ip: 192.0.2.10
 clients:
@@ -120,18 +127,18 @@ clients:
 install_sets:
   - name: "6.5.30"
     layers:
-      - {name: base, image: %q}
+      - {name: base, image: %q%s}
   - name: foundations
     layers:
-      - {name: foundations1, image: %q, source_dir: dist, target_dir: dist}
+      - {name: foundations1, image: %q}
   - name: applications
     layers:
-      - {name: apps, image: %q, source_dir: dist, target_dir: dist}
+      - {name: apps, image: %q}
   - name: development
     layers:
-      - {name: dev, image: %q, source_dir: dist, target_dir: dist}
+      - {name: dev, image: %q}
 `,
-		primaryImage(t, dir, "base.image", withStand),
+		primaryImage(t, dir, "base.image", withStand), boot,
 		distImage(t, dir, "foundations.image", "eoe.sw"),
 		distImage(t, dir, "apps.image", "apps.sw"),
 		distImage(t, dir, "dev.image", "dev.sw"))
@@ -231,11 +238,11 @@ clients:
 install_sets:
   - name: "6.5.30"
     layers:
-      - {name: base, image: %q}
+      - {name: base, image: %q, boot: true}
   - name: applications
     layers:
-      - {name: apps1, image: %q, source_dir: dist, target_dir: dist}
-      - {name: apps2, image: %q, source_dir: dist, target_dir: dist}
+      - {name: apps1, image: %q}
+      - {name: apps2, image: %q}
     collisions: {"applications/dist/inst.README": apps2}
 `, base, one, two)
 	cfg, err := config.Parse([]byte(yaml))
@@ -247,9 +254,9 @@ install_sets:
 	_, c := captureStart(t, cfg)
 	for _, want := range []string{
 		"set 6.5.30: enabled, 1 layer",
-		fmt.Sprintf("set 6.5.30: layer base  <-  image %q  . -> .", base),
+		fmt.Sprintf("set 6.5.30: layer base  <-  image %q  dist dist, boot", base),
 		"set applications: enabled, 2 layers",
-		fmt.Sprintf("set applications: layer apps2  <-  image %q  dist -> dist", two),
+		fmt.Sprintf("set applications: layer apps2  <-  image %q  dist dist", two),
 		"set applications: collision applications/dist/inst.README  <-  layer apps2",
 		"set 6.5.30: /6.5.30/stand/fx.64  <-  image base:/stand/fx.64",
 		"set 6.5.30: /6.5.30/dist/sa  <-  image base:/dist/sa",

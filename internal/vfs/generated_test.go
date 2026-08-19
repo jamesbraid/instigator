@@ -13,7 +13,7 @@ import (
 func TestAddGeneratedNestsAndResolves(t *testing.T) {
 	dir := t.TempDir()
 	img := makeImage(t, dir, "tools.image", map[string]string{"dist/sa": "SA"})
-	tree := build(t, []SetSpec{{Name: "6.5.30", Layers: []LayerSpec{wholeRoot("tools", img)}}})
+	tree := build(t, []SetSpec{{Name: "6.5.30", Layers: []LayerSpec{distLayer("tools", img)}}})
 
 	cmds := []byte("open server:/foundations/dist\n")
 	if err := tree.AddGenerated("6.5.30/dist/generated.commands", "test-commands", cmds); err != nil {
@@ -83,7 +83,7 @@ func TestAddGeneratedCreatesMissingParents(t *testing.T) {
 func TestAddGeneratedShadowsARegularFile(t *testing.T) {
 	dir := t.TempDir()
 	img := makeImage(t, dir, "tools.image", map[string]string{"dist/.related_dists": "CD\n"})
-	tree := build(t, []SetSpec{{Name: "6.5.30", Layers: []LayerSpec{wholeRoot("tools", img)}}})
+	tree := build(t, []SetSpec{{Name: "6.5.30", Layers: []LayerSpec{distLayer("tools", img)}}})
 
 	if got := readTree(t, tree, "6.5.30/dist/.related_dists"); got != "CD\n" {
 		t.Fatalf("stock content = %q, want the media copy", got)
@@ -113,7 +113,7 @@ func TestAddGeneratedShadowsARegularFile(t *testing.T) {
 func TestAddGeneratedRejectsDirectories(t *testing.T) {
 	dir := t.TempDir()
 	img := makeImage(t, dir, "tools.image", map[string]string{"dist/sa": "SA"})
-	tree := build(t, []SetSpec{{Name: "6.5.30", Layers: []LayerSpec{wholeRoot("tools", img)}}})
+	tree := build(t, []SetSpec{{Name: "6.5.30", Layers: []LayerSpec{distLayer("tools", img)}}})
 
 	if err := tree.AddGenerated("6.5.30/dist", "test", []byte("x")); err == nil {
 		t.Fatal("AddGenerated replaced a directory")

@@ -23,8 +23,8 @@ func standardTree(t *testing.T) *Tree {
 	tree := build(t, []SetSpec{{
 		Name: "6.5.30",
 		Layers: []LayerSpec{
-			wholeRoot("tools", img),
-			{Name: "foundations", Dir: extracted, SourceDir: "dist", TargetDir: "dist"},
+			bootLayer("tools", img),
+			{Name: "foundations", Dir: extracted},
 		},
 	}})
 	if err := tree.AddGenerated("install.cmds", "admin-source", []byte("open server:/foundations/dist\n")); err != nil {
@@ -168,7 +168,7 @@ func TestTreeReadDirIsLexicalAndInodesAreStable(t *testing.T) {
 		"dist/prod.sw":  "P",
 		"dist/apple.sw": "A",
 	})
-	spec := []SetSpec{{Name: "6.5.30", Layers: []LayerSpec{wholeRoot("tools", img)}}}
+	spec := []SetSpec{{Name: "6.5.30", Layers: []LayerSpec{distLayer("tools", img)}}}
 
 	first := build(t, spec)
 	want := []string{".iscd", "apple.sw", "prod.sw", "sa"}
