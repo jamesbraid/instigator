@@ -18,10 +18,10 @@ func TestBuildRootListsOnlySetNames(t *testing.T) {
 	img := makeImage(t, dir, "media.iso", map[string]string{"dist/prod.sw": "P"})
 
 	tree := build(t, []SetSpec{
-		{Name: "6.5.30", Layers: []LayerSpec{wholeRoot("overlays", img)}},
-		{Name: "applications", Layers: []LayerSpec{wholeRoot("apps", img)}},
-		{Name: "development", Layers: []LayerSpec{wholeRoot("dev", img)}},
-		{Name: "foundations", Layers: []LayerSpec{wholeRoot("found", img)}},
+		{Name: "6.5.30", Layers: []LayerSpec{distLayer("overlays", img)}},
+		{Name: "applications", Layers: []LayerSpec{distLayer("apps", img)}},
+		{Name: "development", Layers: []LayerSpec{distLayer("dev", img)}},
+		{Name: "foundations", Layers: []LayerSpec{distLayer("found", img)}},
 	})
 
 	want := []string{"6.5.30", "applications", "development", "foundations"}
@@ -53,8 +53,8 @@ func TestBuildMergesDisjointLayers(t *testing.T) {
 	tree := build(t, []SetSpec{{
 		Name: "6.5.30",
 		Layers: []LayerSpec{
-			wholeRoot("tools", img),
-			{Name: "foundations", Dir: extracted, SourceDir: "dist", TargetDir: "dist"},
+			bootLayer("tools", img),
+			{Name: "foundations", Dir: extracted},
 		},
 	}})
 
@@ -229,6 +229,73 @@ func TestBuildRejectsFileDirectoryCollision(t *testing.T) {
 	}
 }
 
+// TestBuildServesStandOnlyForTheBootLayer: the PROM fetches
+// /<set>/stand/fx.64 before anything else exists, so exactly one layer
+// per set has its stand served. Every other set is dist and nothing else
+// - inst runs from the miniroot and never reads stand, so serving a
+// second copy of it would only be another path to keep merged.
+func TestBuildServesStandOnlyForTheBootLayer(t *testing.T) {
+	dir := t.TempDir()
+	tools := makeImage(t, dir, "tools.image", map[string]string{
+		"stand/fx.64": "FX",
+		"dist/sa":     "SA",
+	})
+	apps := makeImage(t, dir, "apps.image", map[string]string{
+		"stand/fx.64":  "OTHER FX",
+		"dist/apps.sw": "A",
+	})
+
+	tree := build(t, []SetSpec{
+		{Name: "6.5.30", Layers: []LayerSpec{bootLayer("tools", tools)}},
+		{Name: "applications", Layers: []LayerSpec{distLayer("apps", apps)}},
+	})
+
+	if got := readTree(t, tree, "6.5.30/stand/fx.64"); got != "FX" {
+		t.Fatalf("boot artifact = %q, want FX", got)
+	}
+	if got := dirNames(t, tree, "6.5.30"); !equalStrings(got, []string{"dist", "stand"}) {
+		t.Fatalf("ReadDir(6.5.30) = %v, want [dist stand]", got)
+	}
+	// The applications media carry a stand too; without the boot flag it
+	// stays on the disc.
+	if got := dirNames(t, tree, "applications"); !equalStrings(got, []string{"dist"}) {
+		t.Fatalf("ReadDir(applications) = %v, want [dist]: only a boot layer serves stand", got)
+	}
+	if _, err := tree.Open("applications/stand/fx.64"); err == nil {
+		t.Fatal("a non-boot layer served its stand")
+	}
+}
+
+// TestBuildRejectsABootLayerWithNoStand: a set configured to boot from
+// media that carry no stand would serve a dist and quietly no boot
+// artifact, and the operator would find out at the PROM. Name the layer
+// instead.
+func TestBuildRejectsABootLayerWithNoStand(t *testing.T) {
+	dir := t.TempDir()
+	img := makeImage(t, dir, "nostand.image", map[string]string{"dist/sa": "SA"})
+	extracted := makeDir(t, filepath.Join(dir, "found"), map[string]string{"dist/foundation.sw": "F"})
+
+	for _, tc := range []struct {
+		name  string
+		layer LayerSpec
+	}{
+		{"image", LayerSpec{Name: "tools", Image: img, Boot: true}},
+		{"directory", LayerSpec{Name: "found", Dir: extracted, Boot: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Build([]SetSpec{{Name: "6.5.30", Layers: []LayerSpec{tc.layer}}})
+			if err == nil {
+				t.Fatal("Build accepted a boot layer whose source has no stand")
+			}
+			for _, want := range []string{"6.5.30", tc.layer.Name, "stand"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 // TestBuildRebasesDist65WithoutLeakingRedirect is the redirect-loop
 // regression. A version-stub disc (the onc3/nfs shape) carries a
 // root-level .redirect stub beside the real catalog in dist6.5. inst reads
@@ -248,7 +315,7 @@ func TestBuildRebasesDist65WithoutLeakingRedirect(t *testing.T) {
 		Name: "foundations",
 		Layers: []LayerSpec{
 			distLayer("tools", primary),
-			{Name: "nfs", Image: stub, SourceDir: "dist6.5", TargetDir: "dist"},
+			{Name: "nfs", Image: stub, Dist: "dist6.5"},
 		},
 	}})
 
@@ -416,7 +483,7 @@ func TestBuildFollowsLinksWithinDirectoryLayers(t *testing.T) {
 
 	tree := build(t, []SetSpec{{
 		Name:   "foundations",
-		Layers: []LayerSpec{{Name: "found", Dir: layer, SourceDir: "dist", TargetDir: "dist"}},
+		Layers: []LayerSpec{{Name: "found", Dir: layer}},
 	}})
 
 	want := []string{"foundation.sw", "inside"}
@@ -446,7 +513,7 @@ func TestBuildRejectsEscapingLinksInDirectoryLayers(t *testing.T) {
 
 			_, err := Build([]SetSpec{{
 				Name:   "foundations",
-				Layers: []LayerSpec{{Name: "found", Dir: layer, SourceDir: "dist", TargetDir: "dist"}},
+				Layers: []LayerSpec{{Name: "found", Dir: layer}},
 			}})
 			if err == nil {
 				t.Fatalf("Build accepted a layer whose symlink escapes to %s", tc.target)
@@ -472,7 +539,7 @@ func TestBuildRejectsDirectoryLinksInDirectoryLayers(t *testing.T) {
 
 	_, err := Build([]SetSpec{{
 		Name:   "foundations",
-		Layers: []LayerSpec{{Name: "found", Dir: layer, SourceDir: "dist", TargetDir: "dist"}},
+		Layers: []LayerSpec{{Name: "found", Dir: layer}},
 	}})
 	if err == nil {
 		t.Fatal("Build accepted a layer whose symlink resolves to a directory")
@@ -501,7 +568,7 @@ func TestBuildRejectsSpecialFileLinksInDirectoryLayers(t *testing.T) {
 
 	_, err := Build([]SetSpec{{
 		Name:   "foundations",
-		Layers: []LayerSpec{{Name: "found", Dir: layer, SourceDir: "dist", TargetDir: "dist"}},
+		Layers: []LayerSpec{{Name: "found", Dir: layer}},
 	}})
 	if err == nil {
 		t.Fatal("Build accepted a layer whose symlink resolves to a named pipe")
@@ -519,7 +586,7 @@ func TestBuildRejectsSpecialFileLinksInDirectoryLayers(t *testing.T) {
 	}
 	tree := build(t, []SetSpec{{
 		Name:   "foundations",
-		Layers: []LayerSpec{{Name: "found", Dir: layer, SourceDir: "dist", TargetDir: "dist"}},
+		Layers: []LayerSpec{{Name: "found", Dir: layer}},
 	}})
 	if got := dirNames(t, tree, "foundations/dist"); !equalStrings(got, []string{"foundation.sw"}) {
 		t.Fatalf("ReadDir = %v, want [foundation.sw]: a bare special file is skipped, not served", got)
@@ -540,9 +607,9 @@ func TestBuildRejectsDuplicateAndMissingSources(t *testing.T) {
 	}
 	if _, err := Build([]SetSpec{{
 		Name:   "6.5.30",
-		Layers: []LayerSpec{{Name: "a", Image: img, SourceDir: "absent", TargetDir: "dist"}},
+		Layers: []LayerSpec{{Name: "a", Image: img, Dist: "absent"}},
 	}}); err == nil {
-		t.Error("Build accepted a layer whose SourceDir is not in the source")
+		t.Error("Build accepted a layer whose dist directory is not in the source")
 	}
 	if _, err := Build([]SetSpec{{
 		Name:   "6.5.30",

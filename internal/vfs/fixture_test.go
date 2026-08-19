@@ -159,16 +159,17 @@ func treePaths(t *testing.T, tree *Tree) []string {
 	return out
 }
 
-// wholeRoot is the layer shape a set's first layer uses: the whole image
-// or directory root mapped onto the set root.
-func wholeRoot(name, image string) LayerSpec {
-	return LayerSpec{Name: name, Image: image, SourceDir: ".", TargetDir: "."}
+// bootLayer is the shape a bootable set's one boot layer uses: its dist
+// merged like any other, and its stand served at the set's stand so the
+// PROM can fetch fx.64.
+func bootLayer(name, image string) LayerSpec {
+	return LayerSpec{Name: name, Image: image, Boot: true}
 }
 
-// distLayer is the shape every later layer uses: its dist contributed to
-// the set's own dist.
+// distLayer is the shape every other layer uses: its dist contributed to
+// the set's own dist, nothing else.
 func distLayer(name, image string) LayerSpec {
-	return LayerSpec{Name: name, Image: image, SourceDir: "dist", TargetDir: "dist"}
+	return LayerSpec{Name: name, Image: image}
 }
 
 func equalStrings(a, b []string) bool {

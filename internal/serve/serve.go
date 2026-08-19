@@ -439,11 +439,11 @@ func setSpecs(cfg *config.Config) []vfs.SetSpec {
 		layers := make([]vfs.LayerSpec, 0, len(set.Layers))
 		for _, l := range set.Layers {
 			layers = append(layers, vfs.LayerSpec{
-				Name:      l.Name,
-				Image:     l.Image,
-				Dir:       l.Dir,
-				SourceDir: l.SourceDir,
-				TargetDir: l.TargetDir,
+				Name:  l.Name,
+				Image: l.Image,
+				Dir:   l.Dir,
+				Dist:  l.Dist,
+				Boot:  l.Boot,
 			})
 		}
 		sets = append(sets, vfs.SetSpec{Name: set.Name, Layers: layers, Collisions: set.Collisions})
@@ -551,8 +551,12 @@ func logStartup(cfg *config.Config, tree *vfs.Tree, p profile, logger *logging.L
 			if l.Dir != "" {
 				kind, source = "directory", l.Dir
 			}
-			logger.Infof("set %s: layer %s  <-  %s %q  %s -> %s",
-				set.Name, l.Name, kind, source, l.SourceDir, l.TargetDir)
+			role := ""
+			if l.Boot {
+				role = ", boot"
+			}
+			logger.Infof("set %s: layer %s  <-  %s %q  dist %s%s",
+				set.Name, l.Name, kind, source, l.Dist, role)
 		}
 		for _, path := range sortedKeys(set.Collisions) {
 			logger.Infof("set %s: collision %s  <-  layer %s", set.Name, path, set.Collisions[path])

@@ -22,13 +22,24 @@ const maxSymlinks = 8
 // compareBlock is how much of two colliding files is compared at a time.
 const compareBlock = 64 << 10
 
+// distDir is the one directory every layer contributes to and inst reads
+// from, whatever the source media call theirs. standDir is the boot
+// layer's, served so the PROM can fetch fx.64 before anything else exists.
+const (
+	distDir  = "dist"
+	standDir = "stand"
+)
+
 // Build assembles the configured install sets into one read-only tree.
-// Each set becomes a directory holding the ordered merge of its layers;
-// no disc name appears anywhere in the result. Every source is opened
-// once and stays open for the tree's life, so Close it when done.
+// Each set becomes a directory holding the ordered merge of its layers'
+// distribution directories at <set>/dist, plus <set>/stand from the set's
+// boot layer if it has one; no disc name appears anywhere in the result.
+// Every source is opened once and stays open for the tree's life, so
+// Close it when done.
 //
-// Build fails rather than guess: a layer whose source or SourceDir is
-// missing, a file present with different bytes in two layers and no
+// Build fails rather than guess: a layer whose source or distribution
+// directory is missing, a boot layer whose source has no stand directory,
+// a file present with different bytes in two layers and no
 // configured winner for that exact path, a configured winner no layer
 // delivers, or a symlink that does not resolve, contained, to a regular
 // file all stop the build. Content is read lazily on Open; only files two
@@ -63,20 +74,16 @@ func Build(sets []SetSpec) (*Tree, error) {
 	return t, nil
 }
 
-// addLayer maps one layer's SourceDir onto its TargetDir within the set.
+// addLayer merges one layer's distribution directory into the set's dist,
+// and for the set's boot layer serves its stand directory alongside.
 func (t *Tree) addLayer(set SetSpec, layer LayerSpec, images map[string]*Disc, roots map[string]*os.Root) error {
 	if layer.Name == "" {
 		return fmt.Errorf("layer with no name")
 	}
-	srcDir, err := cleanDir(layer.SourceDir)
+	dist, err := cleanDir(layer.Dist)
 	if err != nil {
-		return fmt.Errorf("source directory: %w", err)
+		return fmt.Errorf("distribution directory: %w", err)
 	}
-	targetDir, err := cleanDir(layer.TargetDir)
-	if err != nil {
-		return fmt.Errorf("target directory: %w", err)
-	}
-	target := path.Join(set.Name, targetDir)
 
 	switch {
 	case layer.Image != "" && layer.Dir != "":
@@ -86,13 +93,32 @@ func (t *Tree) addLayer(set SetSpec, layer LayerSpec, images map[string]*Disc, r
 		if err != nil {
 			return err
 		}
-		return t.addImageLayer(set, layer, disc.FS(), srcDir, target)
+		fsys := disc.FS()
+		if err := t.addImageLayer(set, layer, fsys, dist, path.Join(set.Name, distDir)); err != nil {
+			return err
+		}
+		if !layer.Boot {
+			return nil
+		}
+		if _, _, err := lookupFollow(fsys, standDir, maxSymlinks); err != nil {
+			return fmt.Errorf("boot layer has no %s directory: %w", standDir, err)
+		}
+		return t.addImageLayer(set, layer, fsys, standDir, path.Join(set.Name, standDir))
 	case layer.Dir != "":
 		root, err := t.openRoot(layer.Dir, roots)
 		if err != nil {
 			return err
 		}
-		return t.addDirLayer(set, layer, root, srcDir, target)
+		if err := t.addDirLayer(set, layer, root, dist, path.Join(set.Name, distDir)); err != nil {
+			return err
+		}
+		if !layer.Boot {
+			return nil
+		}
+		if _, err := fs.Stat(root.FS(), standDir); err != nil {
+			return fmt.Errorf("boot layer has no %s directory: %w", standDir, err)
+		}
+		return t.addDirLayer(set, layer, root, standDir, path.Join(set.Name, standDir))
 	default:
 		return fmt.Errorf("names neither an image nor a directory")
 	}
@@ -130,11 +156,11 @@ func (t *Tree) openRoot(dir string, roots map[string]*os.Root) (*os.Root, error)
 	return r, nil
 }
 
-// cleanDir normalizes a configured SourceDir or TargetDir to an io/fs
-// name; empty means the whole root.
+// cleanDir normalizes a configured Dist to an io/fs name; empty means the
+// ordinary "dist", which is what all but the version-stub media use.
 func cleanDir(dir string) (string, error) {
 	if dir == "" {
-		return ".", nil
+		return distDir, nil
 	}
 	clean := path.Clean(dir)
 	if !fs.ValidPath(clean) {
@@ -143,7 +169,7 @@ func cleanDir(dir string) (string, error) {
 	return clean, nil
 }
 
-// addImageLayer walks an EFS image from SourceDir down.
+// addImageLayer walks one subtree of an EFS image onto a tree path.
 func (t *Tree) addImageLayer(set SetSpec, layer LayerSpec, fsys *efs.FS, srcDir, target string) error {
 	ino, srcPath, err := lookupFollow(fsys, srcDir, maxSymlinks)
 	if err != nil {
@@ -227,8 +253,8 @@ func (t *Tree) walkImage(set SetSpec, layer LayerSpec, fsys *efs.FS, ino *efs.In
 	return nil
 }
 
-// addDirLayer walks a pre-extracted directory layer from SourceDir down,
-// through the os.Root that bounds it.
+// addDirLayer walks one subtree of a pre-extracted directory layer onto a
+// tree path, through the os.Root that bounds it.
 func (t *Tree) addDirLayer(set SetSpec, layer LayerSpec, root *os.Root, srcDir, target string) error {
 	fsys := root.FS()
 	info, err := fs.Stat(fsys, srcDir)

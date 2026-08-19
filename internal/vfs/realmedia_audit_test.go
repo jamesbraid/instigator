@@ -30,15 +30,14 @@ const (
 )
 
 // applicationsSpec builds the SetSpec for the reviewed two-image
-// applications profile: the primary Applications disc supplies the whole
-// set root (stand, dist, everything), Complementary Applications
-// contributes only its dist directory.
+// applications profile: both discs contribute their ordinary dist, and
+// neither boots - nothing netboots the applications set.
 func applicationsSpec(dir string, collisions map[string]string) SetSpec {
 	return SetSpec{
 		Name: "applications",
 		Layers: []LayerSpec{
-			{Name: "applications", Image: filepath.Join(dir, "Applications.image"), SourceDir: ".", TargetDir: "."},
-			{Name: "complementary", Image: filepath.Join(dir, "Complementary_Applications.image"), SourceDir: "dist", TargetDir: "dist"},
+			{Name: "applications", Image: filepath.Join(dir, "Applications.image")},
+			{Name: "complementary", Image: filepath.Join(dir, "Complementary_Applications.image")},
 		},
 		Collisions: collisions,
 	}
@@ -126,22 +125,22 @@ const realBaseMediaDir = "/storage/software/os/irix/irix_6.5base_iso"
 func fullProfileSets() []SetSpec {
 	return []SetSpec{
 		{Name: "6.5.30", Layers: []LayerSpec{
-			{Name: "overlays1", Image: filepath.Join(realMediaDir, "Instalation_Tools_and_Overlays1.image"), SourceDir: ".", TargetDir: "."},
-			{Name: "overlays2", Image: filepath.Join(realMediaDir, "Overlays2.image"), SourceDir: "dist", TargetDir: "dist"},
-			{Name: "overlays3", Image: filepath.Join(realMediaDir, "Overlays3.image"), SourceDir: "dist", TargetDir: "dist"},
+			{Name: "overlays1", Image: filepath.Join(realMediaDir, "Instalation_Tools_and_Overlays1.image"), Boot: true},
+			{Name: "overlays2", Image: filepath.Join(realMediaDir, "Overlays2.image")},
+			{Name: "overlays3", Image: filepath.Join(realMediaDir, "Overlays3.image")},
 		}},
 		{Name: "foundations", Layers: []LayerSpec{
-			{Name: "foundation1", Image: filepath.Join(realBaseMediaDir, "irix6.5_foundation1.iso"), SourceDir: ".", TargetDir: "."},
-			{Name: "foundation2", Image: filepath.Join(realBaseMediaDir, "irix6.5_foundation2.iso"), SourceDir: "dist", TargetDir: "dist"},
-			{Name: "nfs", Image: filepath.Join(realBaseMediaDir, "irix6.5_nfs.iso"), SourceDir: "dist6.5", TargetDir: "dist"},
+			{Name: "foundation1", Image: filepath.Join(realBaseMediaDir, "irix6.5_foundation1.iso")},
+			{Name: "foundation2", Image: filepath.Join(realBaseMediaDir, "irix6.5_foundation2.iso")},
+			{Name: "nfs", Image: filepath.Join(realBaseMediaDir, "irix6.5_nfs.iso"), Dist: "dist6.5"},
 		}},
 		applicationsSpec(realMediaDir, map[string]string{
 			realAppsInstREADME: "applications",
 			realAppsSwmgr:      "applications",
 		}),
 		{Name: "development", Layers: []LayerSpec{
-			{Name: "devlibs", Image: filepath.Join(realBaseMediaDir, "irix6.5_devlibs.iso"), SourceDir: "dist", TargetDir: "dist"},
-			{Name: "devfoundation", Image: filepath.Join(realBaseMediaDir, "irix6.5_devfoundation.iso"), SourceDir: "dist/dist6.5", TargetDir: "dist"},
+			{Name: "devlibs", Image: filepath.Join(realBaseMediaDir, "irix6.5_devlibs.iso")},
+			{Name: "devfoundation", Image: filepath.Join(realBaseMediaDir, "irix6.5_devfoundation.iso"), Dist: "dist/dist6.5"},
 		}},
 	}
 }
@@ -179,7 +178,8 @@ func TestRealMediaFullProfileBuild(t *testing.T) {
 	t.Logf("Build of the four-set profile (10 real images) took %s, %d files", elapsed, len(treePaths(t, tree)))
 
 	for _, tc := range []struct{ path, layer string }{
-		// Set root from the first layer, and the same layer's dist.
+		// The one boot layer's stand, which is the only artifact the
+		// PROM fetches, and the same layer's dist.
 		{"6.5.30/stand/fx.64", "overlays1"},
 		{"6.5.30/dist/sa", "overlays1"},
 		// The overridden applications collision, both halves.
@@ -214,6 +214,10 @@ func TestRealMediaFullProfileBuild(t *testing.T) {
 		"development/dist/.redirect",
 		"development/dist/dist6.5",
 		"foundations/dist/.redirect",
+		// Only the 6.5.30 set boots, so no other set has a stand at all.
+		"foundations/stand",
+		"applications/stand",
+		"development/stand",
 	} {
 		if origin, err := tree.Resolve(p); err == nil {
 			t.Errorf("Resolve(%s) = %+v; the rebase should have left it behind", p, origin)

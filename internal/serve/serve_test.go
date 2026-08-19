@@ -95,8 +95,9 @@ func distImage(t *testing.T, dir, name, product string) string {
 	return writeImage(t, dir, name, img)
 }
 
-// testConfig serves two install sets: a base set mapped whole from one
-// image, and an applications set contributing only its dist.
+// testConfig serves two install sets: a bootable base set whose one layer
+// also supplies stand/fx.64, and an applications set that only merges its
+// dist.
 func testConfig(t *testing.T) *config.Config {
 	t.Helper()
 	dir := t.TempDir()
@@ -107,10 +108,10 @@ clients:
 install_sets:
   - name: "6.5.30"
     layers:
-      - {name: base, image: %q}
+      - {name: base, image: %q, boot: true}
   - name: applications
     layers:
-      - {name: apps, image: %q, source_dir: dist, target_dir: dist}
+      - {name: apps, image: %q}
 `, baseImage(t, dir, "base.image"), distImage(t, dir, "apps.image", "apps.sw"))
 	c, err := config.Parse([]byte(yaml))
 	if err != nil {

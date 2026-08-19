@@ -37,7 +37,7 @@ func buildTestTree(t *testing.T) *vfs.Tree {
 	tree, err := vfs.Build([]vfs.SetSpec{{
 		Name: "6.5.30",
 		Layers: []vfs.LayerSpec{
-			{Name: "media", Image: imgPath, SourceDir: ".", TargetDir: "."},
+			{Name: "media", Image: imgPath},
 		},
 	}})
 	if err != nil {
@@ -333,10 +333,10 @@ func buildTwoSetTree(t *testing.T) *vfs.Tree {
 
 	tree, err := vfs.Build([]vfs.SetSpec{
 		{Name: "6.5.30", Layers: []vfs.LayerSpec{
-			{Name: "media", Image: imgPath, SourceDir: ".", TargetDir: "."},
+			{Name: "media", Image: imgPath},
 		}},
 		{Name: "applications", Layers: []vfs.LayerSpec{
-			{Name: "apps", Image: imgPath, SourceDir: "dist", TargetDir: "dist"},
+			{Name: "apps", Image: imgPath},
 		}},
 	})
 	if err != nil {

@@ -22,16 +22,23 @@ type Client struct {
 
 // Layer is one directory or image contributing files to an install set.
 // Exactly one of Image or Dir names its source: Image is a disc image
-// mounted read-only, Dir is a directory served as-is. SourceDir is the
-// path within that source to serve; TargetDir is where it lands in the
-// install set's tree. Both default to "." (the source's root, the set's
-// root).
+// mounted read-only, Dir is a directory served as-is.
+//
+// Dist is the distribution directory inside that source, defaulting to
+// "dist"; whatever it is called there, it merges into the set's own dist.
+// A version-stub disc names its real catalog instead ("dist6.5", or
+// "dist/dist6.5" where the disc hides it behind a .redirect), which
+// rebases it so inst only ever sees /<set>/dist.
+//
+// Boot marks the layer whose stand directory is served at /<set>/stand,
+// where the PROM fetches fx.64. At most one layer per set may set it, and
+// only a set an operator actually netboots needs one at all.
 type Layer struct {
-	Name      string
-	Image     string
-	Dir       string
-	SourceDir string
-	TargetDir string
+	Name  string
+	Image string
+	Dir   string
+	Dist  string
+	Boot  bool
 }
 
 // InstallSet is one served IRIX install tree, assembled by layering Layers
@@ -90,11 +97,11 @@ type raw struct {
 		Name    string `yaml:"name"`
 		Enabled *bool  `yaml:"enabled"`
 		Layers  []struct {
-			Name      string `yaml:"name"`
-			Image     string `yaml:"image"`
-			Dir       string `yaml:"dir"`
-			SourceDir string `yaml:"source_dir"`
-			TargetDir string `yaml:"target_dir"`
+			Name  string `yaml:"name"`
+			Image string `yaml:"image"`
+			Dir   string `yaml:"dir"`
+			Dist  string `yaml:"dist"`
+			Boot  bool   `yaml:"boot"`
 		} `yaml:"layers"`
 		Collisions map[string]string `yaml:"collisions"`
 	} `yaml:"install_sets"`
@@ -187,6 +194,7 @@ func Parse(b []byte) (*Config, error) {
 		}
 		seen := make(map[string]bool, len(rs.Layers))
 		layers := make([]Layer, 0, len(rs.Layers))
+		boot := ""
 		for j, rl := range rs.Layers {
 			if rl.Name == "" {
 				return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d]: name is required", i, rs.Name, j)
@@ -198,20 +206,25 @@ func Parse(b []byte) (*Config, error) {
 			if (rl.Image == "") == (rl.Dir == "") {
 				return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d] (%s): exactly one of image or dir is required", i, rs.Name, j, rl.Name)
 			}
-			sourceDir := rl.SourceDir
-			if sourceDir == "" {
-				sourceDir = "."
+			// One stand directory can be served per set, so two layers
+			// claiming the boot role would leave which media the PROM
+			// fetches fx.64 from up to layer order.
+			if rl.Boot {
+				if boot != "" {
+					return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d] (%s): layer %q already boots this set", i, rs.Name, j, rl.Name, boot)
+				}
+				boot = rl.Name
 			}
-			targetDir := rl.TargetDir
-			if targetDir == "" {
-				targetDir = "."
+			dist := rl.Dist
+			if dist == "" {
+				dist = "dist"
 			}
 			layers = append(layers, Layer{
-				Name:      rl.Name,
-				Image:     rl.Image,
-				Dir:       rl.Dir,
-				SourceDir: sourceDir,
-				TargetDir: targetDir,
+				Name:  rl.Name,
+				Image: rl.Image,
+				Dir:   rl.Dir,
+				Dist:  dist,
+				Boot:  rl.Boot,
 			})
 		}
 		c.InstallSets = append(c.InstallSets, InstallSet{
