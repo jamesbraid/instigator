@@ -375,15 +375,16 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 			},
 			Handler: func(req *rcmd.Request) error {
 				// inst drives the install by opening a shell over rsh
-				// (exec /bin/sh) and streaming commands to it, rather than
-				// issuing each as its own rsh command.
-				if isShell(req.Command) {
-					sess := s.rec.BeginSession(aliasByIP[req.Addr], req.Addr.String(), req.RemoteUser, req.LocalUser)
-					err := instcmd.RunShell(cmdFS{tree}, req.Stdin, req.Stdout, req.Stderr, logger, sess)
-					sess.End(err)
-					return err
+				// (exec /bin/sh) and streaming commands to it - the only
+				// rsh vocabulary this server speaks.
+				if !isShell(req.Command) {
+					logger.Warnf("rsh: refusing non-shell command %q", req.Command)
+					return fmt.Errorf("only a shell session is served")
 				}
-				return instcmd.Run(cmdFS{tree}, req.Command, req.Stdout, req.Stderr)
+				sess := s.rec.BeginSession(aliasByIP[req.Addr], req.Addr.String(), req.RemoteUser, req.LocalUser)
+				err := instcmd.RunShell(cmdFS{tree}, req.Stdin, req.Stdout, req.Stderr, logger, sess)
+				sess.End(err)
+				return err
 			},
 		}
 		ln, err := net.Listen("tcp4", fmt.Sprintf(":%d", cfg.Ports.RSH))
