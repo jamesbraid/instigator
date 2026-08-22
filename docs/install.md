@@ -37,14 +37,28 @@ choice for that profile, and starts the install. It does not use positional
 For a dry inspection, type the commands from the file manually and omit the
 final `go`. Otherwise the `admin source` command above is the one-shot install.
 
+## Proven profile ordering
+
+For the current `6.5.30` base profile, keep the enabled sets in this order:
+
+1. `6.5.30` overlays, with all overlay discs merged into one set.
+2. `foundations`, with Foundation and NFS media merged together.
+3. `development`, containing Development Foundation/Libraries.
+4. `applications`.
+5. `complementary`.
+6. `freeware`, when enabled.
+
+The generated command file opens the supplemental sets in that order and
+reopens `6.5.30` last. That ordering is based on the successful Octane run and
+is part of the profile contract.
+
 ## Profiles
 
 Profiles are configuration selections, not separate server modes. The first
 enabled set is the primary release and later enabled sets are opened in the
 configured order.
 
-- `6.5.30`: overlays, foundations, development foundation, Applications,
-  Complementary Applications, and the selected Freeware media.
+- `6.5.30`: the six-set ordering above.
 - `6.5.30 + compilers`: the `6.5.30` profile plus a later MIPSpro/compiler
   set. Keep this as a separate profile until the base profile is proven.
 - `6.5.22`: an older primary release and its matching supplemental media for
