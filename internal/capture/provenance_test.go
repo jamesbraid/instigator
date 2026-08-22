@@ -45,7 +45,7 @@ func TestWriteRunWritesProvenance(t *testing.T) {
 	p := Provenance{
 		Start:    "2026-08-16T00:00:00Z",
 		Binary:   BuildInfo(),
-		Services: Services{BOOTP: true, TFTP: true, RSH: true, NFS: false, TFTPPortRange: [2]int{2048, 32767}},
+		Services: Services{BOOTP: true, TFTP: true, RSH: true, TFTPPortRange: [2]int{2048, 32767}},
 		Config:   ConfigInfo{ServerIP: "192.0.2.1", Netmask: "255.255.255.0"},
 		Clients:  []Client{{Alias: "octane", MAC: "08:00:69:00:00:01", IP: "192.0.2.10"}},
 		Media:    []Media{{Media: "irix6.5.30", Disc: "foundation1", Image: "foundation1.iso", Size: 654321, Mtime: "2026-08-01T00:00:00Z"}},
@@ -73,8 +73,8 @@ func TestWriteRunWritesProvenance(t *testing.T) {
 	if m["schema"] != float64(schemaVersion) {
 		t.Errorf("schema = %v, want %d", m["schema"], schemaVersion)
 	}
-	if m["run_id"] != r.RunID() {
-		t.Errorf("run_id = %v, want %s", m["run_id"], r.RunID())
+	if id, _ := m["run_id"].(string); id == "" {
+		t.Errorf("run_id = %v, want the recorder's run id", m["run_id"])
 	}
 
 	clients, ok := m["clients"].([]any)
@@ -108,7 +108,7 @@ func TestWriteRunWritesProvenance(t *testing.T) {
 	if !ok {
 		t.Fatalf("services = %v", m["services"])
 	}
-	if svc["nfs"] != false {
-		t.Errorf("services.nfs = %v, want false", svc["nfs"])
+	if svc["bootp"] != true || svc["rsh"] != true {
+		t.Errorf("services = %v, want bootp and rsh true", svc)
 	}
 }

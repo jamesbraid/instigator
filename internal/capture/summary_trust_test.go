@@ -48,7 +48,7 @@ func TestSummarizeUnwrapsMarkerCommands(t *testing.T) {
 		map[string]any{"event": "inst_command_end", "session": "s1", "seq": 1, "verb": "trap",
 			"line": "trap : 2 ; " + wrapper, "duration_ms": 5, "result": "ok", "marker": true},
 		map[string]any{"event": "inst_command_end", "session": "s1", "seq": 2, "verb": "dd",
-			"line": "dd if=/6.5.30/dist/sa bs=512 ; " + wrapper,
+			"line":        "dd if=/6.5.30/dist/sa bs=512 ; " + wrapper,
 			"duration_ms": 100, "stdout_bytes": 43000, "result": "ok", "marker": true},
 		map[string]any{"event": "rsh_session_end", "session": "s1", "result": "ok", "duration_ms": 1000, "command_count": 2},
 	)

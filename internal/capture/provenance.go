@@ -28,7 +28,6 @@ type Services struct {
 	BOOTP         bool   `json:"bootp"`
 	TFTP          bool   `json:"tftp"`
 	RSH           bool   `json:"rsh"`
-	NFS           bool   `json:"nfs"`
 	TFTPPortRange [2]int `json:"tftp_port_range"`
 }
 

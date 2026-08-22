@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"sort"
 	"time"
 )
+
+// slowestN caps the slowest-commands list in the summary.
+const slowestN = 10
 
 // Summary is the derived view of one run's events.jsonl: per-session
 // timing, run-wide totals, per-verb latency, and path reuse. It is what
@@ -304,8 +308,8 @@ func Summarize(r io.Reader) (Summary, error) {
 	sort.SliceStable(sum.Paths, func(i, j int) bool { return sum.Paths[i].Opens > sum.Paths[j].Opens })
 
 	sort.SliceStable(sum.Slowest, func(i, j int) bool { return sum.Slowest[i].DurationMS > sum.Slowest[j].DurationMS })
-	if len(sum.Slowest) > 10 {
-		sum.Slowest = sum.Slowest[:10]
+	if len(sum.Slowest) > slowestN {
+		sum.Slowest = sum.Slowest[:slowestN]
 	}
 
 	return sum, nil
@@ -321,19 +325,20 @@ func firstServedPath(sv []served) string {
 	return sv[0].TreePath
 }
 
-// percentile returns the nearest-rank percentile of a sorted slice.
+// percentile returns the nearest-rank percentile of a sorted slice: the
+// smallest element with at least p of the distribution at or below it.
 func percentile(sorted []int64, p float64) int64 {
 	if len(sorted) == 0 {
 		return 0
 	}
-	idx := int(float64(len(sorted))*p+0.999999) - 1
-	if idx < 0 {
-		idx = 0
+	rank := int(math.Ceil(float64(len(sorted)) * p))
+	if rank < 1 {
+		rank = 1
 	}
-	if idx >= len(sorted) {
-		idx = len(sorted) - 1
+	if rank > len(sorted) {
+		rank = len(sorted)
 	}
-	return sorted[idx]
+	return sorted[rank-1]
 }
 
 // WriteText renders a short operator report: per-session timing, run-wide
