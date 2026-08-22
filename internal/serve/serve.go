@@ -701,7 +701,7 @@ func (s *Servers) runListener(name string, serve func() error) {
 		return
 	}
 	s.logger.Errorf("serve: %s listener exited unexpectedly: %v", name, err)
-	s.rec.ListenerExit(name, true, "error")
+	s.rec.ListenerExit(name)
 }
 
 // waitTimeout waits for wg up to timeout, returning true if it completed.
@@ -750,7 +750,6 @@ func buildProvenance(cfg *config.Config) capture.Provenance {
 			BOOTP:         cfg.Services.BOOTP,
 			TFTP:          cfg.Services.TFTP.Enabled,
 			RSH:           cfg.Services.RSH,
-			NFS:           false, // NFS is no longer served from the binary
 			TFTPPortRange: cfg.Services.TFTP.PortRange,
 		},
 		Config: capture.ConfigInfo{

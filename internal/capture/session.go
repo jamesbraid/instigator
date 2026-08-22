@@ -92,7 +92,7 @@ func (r *Recorder) BeginSession(alias, remoteAddr, remoteUser, localUser string)
 		return nil
 	}
 	id := fmt.Sprintf("s%d", r.sessionSeq.Add(1))
-	s := &Session{rec: r, id: id, alias: alias, start: r.now()}
+	s := &Session{rec: r, id: id, alias: alias, start: time.Now()}
 	e := &rshSessionStart{RemoteAddr: remoteAddr, RemoteUser: remoteUser, LocalUser: localUser}
 	e.Event = "rsh_session_start"
 	e.Session = id
@@ -132,7 +132,7 @@ func (s *Session) End(err error) {
 		return
 	}
 	e := &rshSessionEnd{
-		DurationMS:   s.rec.now().Sub(s.start).Milliseconds(),
+		DurationMS:   time.Since(s.start).Milliseconds(),
 		CommandCount: s.cmdCount,
 		BytesOut:     s.bytesOut.Load(),
 	}
@@ -159,7 +159,7 @@ func (s *Session) BeginCommand(line string) *Command {
 		return nil
 	}
 	s.cmdCount++
-	c := &Command{sess: s, seq: s.cmdCount, line: line, marker: isMarker(line), start: s.rec.now()}
+	c := &Command{sess: s, seq: s.cmdCount, line: line, marker: isMarker(line), start: time.Now()}
 	s.cur.Store(c)
 	e := &instCommandStart{Seq: c.seq, Line: line, Marker: c.marker}
 	e.Event = "inst_command_start"
@@ -186,7 +186,7 @@ func (c *Command) End(exitStatus int, refused bool) {
 		Line:         c.line,
 		Verb:         firstVerb(c.line),
 		ExitStatus:   exitStatus,
-		DurationMS:   s.rec.now().Sub(c.start).Milliseconds(),
+		DurationMS:   time.Since(c.start).Milliseconds(),
 		EFSReadCalls: c.efsReadCalls.Load(),
 		EFSReadBytes: c.efsReadBytes.Load(),
 		StdoutCalls:  c.stdoutCalls.Load(),
