@@ -91,6 +91,33 @@ func TestCommandsReopensPrimaryAfterAdditionalSets(t *testing.T) {
 	}
 }
 
+func TestCommandsPreservesProvenBaseProfileOrder(t *testing.T) {
+	got := Commands(Params{
+		ServerIP: "192.0.2.10",
+		Sets: []string{
+			"/6.5.30/dist",
+			"/foundations/dist",
+			"/development/dist",
+			"/applications/dist",
+			"/complementary/dist",
+			"/freeware/dist",
+		},
+	})
+	inOrder(t, got,
+		"open 192.0.2.10:/foundations/dist",
+		"open 192.0.2.10:/development/dist",
+		"open 192.0.2.10:/applications/dist",
+		"open 192.0.2.10:/complementary/dist",
+		"open 192.0.2.10:/freeware/dist",
+		"open 192.0.2.10:/6.5.30/dist",
+		"done",
+		"keep *",
+		"install standard",
+		"keep java_dev.sw.base",
+		"go",
+	)
+}
+
 func TestCommandsKeepsInstalledSoftwareBeforeStandard(t *testing.T) {
 	got := Commands(Params{
 		ServerIP: "192.0.2.10",

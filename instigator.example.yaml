@@ -65,8 +65,20 @@ install_sets:
       foundations/dist/inst.README: foundation1
     # enabled: false   # still built and browsable, just not opened
 
-  # The base IRIX application set. Keep MIPSpro/compiler media out of this
-  # profile; add those as a later, separately reviewed install phase.
+  # Development Foundation/Libraries are part of the base IRIX media set,
+  # not the deferred MIPSpro compiler family. Keep this set before the
+  # application sets: this is the order proven on the Octane.
+  - name: development
+    layers:
+      - name: devlibs
+        image: /media/foundations/devlibs.image
+        dist: dist
+      - name: devfoundation
+        image: /media/foundations/devfoundation.image
+        dist: dist/dist6.5
+
+  # Applications and Complementary Applications are separate sets. They
+  # must remain separate even though both are part of the base profile.
   - name: applications
     layers:
       - name: applications
@@ -77,16 +89,11 @@ install_sets:
       - name: complementary
         image: /media/6.5.30/complementary-applications.image
 
-  # Development Foundation/Libraries are part of the base IRIX media set,
-  # not the deferred MIPSpro compiler family.
-  - name: development
+  # Optional freeware media are opened last in the proven base profile.
+  - name: freeware
     layers:
-      - name: devlibs
-        image: /media/foundations/devlibs.image
-        dist: dist
-      - name: devfoundation
-        image: /media/foundations/devfoundation.image
-        dist: dist/dist6.5
+      - name: freeware
+        image: /media/irix/freeware-february-2003-part3.image
 
 services:
   bootp: true
