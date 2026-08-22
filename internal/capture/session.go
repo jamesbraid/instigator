@@ -12,14 +12,39 @@ import (
 	"time"
 )
 
-// markerRe matches inst's per-command completion wrapper - the "trap : 2 ;
-// ( ... echo 'o?_InstProc<N>IsDone'... )" line inst sends after each real
-// command to read $?. Recording it faithfully (with marker=true) keeps
-// events.jsonl truthful about the wire; the summarizer excludes marker
-// events from its command aggregates rather than dropping them here.
-var markerRe = regexp.MustCompile(`InstProc[0-9]+IsDone`)
+// markerRe matches inst's completion-marker echo. On the real wire (a
+// captured Octane session) almost every line carries it: inst appends the
+// wrapper to the command it reports on, all in one line -
+//
+//	dd if=/6.5.30/dist/foo bs=512 ; ( status=$? ; trap '' 2 ; echo 'o?_InstProc421IsDone\c' ; echo 'o?_InstProc421IsDone'$status'\c' 1>&2 )
+//
+// with an InstKill variant for its flush/kill probes. Recording the flag
+// faithfully keeps events.jsonl truthful about the wire; the summarizer
+// uses markerPayload to pull the wrapped command back out.
+var markerRe = regexp.MustCompile(`Inst(?:Proc|Kill)[0-9]+IsDone`)
 
 func isMarker(line string) bool { return markerRe.MatchString(line) }
+
+// wrapperRe matches the wrapper block itself: the trailing subshell that
+// captures $? and echoes the marker.
+var wrapperRe = regexp.MustCompile(`\(\s*status=\$\?.*IsDone.*\)\s*$`)
+
+// markerPayload returns the command a marker line wraps, or "" when the
+// line is protocol bookkeeping only - the session-opening "trap : 2" arm,
+// or a bare wrapper. In the captured corpus every other marker line wraps
+// a real command (dd, ls, echo).
+func markerPayload(line string) string {
+	loc := wrapperRe.FindStringIndex(line)
+	if loc == nil {
+		return ""
+	}
+	p := strings.TrimSpace(line[:loc[0]])
+	p = strings.TrimSpace(strings.TrimSuffix(p, ";"))
+	if p == "" || firstVerb(p) == "trap" {
+		return ""
+	}
+	return p
+}
 
 // Session is one rsh connection's recording context. It is created by
 // BeginSession, hands out per-command counting wrappers, and is closed by

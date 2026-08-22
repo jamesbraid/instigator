@@ -24,6 +24,7 @@ type Summary struct {
 	Transfers        int   `json:"transfers"`
 	TFTPRetransmits  int   `json:"tftp_retransmits"`
 	AbortedTransfers int   `json:"aborted_transfers"`
+	GaveupTransfers  int   `json:"gaveup_transfers"`
 	ListenerExits    int   `json:"listener_exits"`
 	BootpAnswered    int   `json:"bootp_answered"`
 
@@ -91,6 +92,7 @@ type rawEvent struct {
 	Result  string `json:"result"`
 
 	Seq          int      `json:"seq"`
+	Line         string   `json:"line"`
 	Verb         string   `json:"verb"`
 	ExitStatus   int      `json:"exit_status"`
 	DurationMS   int64    `json:"duration_ms"`
@@ -124,7 +126,7 @@ func Summarize(r io.Reader) (Summary, error) {
 		active      int64
 		commands    int
 		bytesOut    int64
-		stdoutBytes int64 // non-marker stdout only: the throughput numerator
+		stdoutBytes int64 // command stdout: the throughput numerator
 	}
 	sessions := map[string]*sessAgg{}
 	var order []string
@@ -172,11 +174,19 @@ func Summarize(r io.Reader) (Summary, error) {
 			s.bytesOut = e.BytesOut
 
 		case "inst_command_end":
-			// A marker is inst's per-command protocol echo, not a served
-			// command: exclude it from every command aggregate so counts,
-			// active time, and per-verb latency describe real commands.
+			// A marker line usually wraps the real command it reports on -
+			// "dd if=... ; ( status=$? ; ... IsDone ... )" - so the actual
+			// install work lives in marker-flagged events. Count those under
+			// the wrapped command's verb; only a wrapper with nothing
+			// wrapped (the session-opening trap arm) is pure protocol
+			// bookkeeping and excluded.
+			verb := e.Verb
 			if e.Marker {
-				break
+				payload := markerPayload(e.Line)
+				if payload == "" {
+					break
+				}
+				verb = firstVerb(payload)
 			}
 			sum.Commands++
 			agg := get(e.Session)
@@ -195,9 +205,9 @@ func Summarize(r io.Reader) (Summary, error) {
 			case "nonzero":
 				sum.NonzeroCommands++
 			}
-			verbDurations[e.Verb] = append(verbDurations[e.Verb], e.DurationMS)
+			verbDurations[verb] = append(verbDurations[verb], e.DurationMS)
 			sum.Slowest = append(sum.Slowest, SlowCommand{
-				Session: e.Session, Seq: e.Seq, Verb: e.Verb,
+				Session: e.Session, Seq: e.Seq, Verb: verb,
 				DurationMS: e.DurationMS, Path: firstServedPath(e.Served),
 			})
 			for _, sv := range e.Served {
@@ -224,8 +234,11 @@ func Summarize(r io.Reader) (Summary, error) {
 			sum.Transfers++
 			sum.TFTPRetransmits += e.Retransmits
 			sum.BytesServed += e.BytesSent
-			if e.Result == "aborted" || e.Result == "gaveup" {
+			switch e.Result {
+			case "aborted":
 				sum.AbortedTransfers++
+			case "gaveup":
+				sum.GaveupTransfers++
 			}
 
 		case "bootp_reply":
@@ -250,10 +263,10 @@ func Summarize(r io.Reader) (Summary, error) {
 			idle = 0
 		}
 		sum.BytesServed += s.bytesOut
-		// Throughput is the non-marker stdout bytes - the command data the
-		// server actually served - over active and wall time, so it matches
-		// the active-command-time it is divided by. bytes_out is not used
-		// here: it folds in stderr and marker output.
+		// Throughput is command stdout bytes - the data the server actually
+		// served - over active and wall time, so it matches the
+		// active-command-time it is divided by. bytes_out is not used here:
+		// it folds in stderr and the protocol echoes.
 		var activeBps, wallBps int64
 		if s.active > 0 {
 			activeBps = s.stdoutBytes * 1000 / s.active
@@ -336,7 +349,7 @@ func (s Summary) WriteText(w io.Writer) {
 	fmt.Fprintf(w, "commands:            %d\n", s.Commands)
 	fmt.Fprintf(w, "refused commands:    %d\n", s.RefusedCommands)
 	fmt.Fprintf(w, "nonzero commands:    %d\n", s.NonzeroCommands)
-	fmt.Fprintf(w, "tftp transfers:      %d (retransmits %d, aborted %d)\n", s.Transfers, s.TFTPRetransmits, s.AbortedTransfers)
+	fmt.Fprintf(w, "tftp transfers:      %d (retransmits %d, aborted %d, gaveup %d)\n", s.Transfers, s.TFTPRetransmits, s.AbortedTransfers, s.GaveupTransfers)
 	fmt.Fprintf(w, "bootp answered:      %d\n", s.BootpAnswered)
 	if s.ListenerExits > 0 {
 		fmt.Fprintf(w, "listener exits:      %d  (UNEXPECTED - check the log)\n", s.ListenerExits)
