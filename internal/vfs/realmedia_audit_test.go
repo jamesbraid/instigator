@@ -220,3 +220,25 @@ func TestRealMediaFullProfileBuild(t *testing.T) {
 		}
 	}
 }
+
+func TestRealMediaOverlayBootPackagePair(t *testing.T) {
+	if _, err := os.Stat(realMediaDir); err != nil {
+		t.Skip("real IRIX 6.5.30 media not present")
+	}
+	tree, err := Build(fullProfileSets())
+	if err != nil {
+		t.Fatalf("Build of the four-set profile: %v", err)
+	}
+	defer tree.Close()
+
+	for _, name := range []string{"eoe_6530m.idb", "eoe_6530m.sw", "eoe_6530m.sw64"} {
+		path := "6.5.30/dist/" + name
+		origin, err := tree.Resolve(path)
+		if err != nil {
+			t.Fatalf("Resolve(%s): %v", path, err)
+		}
+		if origin.Source != "overlays1" {
+			t.Errorf("Resolve(%s).Source = %q, want overlays1", path, origin.Source)
+		}
+	}
+}

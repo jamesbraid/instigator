@@ -27,7 +27,7 @@ func standardTree(t *testing.T) *Tree {
 			{Name: "foundations", Dir: extracted, SourceDir: "dist", TargetDir: "dist"},
 		},
 	}})
-	if err := tree.AddGenerated("6.5.30/dist/inst.init", "inst.init", []byte("from server:/6.5.30/dist\n")); err != nil {
+	if err := tree.AddGenerated("install.cmds", "admin-source", []byte("open server:/foundations/dist\n")); err != nil {
 		t.Fatal(err)
 	}
 	return tree
@@ -39,7 +39,7 @@ func TestTreeSatisfiesFSTest(t *testing.T) {
 		"6.5.30/stand/fx.64",
 		"6.5.30/dist/sa",
 		"6.5.30/dist/foundation.sw",
-		"6.5.30/dist/inst.init",
+		"install.cmds",
 	); err != nil {
 		t.Fatal(err)
 	}
