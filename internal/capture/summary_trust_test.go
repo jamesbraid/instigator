@@ -37,11 +37,19 @@ func TestSummarizeToleratesTruncatedFinalLine(t *testing.T) {
 	}
 }
 
-func TestSummarizeExcludesMarkers(t *testing.T) {
+// Real inst sends each command and its completion marker as one wire line,
+// so the install work lives in marker-flagged events. The summarizer must
+// count those under the wrapped verb and exclude only the payload-free
+// wrapper (the session-opening trap arm).
+func TestSummarizeUnwrapsMarkerCommands(t *testing.T) {
+	wrapper := `( status=$? ; trap '' 2 ; echo 'o?_InstProc421IsDone\c' ; echo 'o?_InstProc421IsDone'$status'\c' 1>&2 )`
 	in := jsonl(
 		map[string]any{"event": "rsh_session_start", "session": "s1"},
-		map[string]any{"event": "inst_command_end", "session": "s1", "seq": 1, "verb": "dd", "duration_ms": 100, "result": "ok"},
-		map[string]any{"event": "inst_command_end", "session": "s1", "seq": 2, "verb": "trap", "duration_ms": 5, "result": "ok", "marker": true},
+		map[string]any{"event": "inst_command_end", "session": "s1", "seq": 1, "verb": "trap",
+			"line": "trap : 2 ; " + wrapper, "duration_ms": 5, "result": "ok", "marker": true},
+		map[string]any{"event": "inst_command_end", "session": "s1", "seq": 2, "verb": "dd",
+			"line": "dd if=/6.5.30/dist/sa bs=512 ; " + wrapper,
+			"duration_ms": 100, "stdout_bytes": 43000, "result": "ok", "marker": true},
 		map[string]any{"event": "rsh_session_end", "session": "s1", "result": "ok", "duration_ms": 1000, "command_count": 2},
 	)
 	sum, err := Summarize(strings.NewReader(in))
@@ -49,15 +57,16 @@ func TestSummarizeExcludesMarkers(t *testing.T) {
 		t.Fatalf("Summarize: %v", err)
 	}
 	if sum.Commands != 1 {
-		t.Errorf("run commands = %d, want 1 (marker excluded)", sum.Commands)
+		t.Errorf("run commands = %d, want 1 (the wrapped dd; bare wrapper excluded)", sum.Commands)
 	}
-	if len(sum.Sessions) != 1 || sum.Sessions[0].Commands != 1 {
-		t.Errorf("session commands = %v, want 1 (marker excluded)", sum.Sessions)
+	if len(sum.Sessions) != 1 || sum.Sessions[0].Commands != 1 || sum.Sessions[0].ActiveMS != 100 {
+		t.Errorf("session = %+v, want 1 command, 100ms active", sum.Sessions)
 	}
-	for _, v := range sum.Verbs {
-		if v.Verb == "trap" {
-			t.Errorf("marker verb %q leaked into per-verb latency", v.Verb)
-		}
+	if len(sum.Sessions) == 1 && sum.Sessions[0].WallBps != 43000 {
+		t.Errorf("wall throughput = %d B/s, want 43000 (dd stdout over 1s wall)", sum.Sessions[0].WallBps)
+	}
+	if len(sum.Verbs) != 1 || sum.Verbs[0].Verb != "dd" || sum.Verbs[0].Count != 1 {
+		t.Errorf("verbs = %+v, want exactly dd x1 (no trap)", sum.Verbs)
 	}
 }
 
