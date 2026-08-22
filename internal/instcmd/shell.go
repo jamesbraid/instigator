@@ -1,12 +1,3 @@
-// This file replaces the old regex marker-matching in RunShell with a real
-// POSIX shell, mvdan.cc/sh/v3: IRIX inst drives its install by opening
-// /bin/sh over rsh and streaming real shell grammar to it - pipes,
-// subshells, redirects, trap, $? - which a hand-rolled command table can
-// only ever whack-a-mole. The interpreter owns all of that grammar; this
-// file supplies the small, vfs-backed set of leaf commands (dd, ls, cat)
-// and file access it's allowed to reach, so the shell is real but the
-// filesystem underneath it is still exactly the narrow, read-only vfs
-// tree the rest of instigator serves.
 package instcmd
 
 import (
@@ -36,20 +27,10 @@ var errReadOnly = errors.New("read-only filesystem")
 
 // shellEnv is the state shared by every handler for one rsh shell
 // session: FileSystem access plus the tracked working directory. cd is
-// entirely hand-rolled (see callHandler's "cd" case, never mvdan/sh's
-// own builtin - see its comment for why), so every handler resolves a
-// path against this cwd itself rather than against the interpreter's
-// own Dir, which this shell never updates.
-//
-// logger carries the same distinction throughout every handler: ERROR
-// for a command or operand this shell refuses as a matter of policy
-// (not in the whitelist, a write attempt, an operand we don't
-// understand at all) - a capability gap worth knowing about even when
-// inst's own marker protocol quietly absorbs the failure and moves on,
-// which is exactly how instcmd refusing fgrep went unnoticed on our
-// side until it broke a live install. WARN is for a request that
-// simply didn't pan out (a missing file, a malformed value) - routine,
-// not a sign this shell is missing something it should have.
+// hand-rolled (see callHandler's "cd" case), so every handler resolves
+// paths against this cwd itself rather than against the interpreter's
+// own Dir, which this shell never updates. Handlers report failures
+// through warnf and refusef, which fix the WARN-vs-ERROR log policy.
 type shellEnv struct {
 	fsys   FileSystem
 	cwd    string // always an absolute, path.Clean'd vfs path
@@ -72,13 +53,7 @@ func newShellEnv(fsys FileSystem, logger *logging.Logger) *shellEnv {
 // resolve turns a possibly-relative path into an absolute vfs path
 // against cwd, collapsing "." and ".." lexically. That's the "path"
 // package, not "path/filepath": vfs paths are always forward-slash,
-// never host paths, so there's no OS-dependent separator to account
-// for. A ".." that would climb above a disc's own root behaves as
-// ordinary lexical collapsing here, not the real EFS filesystem's
-// self-referential root entry (see internal/vfs's own ".." handling
-// within a disc) - a difference that never shows up in inst's actual
-// usage, which only cds to an absolute distribution path and reads
-// forward from there.
+// never host paths.
 func (e *shellEnv) resolve(p string) string {
 	if p == "" {
 		p = "."
@@ -93,6 +68,33 @@ func (e *shellEnv) resolve(p string) string {
 // FileSystem implementation in this codebase expects.
 func (e *shellEnv) fsPath(p string) string {
 	return strings.TrimPrefix(e.resolve(p), "/")
+}
+
+// warnf reports a routine failure - a missing file, a malformed value -
+// to the client's stderr and, at WARN, the server log.
+func (e *shellEnv) warnf(w io.Writer, format string, args ...any) {
+	fmt.Fprintf(w, format+"\n", args...)
+	e.logger.Warnf("instcmd: "+format, args...)
+}
+
+// refusef reports a capability this shell refuses as policy - not
+// whitelisted, a write attempt, an operand it won't accept - and marks
+// the command refused for the trace. It logs at ERROR because inst's
+// marker protocol absorbs failures silently: a refused fgrep once broke
+// a live install with nothing in the server log.
+func (e *shellEnv) refusef(w io.Writer, format string, args ...any) {
+	fmt.Fprintf(w, format+"\n", args...)
+	e.logger.Errorf("instcmd: "+format, args...)
+	e.refused.Store(true)
+}
+
+// stdinOr returns the command's pipeline stdin, or an empty reader when
+// the shell gave it none.
+func stdinOr(hc interp.HandlerContext) io.Reader {
+	if hc.Stdin != nil {
+		return hc.Stdin
+	}
+	return strings.NewReader("")
 }
 
 // logServed logs the steady-state INFO line for a file a leaf command
@@ -232,45 +234,35 @@ func callHandler(env *shellEnv) interp.CallHandlerFunc {
 		hc := interp.HandlerCtx(ctx)
 		switch baseName(args[0]) {
 		case "echo":
-			// mvdan/sh's builtin echo needs -e for any backslash
-			// expansion, and even with -e has no \c support at all: it
-			// falls through expand.Format's escape switch as two
-			// literal characters. inst wraps every command in
-			// echo 'TOKEN\c' to delimit output without a trailing
-			// newline, so the default builtin cannot serve inst at all.
+			// mvdan/sh's builtin echo has no \c support even with -e,
+			// and inst wraps every command in echo 'TOKEN\c' to delimit
+			// output without a trailing newline - see shEcho.
 			shEcho(hc.Stdout, args[1:])
 			return []string{":"}, nil
 		case "trap":
-			// Real signal delivery is meaningless here - there's no
-			// terminal or OS signal source reaching an interpreted rsh
-			// session - so a numbered or named signal trap is always a
-			// safe no-op. EXIT/ERR and a bare query are real, so let
-			// the builtin see those; mvdan/sh's own trap only accepts
-			// EXIT/ERR and errors on anything else ("invalid signal
-			// specification"), which would otherwise turn inst's
-			// routine `trap : 2` into spurious stderr noise and a
-			// nonzero $?.
+			// A numbered or named signal trap is a safe no-op - no OS
+			// signal ever reaches an interpreted rsh session - but
+			// mvdan/sh's trap accepts only EXIT/ERR and would turn
+			// inst's routine `trap : 2` into stderr noise and a nonzero
+			// $?. EXIT/ERR and a bare query are real; let the builtin
+			// see those.
 			if passthroughTrap(args[1:]) {
 				return args, nil
 			}
 			return []string{":"}, nil
 		case "test", "[":
-			// test/[ is handled entirely here rather than left to
-			// mvdan/sh's own builtin: its -r/-w/-x operators call
-			// unix.Access on the literal path with no handler
-			// indirection (interp/os_unix.go), and its cd builtin does
-			// the same for -x during the directory check. There is no
-			// hook to redirect either to the vfs, so any path to the
-			// real test/[ builtin is a hole straight through the
-			// security boundary this shell exists to enforce.
-			return []string{boolWord(evalTest(env, hc, args))}, nil
+			// Never mvdan/sh's own test/[: its -r/-w/-x operators call
+			// unix.Access on the literal host path with no handler
+			// indirection, a hole straight through the security
+			// boundary this shell exists to enforce.
+			if evalTest(env, hc, args) {
+				return []string{"true"}, nil
+			}
+			return []string{"false"}, nil
 		case "cd":
-			// Hand-rolled for the same reason test/[ is: mvdan/sh's own
-			// cd builtin calls unix.Access on the real path for its -x
-			// check (interp/builtin.go's changeDir), with no handler to
-			// redirect it. cwd only ever moves to a path this shell can
-			// already Stat through the vfs, so it can never point
-			// anywhere the vfs itself couldn't already reach.
+			// Hand-rolled for the same reason: mvdan/sh's cd calls
+			// unix.Access on the real path for its -x check. cwd only
+			// ever moves to a path the vfs can already Stat.
 			target := "/"
 			if len(args) > 1 {
 				target = args[len(args)-1]
@@ -278,33 +270,20 @@ func callHandler(env *shellEnv) interp.CallHandlerFunc {
 			abs := env.resolve(target)
 			info, err := env.fsys.Stat(strings.TrimPrefix(abs, "/"))
 			if err != nil || !info.IsDir {
-				fmt.Fprintf(hc.Stderr, "cd: %s: not a directory\n", target)
-				env.logger.Warnf("instcmd: cd: %s: not a directory", target)
+				env.warnf(hc.Stderr, "cd: %s: not a directory", target)
 				return []string{"false"}, nil
 			}
 			env.cwd = abs
 			return []string{"true"}, nil
 		case "source", ".":
 			// source/. probes $PATH on the real filesystem via os.Stat
-			// before ever reaching the open handler (interp/builtin.go's
-			// scriptFromPathDir). inst's observed corpus doesn't use
-			// either; refuse outright rather than accept that probe as
-			// a side effect.
-			fmt.Fprintf(hc.Stderr, "%s: not supported\n", args[0])
-			env.logger.Errorf("instcmd: %s: not supported", args[0])
-			env.refused.Store(true)
+			// before ever reaching the open handler; refuse outright.
+			env.refusef(hc.Stderr, "%s: not supported", args[0])
 			return []string{"false"}, nil
 		default:
 			return args, nil
 		}
 	}
-}
-
-func boolWord(b bool) string {
-	if b {
-		return "true"
-	}
-	return "false"
 }
 
 // passthroughTrap reports whether a trap invocation only names EXIT/ERR
@@ -333,9 +312,8 @@ func passthroughTrap(rest []string) bool {
 // shEcho implements the XSI-style echo IRIX's /bin/sh uses by default,
 // no -e needed: backslash escapes are always interpreted, and \c
 // suppresses everything from that point on, including the trailing
-// newline. Only \c is load-bearing for inst's marker protocol; the rest
-// are implemented because they're the standard XSI escape table and cost
-// nothing extra to get right.
+// newline - which is what inst's marker protocol depends on, and what
+// mvdan/sh's builtin echo cannot produce at all.
 func shEcho(w io.Writer, args []string) {
 	s := strings.Join(args, " ")
 	var b strings.Builder
@@ -495,9 +473,7 @@ func execHandler(env *shellEnv) interp.ExecHandlerFunc {
 		case "grep", "fgrep", "egrep":
 			return shGrep(env, hc, baseName(args[0]), args[1:])
 		default:
-			fmt.Fprintf(hc.Stderr, "%s: not supported\n", args[0])
-			env.logger.Errorf("instcmd: %s: not supported", args[0])
-			env.refused.Store(true)
+			env.refusef(hc.Stderr, "%s: not supported", args[0])
 			return interp.ExitStatus(1)
 		}
 	}
@@ -508,14 +484,15 @@ func execHandler(env *shellEnv) interp.ExecHandlerFunc {
 // lines. It filters lines from stdin (or, given file operands, from the
 // vfs like cat) and follows grep's exit status: 0 if any line matched,
 // 1 if none, 2 on a usage/pattern error - inst keys on that status. Only
-// the flags inst is known to use are honored (-v, -i, -c, -l, -q, -e);
-// fgrep matches a fixed string, grep/egrep a regexp.
+// the flags inst is known to use are honored (-v, -i, -e); an unknown
+// flag is refused loudly rather than silently ignored, so a gap here is
+// visible. fgrep matches a fixed string, grep/egrep a regexp.
 func shGrep(env *shellEnv, hc interp.HandlerContext, name string, args []string) error {
 	var (
-		invert, ignoreCase, countOnly, listOnly, quiet bool
-		pattern                                        string
-		havePattern                                    bool
-		files                                          []string
+		invert, ignoreCase bool
+		pattern            string
+		havePattern        bool
+		files              []string
 	)
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -526,18 +503,15 @@ func shGrep(env *shellEnv, hc interp.HandlerContext, name string, args []string)
 					invert = true
 				case 'i':
 					ignoreCase = true
-				case 'c':
-					countOnly = true
-				case 'l':
-					listOnly = true
-				case 'q':
-					quiet = true
 				case 'e':
 					// -e PATTERN: the pattern is the next argument
 					if i+1 < len(args) {
 						i++
 						pattern, havePattern = args[i], true
 					}
+				default:
+					env.refusef(hc.Stderr, "%s: -%c: not supported", name, c)
+					return interp.ExitStatus(2)
 				}
 			}
 			continue
@@ -549,8 +523,7 @@ func shGrep(env *shellEnv, hc interp.HandlerContext, name string, args []string)
 		files = append(files, a)
 	}
 	if !havePattern {
-		fmt.Fprintf(hc.Stderr, "%s: no pattern\n", name)
-		env.logger.Warnf("instcmd: %s: no pattern", name)
+		env.warnf(hc.Stderr, "%s: no pattern", name)
 		return interp.ExitStatus(2)
 	}
 
@@ -573,8 +546,7 @@ func shGrep(env *shellEnv, hc interp.HandlerContext, name string, args []string)
 		}
 		re, err := regexp.Compile(expr)
 		if err != nil {
-			fmt.Fprintf(hc.Stderr, "%s: bad pattern %q: %v\n", name, pattern, err)
-			env.logger.Warnf("instcmd: %s: bad pattern %q: %v", name, pattern, err)
+			env.warnf(hc.Stderr, "%s: bad pattern %q: %v", name, pattern, err)
 			return interp.ExitStatus(2)
 		}
 		match = re.MatchString
@@ -586,17 +558,12 @@ func shGrep(env *shellEnv, hc interp.HandlerContext, name string, args []string)
 	}
 	var sources []source
 	if len(files) == 0 {
-		in := hc.Stdin
-		if in == nil {
-			in = strings.NewReader("")
-		}
-		sources = append(sources, source{"(standard input)", in})
+		sources = append(sources, source{"(standard input)", stdinOr(hc)})
 	} else {
 		for _, p := range files {
 			f, err := env.fsys.Open(env.fsPath(p))
 			if err != nil {
-				fmt.Fprintf(hc.Stderr, "%s: %s: %v\n", name, p, err)
-				env.logger.Warnf("instcmd: %s: %s: %v", name, p, err)
+				env.warnf(hc.Stderr, "%s: %s: %v", name, p, err)
 				continue
 			}
 			env.logServed(p)
@@ -606,7 +573,6 @@ func shGrep(env *shellEnv, hc interp.HandlerContext, name string, args []string)
 
 	found := false
 	for _, s := range sources {
-		count := 0
 		sc := bufio.NewScanner(s.r)
 		sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
 		for sc.Scan() {
@@ -619,24 +585,10 @@ func shGrep(env *shellEnv, hc interp.HandlerContext, name string, args []string)
 				continue
 			}
 			found = true
-			count++
-			if quiet || listOnly || countOnly {
-				continue
-			}
 			if len(files) > 1 {
 				fmt.Fprintf(hc.Stdout, "%s:%s\n", s.name, line)
 			} else {
 				fmt.Fprintln(hc.Stdout, line)
-			}
-		}
-		if listOnly && count > 0 {
-			fmt.Fprintln(hc.Stdout, s.name)
-		}
-		if countOnly {
-			if len(files) > 1 {
-				fmt.Fprintf(hc.Stdout, "%s:%d\n", s.name, count)
-			} else {
-				fmt.Fprintln(hc.Stdout, count)
 			}
 		}
 	}
@@ -677,19 +629,21 @@ func shLs(env *shellEnv, hc interp.HandlerContext, args []string) error {
 	fsPath := strings.TrimPrefix(abs, "/")
 	info, err := env.fsys.Stat(fsPath)
 	if err != nil {
-		fmt.Fprintf(hc.Stderr, "ls: %s: %v\n", target, err)
-		env.logger.Warnf("instcmd: ls: %s: %v", target, err)
+		env.warnf(hc.Stderr, "ls: %s: %v", target, err)
 		return interp.ExitStatus(1)
 	}
 
 	if flagD || !info.IsDir {
-		printLsEntry(hc.Stdout, flagI, flagL, target, info)
+		if flagL {
+			fmt.Fprintln(hc.Stdout, lsLongLine(flagI, target, info))
+		} else {
+			fmt.Fprintln(hc.Stdout, target)
+		}
 		return nil
 	}
 	names, err := env.fsys.ReadDir(fsPath)
 	if err != nil {
-		fmt.Fprintf(hc.Stderr, "ls: %s: %v\n", target, err)
-		env.logger.Warnf("instcmd: ls: %s: %v", target, err)
+		env.warnf(hc.Stderr, "ls: %s: %v", target, err)
 		return interp.ExitStatus(1)
 	}
 	if !flagL {
@@ -708,30 +662,21 @@ func shLs(env *shellEnv, hc interp.HandlerContext, args []string) error {
 		if err != nil {
 			continue
 		}
-		printLsEntry(hc.Stdout, flagI, flagL, n, childInfo)
+		fmt.Fprintln(hc.Stdout, lsLongLine(flagI, n, childInfo))
 	}
 	return nil
-}
-
-func printLsEntry(w io.Writer, flagI, flagL bool, name string, info FileInfo) {
-	if !flagL {
-		fmt.Fprintln(w, name)
-		return
-	}
-	fmt.Fprintln(w, lsLongLine(flagI, name, info))
 }
 
 // lsLongLine formats one ls -l line: [inode] perms nlink uid gid size
 // mon day time-or-year name.
 func lsLongLine(withInode bool, name string, info FileInfo) string {
-	var b strings.Builder
-	if withInode {
-		fmt.Fprintf(&b, "%d ", info.Ino)
-	}
-	fmt.Fprintf(&b, "%s %3d %5d %5d %8d %s %s",
+	line := fmt.Sprintf("%s %3d %5d %5d %8d %s %s",
 		permString(info.IsDir, info.Perm), info.Nlink, info.UID, info.GID, info.Size,
 		lsDate(info.Mtime), name)
-	return b.String()
+	if withInode {
+		return fmt.Sprintf("%d %s", info.Ino, line)
+	}
+	return line
 }
 
 // permString renders the type + rwxrwxrwx string ls -l shows.
@@ -744,7 +689,7 @@ func permString(isDir bool, perm uint32) string {
 	}
 	const bits = "rwxrwxrwx"
 	for i := 0; i < 9; i++ {
-		if perm&(1<<uint(8-i)) != 0 {
+		if perm&(1<<(8-i)) != 0 {
 			b[i+1] = bits[i]
 		}
 	}
@@ -770,16 +715,13 @@ func lsDate(t time.Time) string {
 
 func shCat(env *shellEnv, hc interp.HandlerContext, args []string) error {
 	if len(args) == 0 {
-		if hc.Stdin != nil {
-			io.Copy(hc.Stdout, hc.Stdin)
-		}
+		io.Copy(hc.Stdout, stdinOr(hc))
 		return nil
 	}
 	for _, p := range args {
 		f, err := env.fsys.Open(env.fsPath(p))
 		if err != nil {
-			fmt.Fprintf(hc.Stderr, "cat: %s: %v\n", p, err)
-			env.logger.Warnf("instcmd: cat: %s: %v", p, err)
+			env.warnf(hc.Stderr, "cat: %s: %v", p, err)
 			return interp.ExitStatus(1)
 		}
 		env.logServed(p)
@@ -790,15 +732,16 @@ func shCat(env *shellEnv, hc interp.HandlerContext, args []string) error {
 	return nil
 }
 
-// runDD covers what inst actually drives: if=<vfspath> or a piped
-// stdin, bs/ibs/obs, skip/iseek, count, and oseek/seek/obs accepted but
-// inert since nothing this dd writes to is ever seekable. of= is
-// refused outright - this dd only ever writes to its own stdout.
+// shDD covers what inst actually drives: if=<vfspath> or a piped stdin,
+// bs/ibs, skip/iseek, count. obs/oseek/seek are validated but inert -
+// nothing this dd writes to is ever seekable, and output re-blocking
+// can't be observed on a byte stream. of= is refused outright: this dd
+// only ever writes to its own stdout.
 func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 	var (
 		file      string
 		bs        int64 = -1
-		ibs, obs  int64 = 512, 512
+		ibs       int64 = 512
 		skip      int64
 		count     int64
 		haveCount bool
@@ -806,80 +749,67 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 	for _, a := range args {
 		k, v, ok := strings.Cut(a, "=")
 		if !ok {
-			fmt.Fprintf(hc.Stderr, "dd: bad operand %q\n", a)
-			env.logger.Warnf("instcmd: dd: bad operand %q", a)
+			env.warnf(hc.Stderr, "dd: bad operand %q", a)
 			return interp.ExitStatus(1)
 		}
 		switch k {
 		case "if":
 			file = v
 		case "of":
-			fmt.Fprintln(hc.Stderr, "dd: of=: not supported (read-only)")
-			env.logger.Errorf("instcmd: dd: of=: not supported (read-only)")
-			env.refused.Store(true)
+			env.refusef(hc.Stderr, "dd: of=: not supported (read-only)")
 			return interp.ExitStatus(1)
 		case "bs":
 			n, err := parseSize(v)
 			if err != nil {
-				fmt.Fprintf(hc.Stderr, "dd: bs: %v\n", err)
-				env.logger.Warnf("instcmd: dd: bs: %v", err)
+				env.warnf(hc.Stderr, "dd: bs: %v", err)
 				return interp.ExitStatus(1)
 			}
 			bs = n
 		case "ibs":
 			n, err := parseSize(v)
 			if err != nil {
-				fmt.Fprintf(hc.Stderr, "dd: ibs: %v\n", err)
-				env.logger.Warnf("instcmd: dd: ibs: %v", err)
+				env.warnf(hc.Stderr, "dd: ibs: %v", err)
 				return interp.ExitStatus(1)
 			}
 			ibs = n
 		case "obs":
 			if _, err := parseSize(v); err != nil {
-				fmt.Fprintf(hc.Stderr, "dd: obs: %v\n", err)
-				env.logger.Warnf("instcmd: dd: obs: %v", err)
+				env.warnf(hc.Stderr, "dd: obs: %v", err)
 				return interp.ExitStatus(1)
 			}
 		case "skip", "iseek":
 			n, err := strconv.ParseInt(v, 10, 64)
 			if err != nil || n < 0 {
-				fmt.Fprintf(hc.Stderr, "dd: %s: bad value %q\n", k, v)
-				env.logger.Warnf("instcmd: dd: %s: bad value %q", k, v)
+				env.warnf(hc.Stderr, "dd: %s: bad value %q", k, v)
 				return interp.ExitStatus(1)
 			}
 			skip = n
 		case "seek", "oseek":
 			if n, err := strconv.ParseInt(v, 10, 64); err != nil || n < 0 {
-				fmt.Fprintf(hc.Stderr, "dd: %s: bad value %q\n", k, v)
-				env.logger.Warnf("instcmd: dd: %s: bad value %q", k, v)
+				env.warnf(hc.Stderr, "dd: %s: bad value %q", k, v)
 				return interp.ExitStatus(1)
 			}
 		case "count":
 			n, err := strconv.ParseInt(v, 10, 64)
 			if err != nil || n < 0 {
-				fmt.Fprintf(hc.Stderr, "dd: count: bad value %q\n", v)
-				env.logger.Warnf("instcmd: dd: count: bad value %q", v)
+				env.warnf(hc.Stderr, "dd: count: bad value %q", v)
 				return interp.ExitStatus(1)
 			}
 			count, haveCount = n, true
 		default:
-			fmt.Fprintf(hc.Stderr, "dd: operand %q not supported\n", k)
-			env.logger.Errorf("instcmd: dd: operand %q not supported", k)
-			env.refused.Store(true)
+			env.refusef(hc.Stderr, "dd: operand %q not supported", k)
 			return interp.ExitStatus(1)
 		}
 	}
 	if bs > 0 {
-		ibs, obs = bs, bs
+		ibs = bs
 	}
-	_ = obs // validated above; never acted on, see the case "obs" comment
 
 	var src io.Reader
 	if file != "" {
 		f, err := env.fsys.Open(env.fsPath(file))
 		if err != nil {
-			fmt.Fprintf(hc.Stderr, "dd: %s: %v\n", file, err)
-			env.logger.Warnf("instcmd: dd: %s: %v", file, err)
+			env.warnf(hc.Stderr, "dd: %s: %v", file, err)
 			return interp.ExitStatus(1)
 		}
 		env.logServed(file)
@@ -890,10 +820,7 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 		}
 		src = io.NewSectionReader(f, off, size)
 	} else {
-		in := hc.Stdin
-		if in == nil {
-			in = strings.NewReader("")
-		}
+		in := stdinOr(hc)
 		if skip > 0 {
 			if _, err := io.CopyN(io.Discard, in, skip*ibs); err != nil && err != io.EOF {
 				fmt.Fprintf(hc.Stderr, "dd: skip: %v\n", err)
@@ -930,8 +857,8 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 			return interp.ExitStatus(1)
 		}
 	}
-	fmt.Fprintf(hc.Stderr, "%d+%d records in\n%d+%d records out\n",
-		full, boolToInt(partial > 0), full, boolToInt(partial > 0))
+	p := boolToInt(partial > 0)
+	fmt.Fprintf(hc.Stderr, "%d+%d records in\n%d+%d records out\n", full, p, full, p)
 	return nil
 }
 
@@ -1018,9 +945,10 @@ type countingFile struct {
 
 func (f countingFile) Size() int64 { return f.size }
 
-// readDirHandler backs shell globbing. inst's observed corpus doesn't
-// glob, but wiring it correctly costs little: each entry's metadata
-// comes from the same FileSystem.Stat test/[ and StatHandler both use.
+// readDirHandler backs shell globbing. It is part of the sandbox, not a
+// convenience: the interpreter's default handler globs the host
+// filesystem with os.ReadDir, so this must resolve through the vfs even
+// though inst's observed corpus never globs.
 func readDirHandler(env *shellEnv) interp.ReadDirHandlerFunc2 {
 	return func(ctx context.Context, path string) ([]fs.DirEntry, error) {
 		abs := env.resolve(path)
