@@ -169,7 +169,9 @@ func TestTFTPServesFx(t *testing.T) {
 	c.WriteTo(ack, from)
 }
 
-func TestRSHServesDD(t *testing.T) {
+// inst only ever talks to the server through "exec /bin/sh"; a bare rsh
+// command is refused with a message the client sees.
+func TestRSHRefusesNonShellCommand(t *testing.T) {
 	s, _ := startAll(t)
 	c, err := net.Dial("tcp", s.RSHAddr().String())
 	if err != nil {
@@ -182,14 +184,8 @@ func TestRSHServesDD(t *testing.T) {
 	if len(b) < 1 || b[0] != 0 {
 		t.Fatalf("no acceptance byte: %q", b[:min(len(b), 40)])
 	}
-	// payload after the acceptance byte: 1024 'S' bytes, then dd's
-	// records summary (stderr shares the connection without a channel)
-	payload := b[1:]
-	if !bytes.HasPrefix(payload, bytes.Repeat([]byte("S"), 1024)) {
-		t.Fatalf("dd payload wrong, got %d bytes starting %q", len(payload), payload[:min(len(payload), 20)])
-	}
-	if !bytes.Contains(payload, []byte("records out")) {
-		t.Fatal("records summary missing")
+	if !bytes.Contains(b[1:], []byte("only a shell session")) {
+		t.Fatalf("refusal not reported to client: %q", b[1:])
 	}
 }
 

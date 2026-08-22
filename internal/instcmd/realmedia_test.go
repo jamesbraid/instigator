@@ -106,14 +106,11 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// TestRSHRealMediaDD runs the same "dd if=... bs=..." command line inst
-// issues over rsh straight through instcmd.Run against a real 6.5.30
-// image, and checks the streamed stdout against the irix-efs-tools
-// oracle checksum for dist/sa. dd's records-in/out summary goes to a
-// separate stderr buffer, so stdout here is exactly the file's bytes.
-// This proves the rsh distribution path - the table this package
-// implements - reads real IRIX media byte-exact, not just the synthetic
-// fixture in instcmd_test.go.
+// TestRSHRealMediaDD streams the same "dd if=... bs=..." line inst sends
+// through the rsh shell against a real 6.5.30 image, and checks the
+// streamed stdout against the irix-efs-tools oracle checksum for dist/sa.
+// dd's records-in/out summary goes to a separate stderr buffer, so stdout
+// here is exactly the file's bytes.
 func TestRSHRealMediaDD(t *testing.T) {
 	if _, err := os.Stat(realMediaImage); err != nil {
 		t.Skip("real IRIX 6.5.30 media not present")
@@ -131,11 +128,11 @@ func TestRSHRealMediaDD(t *testing.T) {
 	h := sha256.New()
 	stdout := &countingWriter{w: h}
 	var stderr strings.Builder
-	if err := Run(fs, "dd if="+realSAPath+" bs=8192", stdout, &stderr); err != nil {
+	if err := RunShell(fs, strings.NewReader("dd if="+realSAPath+" bs=8192\n"), stdout, &stderr, nil, nil); err != nil {
 		t.Fatalf("dd: %v (stderr: %s)", err, stderr.String())
 	}
 	if stdout.n != realSASize {
-		t.Fatalf("dd copied %d bytes, want %d", stdout.n, realSASize)
+		t.Fatalf("dd copied %d bytes, want %d (stderr: %s)", stdout.n, realSASize, stderr.String())
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != realSASHA {
 		t.Fatalf("sha256 %s, oracle %s", got, realSASHA)
@@ -143,7 +140,7 @@ func TestRSHRealMediaDD(t *testing.T) {
 	t.Logf("dist/sa: %d bytes over rsh dd, sha256 matches oracle", stdout.n)
 
 	var ls strings.Builder
-	if err := Run(fs, "ls "+realSADir, &ls, io.Discard); err != nil {
+	if err := RunShell(fs, strings.NewReader("ls "+realSADir+"\n"), &ls, io.Discard, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"sa", "miniroot"} {
