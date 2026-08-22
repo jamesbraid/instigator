@@ -15,32 +15,32 @@ func TestAddGeneratedNestsAndResolves(t *testing.T) {
 	img := makeImage(t, dir, "tools.image", map[string]string{"dist/sa": "SA"})
 	tree := build(t, []SetSpec{{Name: "6.5.30", Layers: []LayerSpec{wholeRoot("tools", img)}}})
 
-	cmds := []byte("from server:/6.5.30/dist\nreturn\n")
-	if err := tree.AddGenerated("6.5.30/dist/inst.init", "inst.init", cmds); err != nil {
+	cmds := []byte("open server:/foundations/dist\n")
+	if err := tree.AddGenerated("6.5.30/dist/generated.commands", "test-commands", cmds); err != nil {
 		t.Fatal(err)
 	}
 	if err := tree.AddGenerated("6.5.30/dist/.related_dists", "related_dists", []byte("../../applications/dist\n")); err != nil {
 		t.Fatal(err)
 	}
 
-	if got := readTree(t, tree, "6.5.30/dist/inst.init"); got != string(cmds) {
+	if got := readTree(t, tree, "6.5.30/dist/generated.commands"); got != string(cmds) {
 		t.Fatalf("read = %q, want %q", got, cmds)
 	}
-	want := []string{".related_dists", "inst.init", "sa"}
+	want := []string{".related_dists", "generated.commands", "sa"}
 	if got := dirNames(t, tree, "6.5.30/dist"); !equalStrings(got, want) {
 		t.Fatalf("ReadDir = %v, want %v", got, want)
 	}
-	got, err := tree.Resolve("6.5.30/dist/inst.init")
+	got, err := tree.Resolve("6.5.30/dist/generated.commands")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if (got != Origin{Kind: OriginGenerated, Source: "inst.init"}) {
-		t.Fatalf("Resolve = %+v, want a generated origin named inst.init", got)
+	if (got != Origin{Kind: OriginGenerated, Source: "test-commands"}) {
+		t.Fatalf("Resolve = %+v, want a generated origin named test-commands", got)
 	}
 	if got := OriginGenerated.String(); got != "generated" {
 		t.Errorf("OriginGenerated.String() = %q", got)
 	}
-	info, err := tree.Stat("6.5.30/dist/inst.init")
+	info, err := tree.Stat("6.5.30/dist/generated.commands")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestAddGeneratedCreatesMissingParents(t *testing.T) {
 	if err := tree.AddGenerated("install", "runbook", []byte("runbook\n")); err != nil {
 		t.Fatal(err)
 	}
-	if err := tree.AddGenerated("admin/install.cmds", "inst.init", []byte("cmds\n")); err != nil {
+	if err := tree.AddGenerated("admin/install.cmds", "admin-source", []byte("cmds\n")); err != nil {
 		t.Fatal(err)
 	}
 	if got := dirNames(t, tree, "."); !equalStrings(got, []string{"admin", "install"}) {
@@ -115,17 +115,17 @@ func TestAddGeneratedRejectsDirectories(t *testing.T) {
 	img := makeImage(t, dir, "tools.image", map[string]string{"dist/sa": "SA"})
 	tree := build(t, []SetSpec{{Name: "6.5.30", Layers: []LayerSpec{wholeRoot("tools", img)}}})
 
-	if err := tree.AddGenerated("6.5.30/dist", "inst.init", []byte("x")); err == nil {
+	if err := tree.AddGenerated("6.5.30/dist", "test", []byte("x")); err == nil {
 		t.Fatal("AddGenerated replaced a directory")
 	}
-	if err := tree.AddGenerated(".", "inst.init", []byte("x")); err == nil {
+	if err := tree.AddGenerated(".", "test", []byte("x")); err == nil {
 		t.Fatal("AddGenerated replaced the tree root")
 	}
-	if err := tree.AddGenerated("/6.5.30/x", "inst.init", []byte("x")); !errors.Is(err, fs.ErrInvalid) {
+	if err := tree.AddGenerated("/6.5.30/x", "test", []byte("x")); !errors.Is(err, fs.ErrInvalid) {
 		t.Fatalf("AddGenerated on an invalid name: %v, want fs.ErrInvalid", err)
 	}
 	// A file under a path whose parent is a regular file has nowhere to go.
-	if err := tree.AddGenerated("6.5.30/dist/sa/deeper", "inst.init", []byte("x")); err == nil {
+	if err := tree.AddGenerated("6.5.30/dist/sa/deeper", "test", []byte("x")); err == nil {
 		t.Fatal("AddGenerated nested a file under a regular file")
 	}
 }
