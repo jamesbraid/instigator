@@ -16,8 +16,8 @@ const (
 	// layer, opened with os.OpenRoot.
 	OriginDirectory
 	// OriginGenerated is a file instigator synthesizes in memory: the
-	// inst.init command file, the admin-source copy, .related_dists, and
-	// the runbook. It has no backing media.
+	// admin-source command file and .related_dists. It has
+	// no backing media.
 	OriginGenerated
 )
 

@@ -1,5 +1,5 @@
 # instigator configuration. Addresses here are RFC 5737 documentation
-# ranges; replace them with your own.
+# ranges. Replace them with your own.
 
 # The server's own address on the client's segment, advertised in BOOTP
 # replies as the address the PROM tftps from.
@@ -20,10 +20,9 @@ clients:
 # layering ordered CD images (or pre-extracted directories) on top of
 # each other. No disc name ever appears in the served path - a set's
 # layers merge into one tree at /<name>. Every configured set is always
-# built and browsable; "enabled" (true by default; see the second set
-# below) controls only whether a set is offered in the generated
-# inst.init/admin-source command file and the printed Inst>
-# instructions.
+# built and browsable. "enabled" defaults to true. The second set below
+# shows the option. It controls only whether a set is offered in the generated
+# admin-source command file. See docs/install.md for the operator guide.
 install_sets:
   # The base release. The first layer's whole root becomes the set
   # root - source_dir and target_dir both default to "." - which is
@@ -39,13 +38,17 @@ install_sets:
         image: /media/6.5.30/overlays2.image
         source_dir: dist
         target_dir: dist
+      - name: overlays3
+        image: /media/6.5.30/overlays3.image
+        source_dir: dist
+        target_dir: dist
 
   # A second set, opened after the first at the Inst> prompt. Its
   # second layer is a version-stub disc whose real distribution
   # directory is dist6.5 - rebased here onto this set's logical dist,
   # so inst never sees the "dist6.5" name. Both layers ship an
   # inst.README with different text at the same served path,
-  # foundations/dist/inst.README; collisions names the layer whose
+  # foundations/dist/inst.README. collisions names the layer whose
   # copy wins. Any other file that differs at the same path with no
   # entry here fails the build instead of guessing - only exact,
   # reviewed overrides get to pick a winner.
@@ -53,18 +56,47 @@ install_sets:
     layers:
       - name: foundation1
         image: /media/foundations/foundation1.image
+      - name: foundation2
+        image: /media/foundations/foundation2.image
+        source_dir: dist
+        target_dir: dist
       - name: onc3-nfs
         image: /media/foundations/onc3-nfs.image
         source_dir: dist6.5
         target_dir: dist
     collisions:
       foundations/dist/inst.README: foundation1
-    # enabled: false   # still built and browsable; just not opened
+    # enabled: false   # still built and browsable, just not opened
+
+  # The base IRIX application set. Keep MIPSpro/compiler media out of this
+  # profile; add those as a later, separately reviewed install phase.
+  - name: applications
+    layers:
+      - name: applications
+        image: /media/6.5.30/applications.image
+
+  - name: complementary
+    layers:
+      - name: complementary
+        image: /media/6.5.30/complementary-applications.image
+
+  # Development Foundation/Libraries are part of the base IRIX media set,
+  # not the deferred MIPSpro compiler family.
+  - name: development
+    layers:
+      - name: devlibs
+        image: /media/foundations/devlibs.image
+        source_dir: dist
+        target_dir: dist
+      - name: devfoundation
+        image: /media/foundations/devfoundation.image
+        source_dir: dist/dist6.5
+        target_dir: dist
 
 services:
   bootp: true
   tftp:
-    # SGI PROMs ignore tftp transfers from high source ports; keep the
+    # SGI PROMs ignore tftp transfers from high source ports. Keep the
     # transfer sockets low.
     port_range: [2048, 32767]
   rsh: true

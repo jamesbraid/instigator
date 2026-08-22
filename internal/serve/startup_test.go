@@ -147,24 +147,23 @@ install_sets:
 // in config order - what instscript is called with.
 var fourSetDists = []string{"/6.5.30/dist", "/foundations/dist", "/applications/dist", "/development/dist"}
 
-// inst has no way to discover that four sets belong together, so the
-// operator instructions have to hand over every "from"/"open" line, next
-// to the PROM lines that get the machine there in the first place.
-func TestStartupInstructionsOpenEverySet(t *testing.T) {
+// install.cmds owns distribution opening and selection, so startup gives
+// the operator one admin-source command instead of duplicating its lines.
+func TestStartupInstructionsUseAdminSource(t *testing.T) {
 	_, c := captureStart(t, fourSetConfig(t, true))
 
 	for _, want := range []string{
 		"  PROM: setenv netaddr 127.0.0.1",
 		"  PROM: boot -f bootp():/6.5.30/stand/fx.64",
-		"  PROM: Remote Directory: /6.5.30/dist/",
-		"  Inst>: from 192.0.2.10:/6.5.30/dist",
-		"  Inst>: open 192.0.2.10:/foundations/dist",
-		"  Inst>: open 192.0.2.10:/applications/dist",
-		"  Inst>: open 192.0.2.10:/development/dist",
+		"  PROM: Remote Directory: /6.5.30/dist",
+		"  Inst>: admin source 192.0.2.10:/install.cmds",
 	} {
 		if !hasLine(c.instructions, want) {
 			t.Errorf("operator instructions missing %q, got:\n%s", want, strings.Join(c.instructions, "\n"))
 		}
+	}
+	if hasSubstring(c.instructions, "  Inst>: open ") {
+		t.Errorf("operator instructions duplicate install.cmds:\n%s", strings.Join(c.instructions, "\n"))
 	}
 
 	// these are operator console UX, not server log content: they must
@@ -176,29 +175,29 @@ func TestStartupInstructionsOpenEverySet(t *testing.T) {
 	}
 }
 
-// The PROM's Remote Directory prompt wants the trailing slash; without
-// it the PROM silently looks in the parent directory.
-func TestStartupRemoteDirectoryKeepsTrailingSlash(t *testing.T) {
+// A trailing slash makes the PROM request dist//sa(sash64), which it
+// rejects as an invalid argument.
+func TestStartupRemoteDirectoryOmitsTrailingSlash(t *testing.T) {
 	_, c := captureStart(t, fourSetConfig(t, true))
 	for _, l := range c.instructions {
 		if !strings.Contains(l, "Remote Directory") {
 			continue
 		}
-		if !strings.HasSuffix(l, "/") {
-			t.Errorf("Remote Directory line has no trailing slash: %q", l)
+		if strings.HasSuffix(l, "/") {
+			t.Errorf("Remote Directory line has a trailing slash: %q", l)
 		}
 		return
 	}
 	t.Errorf("no Remote Directory line, got:\n%s", strings.Join(c.instructions, "\n"))
 }
 
-// A set whose media carries no miniroot still has a valid "from" - the
-// operator boots fx from a CD in the drive instead - so the Inst> lines
-// must survive on their own rather than be suppressed along with a boot
-// artifact this server cannot actually serve. The Remote Directory does
+// A set whose media carries no miniroot can still open its additional
+// distributions after the operator boots fx from a CD in the drive, so
+// the Inst> lines must survive rather than be suppressed along with a
+// boot artifact this server cannot actually serve. The Remote Directory
 // go with the boot line: the PROM only asks for it during the netboot
-// this server just declined to offer, and the served runbook drops it in
-// exactly the same case.
+// this server just declined to offer, and startup drops it in exactly the
+// same case.
 func TestStartupOmitsPROMBootLineWithoutFx(t *testing.T) {
 	_, c := captureStart(t, fourSetConfig(t, false))
 	for _, l := range c.instructions {
@@ -209,7 +208,7 @@ func TestStartupOmitsPROMBootLineWithoutFx(t *testing.T) {
 			t.Errorf("Remote Directory printed with no boot line to go with it: %q", l)
 		}
 	}
-	if !hasLine(c.instructions, "  Inst>: from 192.0.2.10:/6.5.30/dist") {
+	if !hasLine(c.instructions, "  Inst>: admin source 192.0.2.10:/install.cmds") {
 		t.Errorf("Inst> lines dropped along with the PROM boot line, got:\n%s", strings.Join(c.instructions, "\n"))
 	}
 }
@@ -275,40 +274,17 @@ func readmeImage(t *testing.T, dir, name, readme string) string {
 	return writeImage(t, dir, name, img)
 }
 
-// inst.init is picked up automatically by a machine that boots straight
-// into inst; install.cmds is the same bytes at a stable path an operator
-// loads by hand with "admin source". One generator, one byte sequence -
-// if they ever diverge, an unattended boot and a hand-driven one install
-// different things.
-func TestGeneratedCommandFilesAreTheSameBytes(t *testing.T) {
+// install.cmds contains the generated command sequence at the stable path
+// the operator loads with "admin source".
+func TestGeneratedAdminCommandsMatchScript(t *testing.T) {
 	s, _ := captureStart(t, fourSetConfig(t, true))
 	want := instscript.Commands(instscript.Params{
 		ServerIP: "192.0.2.10",
 		Sets:     fourSetDists,
 	})
-	init := served(t, s, "6.5.30/dist/inst.init")
 	admin := served(t, s, "install.cmds")
-	if init != want {
-		t.Errorf("inst.init =\n%q\nwant\n%q", init, want)
-	}
-	if admin != init {
-		t.Errorf("install.cmds =\n%q\ndiffers from inst.init\n%q", admin, init)
-	}
-}
-
-// The runbook is served with this server's real address, the real set
-// paths, and the boot artifact and Remote Directory that actually
-// resolve here.
-func TestGeneratedRunbookMatchesTheServedProfile(t *testing.T) {
-	s, _ := captureStart(t, fourSetConfig(t, true))
-	want := instscript.Generate(instscript.Params{
-		ServerIP:  "192.0.2.10",
-		Sets:      fourSetDists,
-		BootPath:  "/6.5.30/stand/fx.64",
-		RemoteDir: "/6.5.30/dist/",
-	})
-	if got := served(t, s, "install"); got != want {
-		t.Errorf("/install runbook =\n%s\nwant\n%s", got, want)
+	if admin != want {
+		t.Errorf("install.cmds =\n%q\nwant\n%q", admin, want)
 	}
 }
 
@@ -354,7 +330,7 @@ func TestNoEnabledSetsGeneratesNothing(t *testing.T) {
 	}
 	s, c := captureStart(t, cfg)
 
-	for _, name := range []string{"install", "install.cmds", "6.5.30/dist/inst.init"} {
+	for _, name := range []string{"install.cmds"} {
 		if _, err := s.tree.Open(name); err == nil {
 			t.Errorf("%s generated with no enabled set", name)
 		}
