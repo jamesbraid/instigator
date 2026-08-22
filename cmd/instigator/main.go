@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -102,6 +103,19 @@ func runServe(configPath string, verbose bool, captureDir string) error {
 	if err != nil {
 		return err
 	}
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sig)
+	return serveUntilSignal(cfg, verbose, captureDir, os.Stdout, sig)
+}
+
+func serveUntilSignal(
+	cfg *config.Config,
+	verbose bool,
+	captureDir string,
+	output io.Writer,
+	stop <-chan os.Signal,
+) error {
 	// -v means decode every packet, at DEBUG; the default level is
 	// INFO, which still always shows WARN/ERROR - a refused command or
 	// a real failure is never hidden behind -v.
@@ -109,11 +123,8 @@ func runServe(configPath string, verbose bool, captureDir string) error {
 	if verbose {
 		level = logging.LevelDebug
 	}
-	logger := logging.New(os.Stdout, level)
-	// The operator's PROM/Inst> commands are console UX, not server log
-	// content, so they go to stdout directly rather than through the
-	// leveled logger - see serve.WithInstructions.
-	opts := []serve.Option{serve.WithInstructions(os.Stdout)}
+	logger := logging.New(output, level)
+	opts := []serve.Option{}
 	if captureDir != "" {
 		opts = append(opts, serve.WithCapture(captureDir))
 		logger.Infof("recording this run to %s", captureDir)
@@ -123,10 +134,8 @@ func runServe(configPath string, verbose bool, captureDir string) error {
 		return err
 	}
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	logger.Infof("serving; stop with SIGINT/SIGTERM")
-	<-sig
+	<-stop
 	logger.Infof("shutting down")
 	// Close drains, finalizes the capture, and returns a non-nil error if
 	// the capture came out incomplete or a recorder write failed - surface
