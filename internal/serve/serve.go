@@ -1,9 +1,9 @@
 // Package serve wires the configured services over one install-set
 // tree: bootp answers the configured MACs, tftp and rsh serve the tree,
 // every protocol filters to the configured client IPs. It also generates
-// the operator files instigator serves alongside the media, reports what
-// each set was assembled from, and prints the exact PROM and Inst>
-// commands to type.
+// the operator files instigator serves alongside the media and reports
+// what each set was assembled from. Callers may send PROM and Inst>
+// commands to a separate instructions writer.
 package serve
 
 import (
@@ -464,21 +464,19 @@ type profile struct {
 	generated []generatedFile
 }
 
-// generatedFile is one file instigator synthesized: the tree path it is
-// served at, the generator that produced it (its recorded origin), and
-// its bytes.
+// generatedFile is one file instigator synthesizes: its tree path,
+// recorded origin, and bytes.
 type generatedFile struct {
 	path      string
 	generator string
 	content   []byte
 }
 
-// generate adds the operator files instigator serves alongside the
-// media: the command sequence inst picks up by itself (inst.init beside
-// the primary set's dist) and the byte-identical copy an operator loads
-// by hand with "admin source" (install.cmds at the root), the
-// .related_dists menu aid that shadows whatever stock copy the primary
-// layer's media ships, and the human runbook at /install.
+// generate adds the machine-consumed files instigator serves alongside
+// the media: the command sequence an operator loads with "admin source"
+// (install.cmds at the root) and the .related_dists menu aid that shadows
+// whatever stock copy the primary layer's media ships. Human instructions
+// live in the repository's static Markdown documentation.
 //
 // With no set enabled there is no first set to build any of them around,
 // so nothing is generated at all - every configured set is still served,
@@ -501,7 +499,7 @@ func generate(cfg *config.Config, tree *vfs.Tree) (profile, error) {
 	// The PROM boots only what this server can actually answer for, so a
 	// primary set whose layers carry no miniroot partitioner leaves the
 	// boot path empty rather than name a file that would 404.
-	p.remoteDir = "/" + p.primary + "/dist/"
+	p.remoteDir = "/" + p.primary + "/dist"
 	boot := "/" + p.primary + "/stand/fx.64"
 	if f, err := tree.Open(fsName(boot)); err == nil {
 		f.Close()
@@ -512,17 +510,17 @@ func generate(cfg *config.Config, tree *vfs.Tree) (profile, error) {
 		ServerIP: cfg.ServerIP.String(),
 		Sets:     p.dists,
 	}))
-	runbook := []byte(instscript.Generate(instscript.Params{
-		ServerIP:  cfg.ServerIP.String(),
-		Sets:      p.dists,
-		BootPath:  p.bootPath,
-		RemoteDir: p.remoteDir,
-	}))
 	p.generated = []generatedFile{
-		{p.primary + "/dist/inst.init", "inst.init", cmds},
-		{"install.cmds", "admin-source", cmds},
-		{p.primary + "/dist/.related_dists", "related-dists", []byte(instscript.RelatedDists(p.dists))},
-		{"install", "runbook", runbook},
+		{
+			path:      "install.cmds",
+			generator: "admin-source",
+			content:   cmds,
+		},
+		{
+			path:      p.primary + "/dist/.related_dists",
+			generator: "related-dists",
+			content:   []byte(instscript.RelatedDists(p.dists)),
+		},
 	}
 	for _, f := range p.generated {
 		if err := tree.AddGenerated(f.path, f.generator, f.content); err != nil {
@@ -584,19 +582,13 @@ func logStartup(cfg *config.Config, tree *vfs.Tree, p profile, logger *logging.L
 			fmt.Fprintf(instructions, "  PROM: boot -f bootp():%s\n", p.bootPath)
 			// The PROM asks for the Remote Directory as part of that
 			// netboot, so it belongs to the boot line and goes with it -
-			// the served runbook drops it in the same case.
+			// startup drops it in the same case.
 			fmt.Fprintf(instructions, "  PROM: Remote Directory: %s\n", p.remoteDir)
 		}
 		if len(p.dists) == 0 {
 			continue
 		}
-		// inst cannot discover that these sets belong together, so every
-		// one of them is opened explicitly: "from" for the first, "open"
-		// for each after it.
-		fmt.Fprintf(instructions, "  Inst>: from %s:%s\n", cfg.ServerIP, p.dists[0])
-		for _, dist := range p.dists[1:] {
-			fmt.Fprintf(instructions, "  Inst>: open %s:%s\n", cfg.ServerIP, dist)
-		}
+		fmt.Fprintf(instructions, "  Inst>: admin source %s:/install.cmds\n", cfg.ServerIP)
 	}
 }
 
