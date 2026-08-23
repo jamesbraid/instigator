@@ -6,12 +6,20 @@ builds:
   - id: instigator
     main: ./cmd/instigator
     binary: instigator
+    # Pure-Go binary, so it cross-builds for every target from one Linux runner.
     env:
       - CGO_ENABLED=0
     goos:
       - linux
+      - darwin
+      - windows
     goarch:
       - amd64
+      - arm64
+    ignore:
+      # No Windows on ARM target for this tool.
+      - goos: windows
+        goarch: arm64
     flags:
       - -trimpath
     ldflags:
@@ -22,6 +30,10 @@ archives:
   - id: instigator
     formats:
       - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - LICENSE
