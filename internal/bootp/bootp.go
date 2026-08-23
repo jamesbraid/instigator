@@ -204,7 +204,7 @@ func ListenBroadcast(addr string) (net.PacketConn, error) {
 func setBroadcast(network, address string, c syscall.RawConn) error {
 	var serr error
 	if err := c.Control(func(fd uintptr) {
-		serr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1)
+		serr = enableBroadcast(fd)
 	}); err != nil {
 		return err
 	}
