@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -42,6 +43,20 @@ const defaultRSHIdleTimeout = 30 * time.Minute
 // drainTimeout bounds how long Close waits for in-flight requests to finish
 // and record their end events before the capture is finalized.
 const drainTimeout = 5 * time.Second
+
+// bindErr wraps a listener bind failure. The SGI PROM demands BOOTP on UDP 67
+// and TFTP on UDP 69, so those ports cannot be relocated; when the OS refuses a
+// privileged port the operator needs elevation, so say how per platform.
+func bindErr(service string, port int, err error) error {
+	if isBindPermission(err) {
+		hint := "re-run with sudo"
+		if runtime.GOOS == "windows" {
+			hint = "run as Administrator and allow UDP 67/69 and TCP 514 through the firewall"
+		}
+		return fmt.Errorf("%s: binding port %d: %w (%s)", service, port, err, hint)
+	}
+	return fmt.Errorf("%s: %w", service, err)
+}
 
 // Servers is a running instigator instance.
 type Servers struct {
@@ -334,7 +349,7 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 		pc, err := bootp.ListenBroadcast(fmt.Sprintf(":%d", cfg.Ports.BOOTP))
 		if err != nil {
 			s.Close()
-			return nil, fmt.Errorf("bootp: %w", err)
+			return nil, bindErr("bootp", cfg.Ports.BOOTP, err)
 		}
 		s.bootpConn = pc
 		listeners = append(listeners, listenerFn{"bootp", func() error { return s.bootp.Serve(pc) }})
@@ -353,7 +368,7 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 		pc, err := net.ListenPacket("udp4", fmt.Sprintf(":%d", cfg.Ports.TFTP))
 		if err != nil {
 			s.Close()
-			return nil, fmt.Errorf("tftp: %w", err)
+			return nil, bindErr("tftp", cfg.Ports.TFTP, err)
 		}
 		s.tftpConn = pc
 		s.tftpSrv = srv
@@ -390,7 +405,7 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 		ln, err := net.Listen("tcp4", fmt.Sprintf(":%d", cfg.Ports.RSH))
 		if err != nil {
 			s.Close()
-			return nil, fmt.Errorf("rsh: %w", err)
+			return nil, bindErr("rsh", cfg.Ports.RSH, err)
 		}
 		s.rshLn = ln
 		s.rshSrv = srv
