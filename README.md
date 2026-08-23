@@ -65,6 +65,17 @@ That is the short version. The [installation guide](docs/install.md) has the
 full command sequence, profile ordering, first-boot checks, and captured
 install notes.
 
+## Host platforms
+
+The server is pure Go and runs on Linux, macOS, and Windows. Real installs have
+been proven on Linux (the Octane2 run above). macOS and Windows are supported
+build and test targets.
+
+Binding UDP 67 (BOOTP) and 69 (TFTP) — the ports the SGI PROM expects — needs
+privilege. Use `sudo` on Linux and macOS. On Windows, run as Administrator and
+allow UDP 67/69 and TCP 514 through the firewall. The installation guide covers
+the multi-homed-host trap that bites laptops.
+
 ## Configuration
 
 `install_sets` are the logical trees exposed to `inst`. Each set contains
