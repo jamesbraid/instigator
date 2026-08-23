@@ -1,6 +1,7 @@
 # IRIX network install
 
-This is the operator guide for the install profiles served by instigator.
+This is the operator guide for the tested install configuration served by
+instigator.
 The server does not serve a generated runbook. It serves only the machine
 inputs (`/install.cmds` and the logical install-set trees); keep this guide
 with the checkout used to start the server.
@@ -31,15 +32,15 @@ admin source <server-ip>:/install.cmds
 
 The command file opens every enabled supplemental set, reopens the primary
 release last, selects the standard product set, applies the known package
-choice for that profile, and starts the install. It does not use positional
+choice for this install, and starts the install. It does not use positional
 `conflicts` choices.
 
 For a dry inspection, type the commands from the file manually and omit the
 final `go`. Otherwise the `admin source` command above is the one-shot install.
 
-## Proven profile ordering
+## Tested 6.5.30 install-set ordering
 
-For the current `6.5.30` base profile, keep the enabled sets in this order:
+For the tested `6.5.30` installation, keep the enabled sets in this order:
 
 1. `6.5.30` overlays, with all overlay discs merged into one set.
 2. `foundations`, with Foundation and NFS media merged together.
@@ -49,20 +50,7 @@ For the current `6.5.30` base profile, keep the enabled sets in this order:
 6. `freeware`, when enabled.
 
 The generated command file opens the supplemental sets in that order and
-reopens `6.5.30` last. That ordering is based on the successful Octane run and
-is part of the profile contract.
-
-## Profiles
-
-Profiles are configuration selections, not separate server modes. The first
-enabled set is the primary release and later enabled sets are opened in the
-configured order.
-
-- `6.5.30`: the six-set ordering above.
-- `6.5.30 + compilers`: the `6.5.30` profile plus a later MIPSpro/compiler
-  set. Keep this as a separate profile until the base profile is proven.
-- `6.5.22`: an older primary release and its matching supplemental media for
-  hardware that cannot boot newer IRIX releases.
+reopens `6.5.30` last. That ordering is based on the successful Octane run.
 
 Applications and Complementary Applications remain separate sets. Multiple
 discs within a set are merged into one logical `/<set>/dist` tree; disc names
