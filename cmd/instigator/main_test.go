@@ -13,8 +13,8 @@ import (
 )
 
 // The serve command's stdout is the operational server log. PROM and Inst
-// commands remain available in the generated runbook instead of being mixed
-// into that log.
+// commands remain available in the static guide instead of being mixed into
+// that log.
 func TestServeUntilSignalDoesNotPrintOperatorCommands(t *testing.T) {
 	dir := t.TempDir()
 	imagePath := filepath.Join(dir, "dist.image")
