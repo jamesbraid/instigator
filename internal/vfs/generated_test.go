@@ -55,14 +55,14 @@ func TestAddGeneratedNestsAndResolves(t *testing.T) {
 func TestAddGeneratedCreatesMissingParents(t *testing.T) {
 	tree := build(t, nil)
 
-	if err := tree.AddGenerated("install", "runbook", []byte("runbook\n")); err != nil {
+	if err := tree.AddGenerated("generated/guide.md", "test-guide", []byte("guide\n")); err != nil {
 		t.Fatal(err)
 	}
 	if err := tree.AddGenerated("admin/install.cmds", "admin-source", []byte("cmds\n")); err != nil {
 		t.Fatal(err)
 	}
-	if got := dirNames(t, tree, "."); !equalStrings(got, []string{"admin", "install"}) {
-		t.Fatalf("ReadDir(.) = %v, want [admin install]", got)
+	if got := dirNames(t, tree, "."); !equalStrings(got, []string{"admin", "generated"}) {
+		t.Fatalf("ReadDir(.) = %v, want [admin generated]", got)
 	}
 	if got := readTree(t, tree, "admin/install.cmds"); got != "cmds\n" {
 		t.Fatalf("read = %q", got)
