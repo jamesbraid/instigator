@@ -1,0 +1,45 @@
+version: 2
+
+project_name: instigator
+
+builds:
+  - id: instigator
+    main: ./cmd/instigator
+    binary: instigator
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: instigator
+    formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - instigator.example.yaml
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  draft: false
+  prerelease: auto

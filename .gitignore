@@ -11,3 +11,6 @@ tmp/
 *.pcap
 /serve*.log
 
+# goreleaser build output
+/dist/
+
