@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -44,14 +45,14 @@ func TestNewCreatesPrivateDirAndEventsFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat dir: %v", err)
 	}
-	if perm := di.Mode().Perm(); perm != 0o700 {
+	if perm := di.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o700 {
 		t.Errorf("capture dir perm = %o, want 700", perm)
 	}
 	fi, err := os.Stat(filepath.Join(dir, "events.jsonl"))
 	if err != nil {
 		t.Fatalf("stat events.jsonl: %v", err)
 	}
-	if perm := fi.Mode().Perm(); perm != 0o600 {
+	if perm := fi.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o600 {
 		t.Errorf("events.jsonl perm = %o, want 600", perm)
 	}
 }
@@ -186,7 +187,7 @@ func TestFinishWritesSummaryStopAndRunEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat summary.json: %v", err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("summary.json perm = %o, want 600", fi.Mode().Perm())
 	}
 	b, _ := os.ReadFile(filepath.Join(dir, "summary.json"))

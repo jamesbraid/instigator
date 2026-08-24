@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -41,7 +42,7 @@ func TestDumpFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o640 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o640 {
 		t.Fatalf("perm = %o, want 0640", fi.Mode().Perm())
 	}
 	if !strings.Contains(sb.String(), "extracted 1 files, 11 bytes") {
@@ -82,7 +83,7 @@ func TestDumpDirRecursive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o755 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o755 {
 		t.Fatalf("fx.64 perm = %o, want 0755", fi.Mode().Perm())
 	}
 	if !strings.Contains(sb.String(), "extracted 2 files") {

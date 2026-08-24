@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -107,7 +108,7 @@ func TestCaptureRecordsFullInstall(t *testing.T) {
 	req[0], req[1], req[2] = 1, 1, 6
 	copy(req[28:], []byte{0x08, 0x00, 0x69, 0x0e, 0xaf, 0x12})
 	copy(req[108:], []byte(fxPath))
-	if _, err := bootpC.WriteTo(req, s.BOOTPAddr()); err != nil {
+	if _, err := bootpC.WriteTo(req, sendAddr(s.BOOTPAddr())); err != nil {
 		t.Fatal(err)
 	}
 	rbuf := make([]byte, 400)
@@ -143,7 +144,7 @@ func TestCaptureRecordsFullInstall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat run.json: %v", err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Errorf("run.json perm = %o, want 600", fi.Mode().Perm())
 	}
 	rb, _ := os.ReadFile(filepath.Join(dir, "run.json"))
@@ -290,7 +291,7 @@ func TestCloseCancelsSlowTransfer(t *testing.T) {
 	rrq = append(rrq, 0)
 	rrq = append(rrq, "octet"...)
 	rrq = append(rrq, 0)
-	c.WriteTo(rrq, s.TFTPAddr())
+	c.WriteTo(rrq, sendAddr(s.TFTPAddr()))
 	buf := make([]byte, 1500)
 	c.SetReadDeadline(time.Now().Add(2 * time.Second))
 	if _, _, err := c.ReadFrom(buf); err != nil { // first DATA block, left unacked
@@ -444,7 +445,10 @@ func TestCaptureRecordsRejectedRSHConnection(t *testing.T) {
 // listener fails to bind, the run never really started, so the trace must
 // not record a clean start/stop or write a summary.
 func TestFailedStartDoesNotClaimACleanRun(t *testing.T) {
-	occupied, err := net.Listen("tcp4", "127.0.0.1:0")
+	// Bind the wildcard, matching how the rsh listener binds (":port"). A
+	// 127.0.0.1-only bind here would not collide with the server's wildcard
+	// bind on macOS, so Start would unexpectedly succeed.
+	occupied, err := net.Listen("tcp4", ":0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +490,7 @@ func fetchTFTP(t *testing.T, addr net.Addr, path string) {
 	rrq = append(rrq, 0)
 	rrq = append(rrq, "octet"...)
 	rrq = append(rrq, 0)
-	if _, err := c.WriteTo(rrq, addr); err != nil {
+	if _, err := c.WriteTo(rrq, sendAddr(addr)); err != nil {
 		t.Fatal(err)
 	}
 	buf := make([]byte, 1500)
