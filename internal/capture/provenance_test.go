@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -58,7 +59,7 @@ func TestWriteRunWritesProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat run.json: %v", err)
 	}
-	if perm := fi.Mode().Perm(); perm != 0o600 {
+	if perm := fi.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o600 {
 		t.Errorf("run.json perm = %o, want 600", perm)
 	}
 

@@ -135,6 +135,20 @@ func startAll(t *testing.T) (*Servers, *config.Config) {
 	return s, cfg
 }
 
+// sendAddr rewrites a wildcard listener address (0.0.0.0) to loopback so a
+// test can send UDP to it. Sending to 0.0.0.0 is quietly routed to localhost
+// on Linux, but macOS returns "no route to host" and Windows "address not
+// valid". The listeners really do bind the wildcard, so this fixup lives in
+// the test rather than in the address the server reports.
+func sendAddr(a net.Addr) *net.UDPAddr {
+	u := a.(*net.UDPAddr)
+	ip := u.IP
+	if ip == nil || ip.IsUnspecified() {
+		ip = net.IPv4(127, 0, 0, 1)
+	}
+	return &net.UDPAddr{IP: ip, Port: u.Port}
+}
+
 func TestTFTPServesFx(t *testing.T) {
 	s, _ := startAll(t)
 	c, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -148,7 +162,7 @@ func TestTFTPServesFx(t *testing.T) {
 	req.WriteByte(0)
 	req.WriteString("octet")
 	req.WriteByte(0)
-	if _, err := c.WriteTo(req.Bytes(), s.TFTPAddr()); err != nil {
+	if _, err := c.WriteTo(req.Bytes(), sendAddr(s.TFTPAddr())); err != nil {
 		t.Fatal(err)
 	}
 	buf := make([]byte, 1500)
@@ -208,7 +222,7 @@ func TestBOOTPAnswersConfiguredMAC(t *testing.T) {
 	req[0], req[1], req[2] = 1, 1, 6
 	binary.BigEndian.PutUint32(req[4:], 42)
 	copy(req[28:], []byte{0x08, 0x00, 0x69, 0x0e, 0xaf, 0x12})
-	if _, err := c.WriteTo(req, s.BOOTPAddr()); err != nil {
+	if _, err := c.WriteTo(req, sendAddr(s.BOOTPAddr())); err != nil {
 		t.Fatal(err)
 	}
 	buf := make([]byte, 400)
