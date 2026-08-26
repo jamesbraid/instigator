@@ -494,6 +494,39 @@ func TestBuildFollowsLinksWithinDirectoryLayers(t *testing.T) {
 	}
 }
 
+// TestBuildDirectoryLayerSymlinkOriginIsTheLink guards a subtle invariant:
+// for a directory layer, a symlinked file's origin path is the link's own
+// path, not the target it resolves to. That holds only because
+// os.Root.FS().Stat follows a trailing symlink itself, so resolveLink's
+// first fs.Stat already returns the target's info without the loop ever
+// renaming the path being resolved - unlike an EFS image, whose fs view
+// leaves symlinks unfollowed, so its loop does rename the path as it
+// walks. A change that stopped relying on that Stat-follows-links
+// behavior and walked the link explicitly, the way an image source does,
+// would silently flip Path to the target with the rest of the suite still
+// green.
+func TestBuildDirectoryLayerSymlinkOriginIsTheLink(t *testing.T) {
+	dir := t.TempDir()
+	layer := makeDir(t, filepath.Join(dir, "found"), map[string]string{"dist/foundation.sw": "F"})
+	if err := os.Symlink("foundation.sw", filepath.Join(layer, "dist", "inside")); err != nil {
+		t.Fatal(err)
+	}
+
+	tree := build(t, []SetSpec{{
+		Name:   "foundations",
+		Layers: []LayerSpec{{Name: "found", Dir: layer}},
+	}})
+
+	got, err := tree.Resolve("foundations/dist/inside")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Origin{Kind: OriginDirectory, Source: "found", Path: "dist/inside"}
+	if got != want {
+		t.Fatalf("Resolve = %+v, want %+v (the link's own path, not dist/foundation.sw)", got, want)
+	}
+}
+
 // TestBuildRejectsEscapingLinksInDirectoryLayers: os.Root refuses a link
 // that leaves the layer, whether relative or absolute, so no host path is
 // ever served. The build then fails rather than serve a set quietly
