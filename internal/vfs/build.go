@@ -103,11 +103,10 @@ func (t *Tree) addLayer(set SetSpec, layer LayerSpec, sources map[string]source)
 	}
 }
 
-// source is one opened layer filesystem: the fs.FS the walker reads and
-// the closer that releases it when the tree closes.
+// source is one opened layer filesystem: the fs.FS the walker reads. The
+// closer that releases it lives in t.closers, appended alongside.
 type source struct {
-	fsys   fs.FS
-	closer io.Closer
+	fsys fs.FS
 }
 
 // openImageSource opens an EFS disc image once and shares it. The Disc
@@ -121,7 +120,7 @@ func (t *Tree) openImageSource(image string, cache map[string]source) (source, e
 	if err != nil {
 		return source{}, err
 	}
-	s := source{fsys: d.FS().FSys(), closer: d}
+	s := source{fsys: d.FS().FSys()}
 	cache[key] = s
 	t.closers = append(t.closers, d)
 	return s, nil
@@ -138,7 +137,7 @@ func (t *Tree) openDirSource(dir string, cache map[string]source) (source, error
 	if err != nil {
 		return source{}, err
 	}
-	s := source{fsys: r.FS(), closer: r}
+	s := source{fsys: r.FS()}
 	cache[key] = s
 	t.closers = append(t.closers, r)
 	return s, nil
