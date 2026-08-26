@@ -239,11 +239,11 @@ func (t *Tree) walkFS(set SetSpec, layer LayerSpec, src source, kind OriginKind,
 				return err
 			}
 		case info.Mode().IsRegular():
-			uid, gid, nlink := ownerOf(info)
+			uid, gid, nlink, perm := ownerOf(info)
 			f := &node{
 				name:   e.Name(),
 				origin: originOf(kind, layer, childSrc),
-				perm:   info.Mode().Perm(),
+				perm:   perm,
 				size:   info.Size(),
 				mtime:  info.ModTime(),
 				uid:    uid,
@@ -307,13 +307,18 @@ func statFollow(fsys fs.FS, name string) (fs.FileInfo, string, error) {
 	return resolveLink(fsys, name)
 }
 
-// ownerOf reads the owner an EFS source reports through Sys(); a directory
-// layer reports none, so its files stay unowned with a single link.
-func ownerOf(info fs.FileInfo) (uid, gid uint32, nlink int) {
+// ownerOf reads the metadata an EFS source reports through Sys(): the
+// owner, link count, and full permission bits. The mode is taken from
+// Sys() rather than info.Mode() because io/fs.FileInfo.Mode() masks the
+// setuid, setgid, and sticky bits an EFS regular file may carry, and the
+// tree serves those bits as the media holds them. A directory layer
+// reports no Sys() owner and never carried the extra bits, so its files
+// stay unowned with a single link and the ordinary 0o777 perm.
+func ownerOf(info fs.FileInfo) (uid, gid uint32, nlink int, perm fs.FileMode) {
 	if st, ok := info.Sys().(*efs.Stat); ok {
-		return uint32(st.UID), uint32(st.GID), int(st.Nlink)
+		return uint32(st.UID), uint32(st.GID), int(st.Nlink), fs.FileMode(st.Mode & 0o7777)
 	}
-	return 0, 0, 1
+	return 0, 0, 1, info.Mode().Perm()
 }
 
 // originOf builds the provenance for a walked path: the kind of source,
