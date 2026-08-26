@@ -16,11 +16,15 @@ import (
 func (fs *FS) FSys() fs.FS { return &fsView{fs} }
 
 // Stat is the FileInfo.Sys() value for every entry an EFS fs view returns:
-// the owner and link count io/fs.FileInfo cannot carry on its own.
+// the owner, link count, and full mode io/fs.FileInfo cannot carry on its
+// own. Mode is the raw inode mode, including the setuid, setgid, and
+// sticky bits that FileInfo.Mode() masks away, so a caller that serves
+// those bits can recover them.
 type Stat struct {
 	UID   uint16
 	GID   uint16
 	Nlink int16
+	Mode  uint16
 }
 
 type fsView struct{ fs *FS }
@@ -151,7 +155,7 @@ func (i fsInfo) Mode() fs.FileMode {
 func (i fsInfo) ModTime() time.Time { return time.Unix(int64(i.ino.Mtime), 0) }
 func (i fsInfo) IsDir() bool        { return i.ino.IsDir() }
 func (i fsInfo) Sys() any {
-	return &Stat{UID: i.ino.UID, GID: i.ino.GID, Nlink: i.ino.Nlink}
+	return &Stat{UID: i.ino.UID, GID: i.ino.GID, Nlink: i.ino.Nlink, Mode: i.ino.Mode}
 }
 
 // fsFile is an opened regular file. It reads straight from the image
