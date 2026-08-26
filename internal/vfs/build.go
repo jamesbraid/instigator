@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/jamesbraid/instigator/efs"
 )
@@ -46,8 +45,7 @@ const (
 // layers both claim are read here, to compare them.
 func Build(sets []SetSpec) (*Tree, error) {
 	t := &Tree{root: newDir(".", Origin{})}
-	images := map[string]*Disc{}
-	roots := map[string]*os.Root{}
+	sources := map[string]source{}
 
 	for _, set := range sets {
 		if set.Name == "" {
@@ -60,7 +58,7 @@ func Build(sets []SetSpec) (*Tree, error) {
 		}
 		t.root.children[set.Name] = newDir(set.Name, Origin{})
 		for _, layer := range set.Layers {
-			if err := t.addLayer(set, layer, images, roots); err != nil {
+			if err := t.addLayer(set, layer, sources); err != nil {
 				t.Close()
 				return nil, fmt.Errorf("install set %q: layer %q: %w", set.Name, layer.Name, err)
 			}
@@ -76,7 +74,7 @@ func Build(sets []SetSpec) (*Tree, error) {
 
 // addLayer merges one layer's distribution directory into the set's dist,
 // and for the set's boot layer serves its stand directory alongside.
-func (t *Tree) addLayer(set SetSpec, layer LayerSpec, images map[string]*Disc, roots map[string]*os.Root) error {
+func (t *Tree) addLayer(set SetSpec, layer LayerSpec, sources map[string]source) error {
 	if layer.Name == "" {
 		return fmt.Errorf("layer with no name")
 	}
@@ -89,71 +87,81 @@ func (t *Tree) addLayer(set SetSpec, layer LayerSpec, images map[string]*Disc, r
 	case layer.Image != "" && layer.Dir != "":
 		return fmt.Errorf("names both an image and a directory")
 	case layer.Image != "":
-		disc, err := t.openImage(layer.Image, images)
+		src, err := t.openImageSource(layer.Image, sources)
 		if err != nil {
 			return err
 		}
-		fsys := disc.FS()
-		if err := t.addImageLayer(set, layer, fsys, dist, path.Join(set.Name, distDir)); err != nil {
-			return err
-		}
-		if !layer.Boot {
-			return nil
-		}
-		if _, _, err := lookupFollow(fsys, standDir, maxSymlinks); err != nil {
-			return fmt.Errorf("boot layer has no %s directory: %w", standDir, err)
-		}
-		return t.addImageLayer(set, layer, fsys, standDir, path.Join(set.Name, standDir))
+		return t.addSourceLayer(set, layer, src, dist)
 	case layer.Dir != "":
-		root, err := t.openRoot(layer.Dir, roots)
+		src, err := t.openDirSource(layer.Dir, sources)
 		if err != nil {
 			return err
 		}
-		if err := t.addDirLayer(set, layer, root, dist, path.Join(set.Name, distDir)); err != nil {
-			return err
-		}
-		if !layer.Boot {
-			return nil
-		}
-		if _, err := fs.Stat(root.FS(), standDir); err != nil {
-			return fmt.Errorf("boot layer has no %s directory: %w", standDir, err)
-		}
-		return t.addDirLayer(set, layer, root, standDir, path.Join(set.Name, standDir))
+		return t.addSourceLayer(set, layer, src, dist)
 	default:
 		return fmt.Errorf("names neither an image nor a directory")
 	}
 }
 
-// openImage opens a disc image once and shares it across every layer that
-// draws from it.
-func (t *Tree) openImage(image string, images map[string]*Disc) (*Disc, error) {
+// source is one opened layer filesystem: the fs.FS the walker reads and
+// the closer that releases it when the tree closes.
+type source struct {
+	fsys   fs.FS
+	closer io.Closer
+}
+
+// openImageSource opens an EFS disc image once and shares it. The Disc
+// stays the closer; its fs view is what the walker reads.
+func (t *Tree) openImageSource(image string, cache map[string]source) (source, error) {
 	key := filepath.Clean(image)
-	if d, ok := images[key]; ok {
-		return d, nil
+	if s, ok := cache[key]; ok {
+		return s, nil
 	}
 	d, err := OpenImage(key)
 	if err != nil {
-		return nil, err
+		return source{}, err
 	}
-	images[key] = d
+	s := source{fsys: d.FS().FSys(), closer: d}
+	cache[key] = s
 	t.closers = append(t.closers, d)
-	return d, nil
+	return s, nil
 }
 
-// openRoot opens a directory layer under os.OpenRoot, which is what keeps
-// a symlink inside it from serving a host path.
-func (t *Tree) openRoot(dir string, roots map[string]*os.Root) (*os.Root, error) {
+// openDirSource opens a directory layer under os.OpenRoot, whose fs view
+// keeps a symlink inside it from serving a host path.
+func (t *Tree) openDirSource(dir string, cache map[string]source) (source, error) {
 	key := filepath.Clean(dir)
-	if r, ok := roots[key]; ok {
-		return r, nil
+	if s, ok := cache[key]; ok {
+		return s, nil
 	}
 	r, err := os.OpenRoot(key)
 	if err != nil {
-		return nil, err
+		return source{}, err
 	}
-	roots[key] = r
+	s := source{fsys: r.FS(), closer: r}
+	cache[key] = s
 	t.closers = append(t.closers, r)
-	return r, nil
+	return s, nil
+}
+
+// addSourceLayer merges a layer's distribution directory into the set's
+// dist, and for the set's boot layer serves its stand directory too. The
+// origin kind records which sort of source it was, for provenance.
+func (t *Tree) addSourceLayer(set SetSpec, layer LayerSpec, src source, dist string) error {
+	kind := OriginImage
+	if layer.Dir != "" {
+		kind = OriginDirectory
+	}
+	if err := t.mergeTree(set, layer, src, kind, dist, path.Join(set.Name, distDir)); err != nil {
+		return err
+	}
+	if !layer.Boot {
+		return nil
+	}
+	if _, err := fs.Stat(src.fsys, standDir); err != nil {
+		return fmt.Errorf("boot layer has no %s directory: %w", standDir, err)
+	}
+	return t.mergeTree(set, layer, src, kind, standDir, path.Join(set.Name, standDir))
 }
 
 // cleanDir normalizes a configured Dist to an io/fs name; empty means the
@@ -169,112 +177,27 @@ func cleanDir(dir string) (string, error) {
 	return clean, nil
 }
 
-// addImageLayer walks one subtree of an EFS image onto a tree path.
-func (t *Tree) addImageLayer(set SetSpec, layer LayerSpec, fsys *efs.FS, srcDir, target string) error {
-	ino, srcPath, err := lookupFollow(fsys, srcDir, maxSymlinks)
-	if err != nil {
-		return err
-	}
-	if !ino.IsDir() {
-		return fmt.Errorf("%s is not a directory", srcDir)
-	}
-	dir, err := t.ensureDir(target, imageOrigin(layer, srcPath))
-	if err != nil {
-		return err
-	}
-	return t.walkImage(set, layer, fsys, ino, srcPath, target, dir)
-}
-
-func (t *Tree) walkImage(set SetSpec, layer LayerSpec, fsys *efs.FS, ino *efs.Inode, srcPath, target string, dir *node) error {
-	ents, err := fsys.ReadDir(ino)
-	if err != nil {
-		return fmt.Errorf("%s: %w", srcPath, err)
-	}
-	for _, e := range ents {
-		if e.Name == "." || e.Name == ".." {
-			continue
-		}
-		childSrc := path.Join(srcPath, e.Name)
-		childTarget := path.Join(target, e.Name)
-		child, err := fsys.Inode(e.Ino)
-		if err != nil {
-			return fmt.Errorf("%s: %w", childSrc, err)
-		}
-		if child.IsSymlink() {
-			// A link resolves within its own image - Lookup never leaves
-			// the image's inode graph - so one aimed outside simply finds
-			// nothing. Serving the set without it would be a quiet lie
-			// about what the media holds, so say which link it was.
-			linkSrc := childSrc
-			child, childSrc, err = lookupFollow(fsys, linkSrc, maxSymlinks)
-			if err != nil {
-				return fmt.Errorf("symlink %s does not resolve within the image: %w", linkSrc, err)
-			}
-			// A link to a directory would duplicate a subtree and could
-			// cycle; the tree materializes files, not link graphs.
-			if child.IsDir() {
-				return fmt.Errorf("symlink %s resolves to a directory; directory-link traversal is unsupported", linkSrc)
-			}
-			// Nothing else is materializable. A device node or a pipe
-			// reached directly is skipped below, but a link is followed
-			// only to a regular file, so one aimed at a special file is
-			// as much an incomplete set as an unresolvable one.
-			if !child.IsRegular() {
-				return fmt.Errorf("symlink %s resolves to a special file (mode %#o); only a link to a regular file is served", linkSrc, child.Mode)
-			}
-		}
-		switch {
-		case child.IsDir():
-			sub, err := mergeChild(dir, newDir(e.Name, imageOrigin(layer, childSrc)), childTarget, nil)
-			if err != nil {
-				return err
-			}
-			if err := t.walkImage(set, layer, fsys, child, childSrc, childTarget, sub); err != nil {
-				return err
-			}
-		case child.IsRegular():
-			f := &node{
-				name:   e.Name,
-				origin: imageOrigin(layer, childSrc),
-				perm:   fs.FileMode(child.Mode & 0o7777),
-				size:   int64(child.Size),
-				mtime:  time.Unix(int64(child.Mtime), 0),
-				uid:    uint32(child.UID),
-				gid:    uint32(child.GID),
-				nlink:  int(child.Nlink),
-				image:  fsys,
-				inode:  child,
-			}
-			if _, err := mergeChild(dir, f, childTarget, set.Collisions); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// addDirLayer walks one subtree of a pre-extracted directory layer onto a
-// tree path, through the os.Root that bounds it.
-func (t *Tree) addDirLayer(set SetSpec, layer LayerSpec, root *os.Root, srcDir, target string) error {
-	fsys := root.FS()
-	info, err := fs.Stat(fsys, srcDir)
+// mergeTree walks one subtree of a source onto a tree path. srcDir is the
+// directory within the source (dist or stand); target is where it lands.
+func (t *Tree) mergeTree(set SetSpec, layer LayerSpec, src source, kind OriginKind, srcDir, target string) error {
+	info, srcPath, err := statFollow(src.fsys, srcDir)
 	if err != nil {
 		return err
 	}
 	if !info.IsDir() {
 		return fmt.Errorf("%s is not a directory", srcDir)
 	}
-	dir, err := t.ensureDir(target, dirOrigin(layer, srcDir))
+	dir, err := t.ensureDir(target, originOf(kind, layer, srcPath))
 	if err != nil {
 		return err
 	}
-	return t.walkDir(set, layer, root, fsys, srcDir, target, dir)
+	return t.walkFS(set, layer, src, kind, srcPath, target, dir)
 }
 
-func (t *Tree) walkDir(set SetSpec, layer LayerSpec, root *os.Root, fsys fs.FS, srcPath, target string, dir *node) error {
-	ents, err := fs.ReadDir(fsys, srcPath)
+func (t *Tree) walkFS(set SetSpec, layer LayerSpec, src source, kind OriginKind, srcPath, target string, dir *node) error {
+	ents, err := fs.ReadDir(src.fsys, srcPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: %w", srcPath, err)
 	}
 	for _, e := range ents {
 		childSrc := path.Join(srcPath, e.Name())
@@ -284,41 +207,49 @@ func (t *Tree) walkDir(set SetSpec, layer LayerSpec, root *os.Root, fsys fs.FS, 
 			return err
 		}
 		if info.Mode()&fs.ModeSymlink != 0 {
-			// os.Root follows a link that stays inside the layer and
-			// refuses one that escapes, so a failed Stat here is exactly
-			// the escape case. Skipping it would serve a set missing an
-			// entry the layer lists, so fail and name the link.
-			info, err = fs.Stat(fsys, childSrc)
+			// A link resolves within its own source - an EFS Lookup never
+			// leaves the image's inode graph, and an os.Root refuses a link
+			// that escapes the layer - so one aimed outside simply finds
+			// nothing. Serving the set without it would be a quiet lie
+			// about what the media holds, so resolveLink names the link.
+			info, childSrc, err = resolveLink(src.fsys, childSrc)
 			if err != nil {
-				return fmt.Errorf("symlink %s escapes the layer or does not resolve: %w", childSrc, err)
+				return err
 			}
+			// A link to a directory would duplicate a subtree and could
+			// cycle; the tree materializes files, not link graphs.
 			if info.IsDir() {
-				return fmt.Errorf("symlink %s resolves to a directory; directory-link traversal is unsupported", childSrc)
+				return fmt.Errorf("symlink %s resolves to a directory; directory-link traversal is unsupported", path.Join(srcPath, e.Name()))
 			}
+			// Nothing else is materializable. A device node or a pipe
+			// reached directly is skipped below, but a link is followed
+			// only to a regular file, so one aimed at a special file is
+			// as much an incomplete set as an unresolvable one.
 			if !info.Mode().IsRegular() {
-				return fmt.Errorf("symlink %s resolves to a special file (%s); only a link to a regular file is served", childSrc, info.Mode())
+				return fmt.Errorf("symlink %s resolves to a special file (%s); only a link to a regular file is served", path.Join(srcPath, e.Name()), info.Mode())
 			}
 		}
 		switch {
 		case info.IsDir():
-			sub, err := mergeChild(dir, newDir(e.Name(), dirOrigin(layer, childSrc)), childTarget, nil)
+			sub, err := mergeChild(dir, newDir(e.Name(), originOf(kind, layer, childSrc)), childTarget, nil)
 			if err != nil {
 				return err
 			}
-			if err := t.walkDir(set, layer, root, fsys, childSrc, childTarget, sub); err != nil {
+			if err := t.walkFS(set, layer, src, kind, childSrc, childTarget, sub); err != nil {
 				return err
 			}
 		case info.Mode().IsRegular():
-			// A directory layer reports no owner: the tree is read-only
-			// and the host's uid/gid say nothing about the media.
+			uid, gid, nlink := ownerOf(info)
 			f := &node{
 				name:   e.Name(),
-				origin: dirOrigin(layer, childSrc),
+				origin: originOf(kind, layer, childSrc),
 				perm:   info.Mode().Perm(),
 				size:   info.Size(),
 				mtime:  info.ModTime(),
-				nlink:  1,
-				root:   root,
+				uid:    uid,
+				gid:    gid,
+				nlink:  nlink,
+				fsys:   src.fsys,
 			}
 			if _, err := mergeChild(dir, f, childTarget, set.Collisions); err != nil {
 				return err
@@ -328,12 +259,67 @@ func (t *Tree) walkDir(set SetSpec, layer LayerSpec, root *os.Root, fsys fs.FS, 
 	return nil
 }
 
-func imageOrigin(layer LayerSpec, srcPath string) Origin {
-	return Origin{Kind: OriginImage, Source: layer.Name, Path: srcPath}
+// resolveLink follows a symlink within its own source, up to maxSymlinks
+// hops, and returns the resolved file's info and path. A relative target
+// resolves against the link's directory and an absolute one against the
+// source root, so no target can name anything outside the source. A target
+// that does not resolve is an error, because serving the set without it
+// would quietly misreport what the media holds. Errors name the link the
+// walk started from, not the intermediate path that following mutated it to.
+func resolveLink(fsys fs.FS, name string) (fs.FileInfo, string, error) {
+	orig := name
+	for hops := 0; ; hops++ {
+		if hops > maxSymlinks {
+			return nil, "", fmt.Errorf("symlink %s: too many levels of symbolic links", orig)
+		}
+		info, err := fs.Stat(fsys, name)
+		if err != nil {
+			return nil, "", fmt.Errorf("symlink %s does not resolve within the source: %w", orig, err)
+		}
+		if info.Mode()&fs.ModeSymlink == 0 {
+			return info, name, nil
+		}
+		target, err := fs.ReadLink(fsys, name)
+		if err != nil {
+			return nil, "", fmt.Errorf("symlink %s: %w", orig, err)
+		}
+		if path.IsAbs(target) {
+			name = path.Clean(strings.TrimPrefix(target, "/"))
+			if name == "" || name == "." {
+				name = "."
+			}
+		} else {
+			name = path.Join(path.Dir(name), target)
+		}
+	}
 }
 
-func dirOrigin(layer LayerSpec, srcPath string) Origin {
-	return Origin{Kind: OriginDirectory, Source: layer.Name, Path: srcPath}
+// statFollow stats a path, following it if it is itself a symlink, so a
+// dist or stand directory reached through a link is walked as its target.
+func statFollow(fsys fs.FS, name string) (fs.FileInfo, string, error) {
+	info, err := fs.Stat(fsys, name)
+	if err != nil {
+		return nil, "", err
+	}
+	if info.Mode()&fs.ModeSymlink == 0 {
+		return info, name, nil
+	}
+	return resolveLink(fsys, name)
+}
+
+// ownerOf reads the owner an EFS source reports through Sys(); a directory
+// layer reports none, so its files stay unowned with a single link.
+func ownerOf(info fs.FileInfo) (uid, gid uint32, nlink int) {
+	if st, ok := info.Sys().(*efs.Stat); ok {
+		return uint32(st.UID), uint32(st.GID), int(st.Nlink)
+	}
+	return 0, 0, 1
+}
+
+// originOf builds the provenance for a walked path: the kind of source,
+// the layer name, and the source-relative path the bytes live at.
+func originOf(kind OriginKind, layer LayerSpec, srcPath string) Origin {
+	return Origin{Kind: kind, Source: layer.Name, Path: srcPath}
 }
 
 // ensureDir returns the directory node at a logical path, creating it and
@@ -476,35 +462,4 @@ func (t *Tree) checkCollisions(set SetSpec) error {
 		}
 	}
 	return nil
-}
-
-// lookupFollow resolves an in-image path, following up to depth symlinks.
-// A relative target resolves against the link's own directory and an
-// absolute one against the image root, so no target can name anything
-// outside the image. It returns the resolved path too, because that is
-// where the bytes actually live.
-func lookupFollow(fsys *efs.FS, p string, depth int) (*efs.Inode, string, error) {
-	p = path.Clean("/" + p)
-	for {
-		ino, err := fsys.Lookup(p)
-		if err != nil {
-			return nil, "", err
-		}
-		if !ino.IsSymlink() {
-			return ino, strings.TrimPrefix(p, "/"), nil
-		}
-		if depth == 0 {
-			return nil, "", fmt.Errorf("%s: too many levels of symbolic links", p)
-		}
-		depth--
-		target, err := fsys.Readlink(ino)
-		if err != nil {
-			return nil, "", err
-		}
-		if strings.HasPrefix(target, "/") {
-			p = path.Clean(target)
-		} else {
-			p = path.Clean(path.Dir(p) + "/" + target)
-		}
-	}
 }
