@@ -3,10 +3,9 @@ package vfs
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -65,10 +64,8 @@ type node struct {
 
 	children map[string]*node // directories
 
-	image *efs.FS    // image-backed files: the filesystem and inode
-	inode *efs.Inode //
-	root  *os.Root   // directory-backed files, read at origin.Path
-	data  []byte     // generated files
+	fsys fs.FS  // backed files: the source filesystem, read at origin.Path
+	data []byte // generated files
 }
 
 // newDir makes a merged directory node. A merge of layers has no inode of
@@ -245,18 +242,19 @@ func (n *node) open() (fs.File, error) {
 }
 
 func (n *node) openRegular() (File, error) {
-	switch n.origin.Kind {
-	case OriginImage:
-		return &imageFile{n: n}, nil
-	case OriginDirectory:
-		f, err := n.root.Open(filepath.FromSlash(n.origin.Path))
-		if err != nil {
-			return nil, err
-		}
-		return &diskFile{n: n, f: f}, nil
-	default:
+	if n.origin.Kind == OriginGenerated {
 		return &memFile{n: n, r: bytes.NewReader(n.data)}, nil
 	}
+	f, err := n.fsys.Open(n.origin.Path)
+	if err != nil {
+		return nil, err
+	}
+	ra, ok := f.(io.ReaderAt)
+	if !ok {
+		f.Close()
+		return nil, fmt.Errorf("%s: source file does not support random access", n.origin.Path)
+	}
+	return &fsFile{n: n, f: f, ra: ra}, nil
 }
 
 // fileInfo is a node's fs.FileInfo. A directory reports a fixed
@@ -318,39 +316,20 @@ func (d *dirFile) ReadDir(count int) ([]fs.DirEntry, error) {
 	return rest[:count], nil
 }
 
-// imageFile reads a regular file straight out of its EFS image; nothing
-// is buffered, so serving a 600MB product file costs no memory.
-type imageFile struct {
-	n   *node
-	off int64
+// fsFile reads a backed regular file from its source filesystem. The same
+// opened file provides both the sequential and the random-access reads, so
+// serving a 600MB product file buffers nothing.
+type fsFile struct {
+	n  *node
+	f  fs.File
+	ra io.ReaderAt
 }
 
-func (f *imageFile) Stat() (fs.FileInfo, error) { return fileInfo{f.n}, nil }
-func (f *imageFile) Close() error               { return nil }
-func (f *imageFile) Size() int64                { return f.n.size }
-
-func (f *imageFile) Read(p []byte) (int, error) {
-	n, err := f.n.image.ReadAt(f.n.inode, p, f.off)
-	f.off += int64(n)
-	return n, err
-}
-
-func (f *imageFile) ReadAt(p []byte, off int64) (int, error) {
-	return f.n.image.ReadAt(f.n.inode, p, off)
-}
-
-// diskFile reads a regular file from a directory layer, through the
-// os.Root that bounds it.
-type diskFile struct {
-	n *node
-	f *os.File
-}
-
-func (f *diskFile) Stat() (fs.FileInfo, error)              { return fileInfo{f.n}, nil }
-func (f *diskFile) Close() error                            { return f.f.Close() }
-func (f *diskFile) Size() int64                             { return f.n.size }
-func (f *diskFile) Read(p []byte) (int, error)              { return f.f.Read(p) }
-func (f *diskFile) ReadAt(p []byte, off int64) (int, error) { return f.f.ReadAt(p, off) }
+func (f *fsFile) Stat() (fs.FileInfo, error)              { return fileInfo{f.n}, nil }
+func (f *fsFile) Close() error                            { return f.f.Close() }
+func (f *fsFile) Size() int64                             { return f.n.size }
+func (f *fsFile) Read(p []byte) (int, error)              { return f.f.Read(p) }
+func (f *fsFile) ReadAt(p []byte, off int64) (int, error) { return f.ra.ReadAt(p, off) }
 
 // memFile serves a generated file's bytes.
 type memFile struct {

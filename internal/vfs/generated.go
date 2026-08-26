@@ -42,7 +42,7 @@ func (t *Tree) AddGenerated(name, generator string, content []byte) error {
 	n.mtime = time.Time{}
 	n.nlink = 1
 	n.uid, n.gid = 0, 0
-	n.image, n.inode, n.root = nil, nil, nil
+	n.fsys = nil
 	t.number()
 	return nil
 }
