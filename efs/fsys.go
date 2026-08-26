@@ -137,6 +137,13 @@ func (i fsInfo) Mode() fs.FileMode {
 		m |= fs.ModeDir
 	case i.ino.IsSymlink():
 		m |= fs.ModeSymlink
+	case !i.ino.IsRegular():
+		// A FIFO, device, or socket real media occasionally carries is
+		// none of the three types io/fs names on its own, and it must not
+		// read as a regular file: a caller asserting Mode().IsRegular()
+		// - as the tree walker does when it refuses to serve a link that
+		// lands on a special file - has to see it is not one.
+		m |= fs.ModeIrregular
 	}
 	return m
 }
