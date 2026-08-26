@@ -265,6 +265,19 @@ func (t *Tree) walkFS(set SetSpec, layer LayerSpec, src source, kind OriginKind,
 // that does not resolve is an error, because serving the set without it
 // would quietly misreport what the media holds. Errors name the link the
 // walk started from, not the intermediate path that following mutated it to.
+//
+// A relative target that climbs strictly above the source root and back
+// down onto a real file (dist/link -> ../../foo, with an in-image /foo) is
+// one such error here: path.Join leaves a leading ".." that fs.ValidPath
+// refuses, so the next fs.Stat fails before it ever reaches the file. The
+// old EFS walker resolved names in an absolute image namespace, where
+// path.Clean simply clamps a "/.." at the root, and would have served it.
+// That divergence is deliberate, not a regression: refusing the escape
+// instead of silently clamping it matches this package's fail-rather-
+// than-guess stance, and no real IRIX install media links above its own
+// dist, so it is unobservable in practice. A directory layer never sees
+// this either way - os.Root already refuses any target that would leave
+// the layer, before resolveLink runs.
 func resolveLink(fsys fs.FS, name string) (fs.FileInfo, string, error) {
 	orig := name
 	for hops := 0; ; hops++ {
