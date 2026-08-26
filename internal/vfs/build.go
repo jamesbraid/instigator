@@ -325,7 +325,8 @@ func statFollow(fsys fs.FS, name string) (fs.FileInfo, string, error) {
 // setuid, setgid, and sticky bits an EFS regular file may carry, and the
 // tree serves those bits as the media holds them. A directory layer
 // reports no Sys() owner and never carried the extra bits, so its files
-// stay unowned with a single link and the ordinary 0o777 perm.
+// stay unowned with a single link and the low nine permission bits
+// info.Mode().Perm() already reports.
 func ownerOf(info fs.FileInfo) (uid, gid uint32, nlink int, perm fs.FileMode) {
 	if st, ok := info.Sys().(*efs.Stat); ok {
 		return uint32(st.UID), uint32(st.GID), int(st.Nlink), fs.FileMode(st.Mode & 0o7777)
