@@ -30,8 +30,8 @@ func TestBuildRejectsSpecialFileLinksInDirectoryLayers(t *testing.T) {
 
 	_, err := Build([]SetSpec{{
 		Name:   "foundations",
-		Layers: []LayerSpec{{Name: "found", Dir: layer}},
-	}})
+		Layers: []LayerSpec{{Name: "found", Source: layer}},
+	}}, localResolver{})
 	if err == nil {
 		t.Fatal("Build accepted a layer whose symlink resolves to a named pipe")
 	}
@@ -48,7 +48,7 @@ func TestBuildRejectsSpecialFileLinksInDirectoryLayers(t *testing.T) {
 	}
 	tree := build(t, []SetSpec{{
 		Name:   "foundations",
-		Layers: []LayerSpec{{Name: "found", Dir: layer}},
+		Layers: []LayerSpec{{Name: "found", Source: layer}},
 	}})
 	if got := dirNames(t, tree, "foundations/dist"); !equalStrings(got, []string{"foundation.sw"}) {
 		t.Fatalf("ReadDir = %v, want [foundation.sw]: a bare special file is skipped, not served", got)

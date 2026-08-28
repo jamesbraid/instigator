@@ -98,10 +98,36 @@ func makeDir(t *testing.T, dir string, files map[string]string) string {
 	return dir
 }
 
+// localResolver opens a local source the way internal/source does for a
+// local path, without importing that package - it imports this one, so a
+// test that imported it back would be an import cycle. A directory becomes an
+// os.OpenRoot read-only view; a file becomes an EFS image. sha256 is ignored:
+// local sources are not verified.
+type localResolver struct{}
+
+func (localResolver) Resolve(ref, sha256 string) (Resolved, error) {
+	info, err := os.Stat(ref)
+	if err != nil {
+		return Resolved{}, err
+	}
+	if info.IsDir() {
+		root, err := os.OpenRoot(ref)
+		if err != nil {
+			return Resolved{}, err
+		}
+		return Resolved{FS: root.FS(), Kind: OriginDirectory, Closer: root}, nil
+	}
+	disc, err := OpenImage(ref)
+	if err != nil {
+		return Resolved{}, err
+	}
+	return Resolved{FS: disc.FSys(), Kind: OriginImage, Closer: disc}, nil
+}
+
 // build assembles a tree and closes it when the test ends.
 func build(t *testing.T, sets []SetSpec) *Tree {
 	t.Helper()
-	tree, err := Build(sets)
+	tree, err := Build(sets, localResolver{})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -163,13 +189,13 @@ func treePaths(t *testing.T, tree *Tree) []string {
 // merged like any other, and its stand served at the set's stand so the
 // PROM can fetch fx.64.
 func bootLayer(name, image string) LayerSpec {
-	return LayerSpec{Name: name, Image: image, Boot: true}
+	return LayerSpec{Name: name, Source: image, Boot: true}
 }
 
 // distLayer is the shape every other layer uses: its dist contributed to
 // the set's own dist, nothing else.
 func distLayer(name, image string) LayerSpec {
-	return LayerSpec{Name: name, Image: image}
+	return LayerSpec{Name: name, Source: image}
 }
 
 func equalStrings(a, b []string) bool {
