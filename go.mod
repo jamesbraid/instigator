@@ -3,7 +3,6 @@ module github.com/jamesbraid/instigator
 go 1.26
 
 require (
-	github.com/avvmoto/buf-readerat v0.0.0-20171115124131-a17c8cb89270
 	github.com/cavaliergopher/grab/v3 v3.0.1
 	github.com/hashicorp/go-extract v1.1.5
 	github.com/snabb/httpreaderat v1.0.4

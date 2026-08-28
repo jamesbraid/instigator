@@ -13,10 +13,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
-	bufra "github.com/avvmoto/buf-readerat"
 	"github.com/cavaliergopher/grab/v3"
 	extract "github.com/hashicorp/go-extract"
 	"github.com/snabb/httpreaderat"
@@ -295,14 +293,14 @@ func (r *Resolver) resolveRaw(ctx context.Context, ref string, u *url.URL, sha25
 		store.Close()
 		return vfs.Resolved{}, fmt.Errorf("source: fetch %s: %w", SafeURL(ref), unwrapURLErr(err))
 	}
-	// Coalesce efs's small scattered reads into 1 MiB range requests, then
-	// serialize access: buf-readerat keeps one shared buffer and offset with no
-	// locking, but this reader backs a single Resolved.FS that is read
-	// concurrently at serve time - TFTP, NFS and rsh each read it from their own
-	// goroutines. Without the guard two far-apart ReadAts race on that buffer
-	// and can hand the OS installer the wrong bytes.
-	buf := bufra.NewBufReaderAt(hra, 1<<20)
-	disc, err := vfs.OpenImageReader(&syncReaderAt{r: buf}, store, SafeURL(ref))
+	// Coalesce efs's small scattered reads into 1 MiB aligned chunks, cached
+	// so each is fetched at most once. httpreaderat owns the range GETs and is
+	// itself concurrency-safe; cachingReaderAt adds the chunk cache and is
+	// thread-safe by construction, which this reader must be - it backs a
+	// single Resolved.FS read concurrently at serve time, TFTP, NFS and rsh
+	// each reading it from their own goroutines.
+	reader := newCachingReaderAt(hra, 1<<20)
+	disc, err := vfs.OpenImageReader(reader, store, SafeURL(ref))
 	if err != nil {
 		store.Close()
 		return vfs.Resolved{}, fmt.Errorf("source: %w", err)
@@ -366,20 +364,3 @@ func cleanup(c io.Closer, tmp string) io.Closer {
 type closerFunc func() error
 
 func (f closerFunc) Close() error { return f() }
-
-// syncReaderAt serializes ReadAt on an io.ReaderAt whose own ReadAt is not safe
-// for concurrent use. It guards the buffering range reader (buf-readerat),
-// which mutates one shared buffer, offset and error without locking, so the
-// concurrent reads a served image FS takes never corrupt each other.
-// httpreaderat's own ReadAt is already concurrency-safe; only the buffering
-// layer above it needs this lock.
-type syncReaderAt struct {
-	mu sync.Mutex
-	r  io.ReaderAt
-}
-
-func (s *syncReaderAt) ReadAt(p []byte, off int64) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.r.ReadAt(p, off)
-}
