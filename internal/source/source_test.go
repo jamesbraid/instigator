@@ -3,6 +3,8 @@ package source
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -176,19 +178,20 @@ func TestResolveMaliciousArchiveContained(t *testing.T) {
 	}
 }
 
-// TestResolveForceWholeOnRangeServer: with ForceWhole set, a range-capable
-// server is still fetched whole and opened from the cache as an OriginImage,
-// never taking the range branch. Kind and content alone cannot tell the
-// branches apart (both yield an OriginImage serving the same bytes), so this
-// asserts the two side effects only the whole-file branch produces: exactly
-// one fetchWhole GET with no Range header, and a populated CacheDir. Either
-// would fail if ForceWhole were dropped or the condition inverted.
-func TestResolveForceWholeOnRangeServer(t *testing.T) {
+// TestResolveRawImageWithChecksumFetchesWhole: a raw image given an expected
+// sha256 is fetched whole and opened from the cache as an OriginImage, never
+// taking the range branch - verifying a digest means reading every byte, so
+// there is nothing to gain by ranging. The server honours Range, so absent the
+// digest the resolver would read it by Range-bearing chunk GETs and never issue
+// a Range-less fetch. Kind and content alone cannot tell the branches apart
+// (both yield an OriginImage serving the same bytes), so this asserts the two
+// side effects only the whole-file branch produces: exactly one GET with no
+// Range header, and a populated CacheDir.
+func TestResolveRawImageWithChecksumFetchesWhole(t *testing.T) {
 	raw := efsImageDistSA(t)
+	sum := sha256.Sum256(raw)
+	digest := hex.EncodeToString(sum[:])
 
-	// ServeContent honours Range, so absent ForceWhole the resolver would read
-	// this by Range-bearing chunk GETs and never issue a Range-less fetch. A
-	// no-Range GET here is the whole-file fetch; the probe carries Range.
 	var noRangeFetches atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Range") == "" {
@@ -199,8 +202,8 @@ func TestResolveForceWholeOnRangeServer(t *testing.T) {
 	defer srv.Close()
 
 	cacheDir := t.TempDir()
-	r := New(Options{CacheDir: cacheDir, Client: srv.Client(), ForceWhole: true})
-	res, err := r.Resolve(srv.URL+"/tools.image", "")
+	r := New(Options{CacheDir: cacheDir, Client: srv.Client()})
+	res, err := r.Resolve(srv.URL+"/tools.image", digest)
 	if err != nil || res.Kind != vfs.OriginImage {
 		t.Fatalf("kind=%v err=%v", res.Kind, err)
 	}
@@ -211,10 +214,29 @@ func TestResolveForceWholeOnRangeServer(t *testing.T) {
 	}
 
 	if got := noRangeFetches.Load(); got != 1 {
-		t.Errorf("no-Range full fetches=%d, want 1 (ForceWhole must fetch whole, not by range)", got)
+		t.Errorf("no-Range full fetches=%d, want 1 (a digest must fetch whole, not by range)", got)
 	}
 	if !cacheHasFile(t, cacheDir) {
-		t.Errorf("CacheDir %s is empty; ForceWhole did not cache a whole-file fetch", cacheDir)
+		t.Errorf("CacheDir %s is empty; the digested fetch did not cache a whole-file download", cacheDir)
+	}
+}
+
+// TestResolveRawImageChecksumMismatch: a raw image whose bytes do not match the
+// given sha256 is rejected - Resolve errors and nothing is served - proving the
+// digest is actually verified, not merely a signal to fetch whole.
+func TestResolveRawImageChecksumMismatch(t *testing.T) {
+	raw := efsImageDistSA(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.ServeContent(w, r, "tools.image", time.Time{}, bytes.NewReader(raw))
+	}))
+	defer srv.Close()
+
+	wrong := hex.EncodeToString(bytes.Repeat([]byte{0xab}, sha256.Size))
+	r := New(Options{CacheDir: t.TempDir(), Client: srv.Client()})
+	res, err := r.Resolve(srv.URL+"/tools.image", wrong)
+	if err == nil {
+		res.Closer.Close()
+		t.Fatal("Resolve accepted an image whose sha256 did not match; want rejection")
 	}
 }
 

@@ -108,13 +108,16 @@ path. Identical duplicates are accepted.
 `source:` also accepts an `http(s)://` URL. A `.tar.gz`/`.tgz`/`.tar`/`.gz`
 archive is fetched whole and unpacked. A raw `.image` on a server that
 supports HTTP byte ranges is read lazily, so an install only pulls the bytes
-it actually touches. Private hosts need a top-level `credentials:` entry,
-matched by host, for HTTP Basic auth. A `${VAR}` password is expanded from
-the environment at config load, a literal password is used as-is. `sha256:`
-verifies a whole-file fetch and doesn't apply to a lazy range read. Fetched
-archives and extracted trees are cached under `cache_dir:` (default: the
-user cache dir, or `/var/cache/instigator` when there's no `HOME`) and
-reused across runs.
+it actually touches; its in-memory chunk cache is bounded, so serving a large
+image stays within a fixed memory budget. Private hosts need a top-level
+`credentials:` entry, matched by host, for HTTP Basic auth. A `${VAR}`
+password is expanded from the environment at config load, a literal password
+is used as-is. `sha256:` verifies a layer against its expected digest; since
+that means reading every byte, a raw `.image` given a `sha256:` is fetched
+whole and checked rather than read by range (archives are always fetched
+whole and verified). Fetched archives and extracted trees are cached under
+`cache_dir:` (default: the user cache dir, or `/var/cache/instigator` when
+there's no `HOME`) and reused across runs.
 
 The complete example also shows client filtering, service toggles, and the
 low TFTP transfer-port range required by SGI PROMs.
