@@ -351,3 +351,75 @@ func TestFetchCacheKeyedOnFullURL(t *testing.T) {
 		t.Errorf("6.5.22/disc1.tar.gz served %q, want 6.5.22 (basename cache collision?)", got)
 	}
 }
+
+// TestClientStripsAuthOnCrossHostRedirect: a source that 302s to a different
+// host:port must not carry the Authorization header along. net/http compares
+// only hostnames, so it would forward the header across a port change on the
+// same host; the resolver's CheckRedirect strips it. The two httptest servers
+// share the 127.0.0.1 hostname and differ only in port, exactly the case
+// net/http would not catch on its own.
+func TestClientStripsAuthOnCrossHostRedirect(t *testing.T) {
+	gotAuth := make(chan string, 1)
+	dest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth <- r.Header.Get("Authorization")
+		w.Write([]byte("ok"))
+	}))
+	defer dest.Close()
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, dest.URL+"/next", http.StatusFound)
+	}))
+	defer src.Close()
+
+	r := New(Options{CacheDir: t.TempDir()})
+	req, _ := http.NewRequest(http.MethodGet, src.URL+"/start", nil)
+	req.Header.Set("Authorization", "Bearer sekret")
+	resp, err := r.client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case got := <-gotAuth:
+		if got != "" {
+			t.Errorf("cross-host redirect leaked Authorization: %q", got)
+		}
+	default:
+		t.Fatal("redirect target was never reached")
+	}
+}
+
+// TestClientKeepsAuthOnSameHostRedirect: a redirect that stays on the same
+// host:port must keep the Authorization header, so a source that internally
+// redirects to another path of itself still authenticates. This is the guard
+// against a too-broad strip that would break legitimate same-origin redirects.
+func TestClientKeepsAuthOnSameHostRedirect(t *testing.T) {
+	finalAuth := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		finalAuth <- r.Header.Get("Authorization")
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	r := New(Options{CacheDir: t.TempDir()})
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/start", nil)
+	req.Header.Set("Authorization", "Bearer sekret")
+	resp, err := r.client.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case got := <-finalAuth:
+		if got != "Bearer sekret" {
+			t.Errorf("same-host redirect dropped Authorization: got %q, want %q", got, "Bearer sekret")
+		}
+	default:
+		t.Fatal("same-host redirect never reached /final")
+	}
+}

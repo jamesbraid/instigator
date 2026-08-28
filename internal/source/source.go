@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -54,10 +55,21 @@ var _ vfs.Resolver = (*Resolver)(nil)
 
 // New returns a Resolver configured by opts. A nil opts.Client defaults to
 // http.DefaultClient.
+//
+// Both the range reader and grab share one derived *http.Client. It is built
+// fresh rather than mutating opts.Client (often the shared http.DefaultClient),
+// keeping the caller's transport and cookie jar but adding a CheckRedirect that
+// never forwards credentials across a host boundary.
 func New(opts Options) *Resolver {
-	client := opts.Client
-	if client == nil {
-		client = http.DefaultClient
+	base := opts.Client
+	if base == nil {
+		base = http.DefaultClient
+	}
+	client := &http.Client{
+		Transport:     base.Transport,
+		CheckRedirect: stripAuthOnCrossHostRedirect,
+		Jar:           base.Jar,
+		Timeout:       base.Timeout,
 	}
 	return &Resolver{
 		cacheDir:   opts.CacheDir,
@@ -66,6 +78,27 @@ func New(opts Options) *Resolver {
 		grab:       &grab.Client{HTTPClient: client, UserAgent: "instigator"},
 		forceWhole: opts.ForceWhole,
 	}
+}
+
+// stripAuthOnCrossHostRedirect is the CheckRedirect for the fetch and range
+// client. net/http compares only hostnames when deciding whether to carry the
+// Authorization header across a redirect, so it would forward a credentialed
+// source's token to a different port on the same host - an object store reached
+// at the same address, say. This deletes Authorization whenever the redirect
+// target's host:port differs from the original request's, and still enforces
+// net/http's usual ten-redirect ceiling (a custom CheckRedirect replaces the
+// default limit, so it must impose its own).
+func stripAuthOnCrossHostRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	if req.URL.Host != via[0].URL.Host {
+		req.Header.Del("Authorization")
+	}
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	return nil
 }
 
 // Resolve turns ref into a read-only filesystem. sha256hex, when non-empty,
