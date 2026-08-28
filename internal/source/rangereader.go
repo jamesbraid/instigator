@@ -121,7 +121,11 @@ func (r *rangeReaderAt) Close() error {
 // fetching and caching whatever aligned chunks the read spans. Per the
 // io.ReaderAt contract, a read that runs off the end of the object returns
 // the bytes it could satisfy along with io.EOF; a read starting at or past
-// the end returns 0, io.EOF.
+// the end returns 0, io.EOF. A read that fills p exactly returns a nil
+// error even when it lands on the object's last byte - the same signalling
+// os.File and bytes.Reader use, and what a consumer that treats any non-nil
+// error as fatal (efs's fixed-size block reader does) relies on to accept
+// the final block.
 func (r *rangeReaderAt) ReadAt(p []byte, off int64) (int, error) {
 	if off < 0 {
 		return 0, fmt.Errorf("source: rangeReaderAt: negative offset %d", off)
@@ -166,7 +170,10 @@ func (r *rangeReaderAt) ReadAt(p []byte, off int64) (int, error) {
 		pos += want
 	}
 
-	if int64(off)+int64(n) >= r.size {
+	// Signal io.EOF only on a short read - a request that ran past the end
+	// of the object, so n < len(p). A read that fills p exactly returns nil
+	// even when it ends on the last byte, matching os.File and bytes.Reader.
+	if n < len(p) {
 		return n, io.EOF
 	}
 	return n, nil
