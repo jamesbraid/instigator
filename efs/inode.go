@@ -2,11 +2,18 @@ package efs
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
 )
+
+// ErrNotFound reports that a path component does not name an entry. It is
+// distinct from an I/O or corruption error reading the filesystem, so a
+// caller can map a genuine absence to fs.ErrNotExist while surfacing a real
+// read failure as itself rather than a misleading "not found".
+var ErrNotFound = errors.New("efs: not found")
 
 // RootIno is the inode number of the filesystem root directory.
 const RootIno uint32 = 2
@@ -283,7 +290,7 @@ func (fs *FS) Lookup(path string) (*Inode, error) {
 			}
 		}
 		if next == 0 {
-			return nil, fmt.Errorf("efs: %s: %q not found", path, part)
+			return nil, fmt.Errorf("%w: %s: %q", ErrNotFound, path, part)
 		}
 		if ino, err = fs.Inode(next); err != nil {
 			return nil, err

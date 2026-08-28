@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"sort"
 	"testing"
 
 	"github.com/jamesbraid/instigator/efs"
@@ -122,5 +123,48 @@ func TestFSysInvalidAndMissing(t *testing.T) {
 	}
 	if _, err := fsys.Open("nope"); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("Open(nope) err = %v, want ErrNotExist", err)
+	}
+}
+
+// TestLookupMissingIsErrNotFound pins the sentinel a genuine absence returns,
+// distinct from an I/O or corruption error. The fs view maps only this to
+// fs.ErrNotExist and surfaces every other error as itself, so a failed read
+// (for a remote-backed image, a chunk re-fetch that fails) is never disguised
+// as a missing file.
+func TestLookupMissingIsErrNotFound(t *testing.T) {
+	img := efstest.New()
+	hello := img.AddFile(0o644, []byte("hi"))
+	img.SetRoot(map[string]uint32{"hello.txt": hello})
+	f, err := efs.Open(bytes.NewReader(img.Bytes()), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Lookup("nope"); !errors.Is(err, efs.ErrNotFound) {
+		t.Errorf("Lookup(nope) err = %v, want efs.ErrNotFound", err)
+	}
+}
+
+// TestFSysReadDirSorted: fs.ReadDirFS requires entries sorted by name, but EFS
+// stores them in directory-slot order, so the view must sort them.
+func TestFSysReadDirSorted(t *testing.T) {
+	img := efstest.New()
+	a := img.AddFile(0o644, []byte("a"))
+	m := img.AddFile(0o644, []byte("m"))
+	z := img.AddFile(0o644, []byte("z"))
+	img.SetRoot(map[string]uint32{"zebra": z, "apple": a, "mango": m})
+	f, err := efs.Open(bytes.NewReader(img.Bytes()), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ents, err := fs.ReadDir(f.FSys(), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, len(ents))
+	for i, e := range ents {
+		names[i] = e.Name()
+	}
+	if !sort.StringsAreSorted(names) {
+		t.Errorf("ReadDir entries not sorted by name: %v", names)
 	}
 }
