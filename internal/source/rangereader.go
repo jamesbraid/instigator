@@ -151,7 +151,14 @@ func (r *rangeReaderAt) ReadAt(p []byte, off int64) (int, error) {
 			want = avail
 		}
 		if want <= 0 {
-			break
+			// fetchRange asserts every cached chunk is exactly
+			// hi-lo+1 bytes, so a cached chunk should always cover
+			// through wherever it was fetched to; this means the
+			// chunk on record is shorter than its own index implies.
+			// The io.ReaderAt contract forbids returning n < len(p)
+			// with a nil error, so this is a hard error rather than
+			// a silent short read.
+			return n, fmt.Errorf("source: rangeReaderAt: chunk %d shorter than expected (have %d bytes, need offset %d)", chunkIdx, len(chunk), startInChunk)
 		}
 
 		copy(p[n:], chunk[startInChunk:startInChunk+want])
@@ -221,15 +228,21 @@ func (r *rangeReaderAt) fetchRange(lo, hi int64) ([]byte, error) {
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
-	case http.StatusPartialContent, http.StatusOK:
-		// A 200 (server ignored Range) is accepted here defensively, but
-		// probeRange already established this server honours ranges
-		// before a rangeReaderAt is ever constructed.
+	case http.StatusPartialContent:
+		// expected: the server honoured the Range request.
 	case http.StatusPreconditionFailed:
 		return nil, fmt.Errorf("source: range %s: object changed during read (412 precondition failed)", safeURL(r.url))
 	case http.StatusRequestedRangeNotSatisfiable:
 		return nil, fmt.Errorf("source: range %s: range not satisfiable (416)", safeURL(r.url))
 	default:
+		// This also catches a bare 200: probeRange already established
+		// that this server honours ranges, so a 200 here means it (or
+		// whatever's in front of it) started ignoring Range mid-read. A
+		// 200 to a ranged GET returns the WHOLE object starting at
+		// offset 0, not the [lo,hi] span this chunk's cache slot
+		// assumes — silently accepting it would cache wrong-offset
+		// bytes under this chunk's index and serve them as if they came
+		// from lo. Hard-fail instead of risking that.
 		return nil, fmt.Errorf("source: range %s: unexpected status %s", safeURL(r.url), resp.Status)
 	}
 
@@ -237,6 +250,15 @@ func (r *rangeReaderAt) fetchRange(lo, hi int64) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("source: range %s: read body: %w", safeURL(r.url), err)
 	}
+
+	// Defense in depth against a 206 that claims success but returns the
+	// wrong span: a short or overlong body would otherwise be cached and
+	// silently misindexed by ReadAt, the same corruption a bare 200
+	// causes.
+	if want := hi - lo + 1; int64(len(data)) != want {
+		return nil, fmt.Errorf("source: range %s: chunk length mismatch: got %d bytes, want %d (range bytes=%d-%d)", safeURL(r.url), len(data), want, lo, hi)
+	}
+
 	return data, nil
 }
 
