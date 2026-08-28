@@ -1,9 +1,11 @@
 package efs
 
 import (
+	"errors"
 	"io"
 	"io/fs"
 	"path"
+	"sort"
 	"time"
 )
 
@@ -45,7 +47,14 @@ func (v *fsView) resolve(op, name string) (*Inode, error) {
 	}
 	ino, err := v.fs.Lookup(name)
 	if err != nil {
-		return nil, &fs.PathError{Op: op, Path: name, Err: fs.ErrNotExist}
+		// Only a genuine absence is ErrNotExist. An I/O or corruption error -
+		// including a failed re-fetch of an evicted chunk behind a remote
+		// image - must surface as itself, not as a misleading "not found" that
+		// would make a served file look deleted mid-install.
+		if errors.Is(err, ErrNotFound) {
+			return nil, &fs.PathError{Op: op, Path: name, Err: fs.ErrNotExist}
+		}
+		return nil, &fs.PathError{Op: op, Path: name, Err: err}
 	}
 	return ino, nil
 }
@@ -121,6 +130,9 @@ func (v *fsView) dirEntries(name string, ino *Inode) ([]fs.DirEntry, error) {
 		}
 		out = append(out, fs.FileInfoToDirEntry(fsInfo{name: e.Name, ino: child}))
 	}
+	// fs.ReadDirFS requires entries sorted by name; EFS stores them in
+	// directory-slot order, so sort before returning for a deterministic walk.
+	sort.Slice(out, func(i, j int) bool { return out[i].Name() < out[j].Name() })
 	return out, nil
 }
 
