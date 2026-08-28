@@ -641,3 +641,60 @@ func TestBuildRejectsDuplicateAndMissingSources(t *testing.T) {
 		t.Error("Build accepted a layer whose image does not exist")
 	}
 }
+
+// recordingResolver delegates to localResolver but records the sha256 each
+// source was resolved with, so a test can assert which digest reached Resolve.
+type recordingResolver struct {
+	inner localResolver
+	calls map[string]string
+}
+
+func (r *recordingResolver) Resolve(ref, sha256 string) (Resolved, error) {
+	if r.calls == nil {
+		r.calls = map[string]string{}
+	}
+	r.calls[ref] = sha256
+	return r.inner.Resolve(ref, sha256)
+}
+
+// TestBuildResolvesSharedSourceWithDigest proves a source named by several
+// layers is resolved with the digest any layer pins, whatever the layer order.
+// The first layer here is digestless and a later layer carries the sha256; the
+// single shared resolution must still receive that digest, closing the hole
+// where the digestless resolve would be reused and the digest silently skipped.
+func TestBuildResolvesSharedSourceWithDigest(t *testing.T) {
+	dir := t.TempDir()
+	img := makeImage(t, dir, "disc.image", map[string]string{"dist/foo": "FOO"})
+	const digest = "0000000000000000000000000000000000000000000000000000000000000000"
+
+	rec := &recordingResolver{}
+	tree, err := Build([]SetSpec{{Name: "6.5.30", Layers: []LayerSpec{
+		{Name: "base", Source: img},                   // resolves first, no digest
+		{Name: "pinned", Source: img, Sha256: digest}, // later layer pins the digest
+	}}}, rec)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer tree.Close()
+
+	if got := rec.calls[img]; got != digest {
+		t.Errorf("shared source resolved with sha256 %q, want %q (the earlier digestless layer must not skip the digest)", got, digest)
+	}
+	if len(rec.calls) != 1 {
+		t.Errorf("resolved %d times, want 1 (a shared source is opened once)", len(rec.calls))
+	}
+}
+
+// TestBuildRejectsConflictingDigests: one source pinned to two different sha256
+// values is a config error, not a silently-picked winner.
+func TestBuildRejectsConflictingDigests(t *testing.T) {
+	dir := t.TempDir()
+	img := makeImage(t, dir, "disc.image", map[string]string{"dist/foo": "FOO"})
+	_, err := Build([]SetSpec{{Name: "6.5.30", Layers: []LayerSpec{
+		{Name: "a", Source: img, Sha256: "1111111111111111111111111111111111111111111111111111111111111111"},
+		{Name: "b", Source: img, Sha256: "2222222222222222222222222222222222222222222222222222222222222222"},
+	}}}, localResolver{})
+	if err == nil {
+		t.Fatal("Build accepted conflicting sha256 for one source, want error")
+	}
+}
