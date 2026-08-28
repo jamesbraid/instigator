@@ -29,14 +29,14 @@ const rangeChunkSize = 4 << 20 // 4 MiB
 func probeRange(ctx context.Context, client *http.Client, rawURL string, creds Credentials) (size int64, ranges bool, etag, lastModified string, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return 0, false, "", "", fmt.Errorf("source: probe %s: build request: %w", safeURL(rawURL), unwrapURLErr(err))
+		return 0, false, "", "", fmt.Errorf("source: probe %s: build request: %w", SafeURL(rawURL), unwrapURLErr(err))
 	}
 	creds.apply(req)
 	req.Header.Set("Range", "bytes=0-0")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return 0, false, "", "", fmt.Errorf("source: probe %s: %w", safeURL(rawURL), unwrapURLErr(err))
+		return 0, false, "", "", fmt.Errorf("source: probe %s: %w", SafeURL(rawURL), unwrapURLErr(err))
 	}
 	defer resp.Body.Close()
 
@@ -47,13 +47,13 @@ func probeRange(ctx context.Context, client *http.Client, rawURL string, creds C
 	case http.StatusPartialContent:
 		total, ok := parseContentRangeTotal(resp.Header.Get("Content-Range"))
 		if !ok {
-			return 0, false, "", "", fmt.Errorf("source: probe %s: malformed Content-Range %q", safeURL(rawURL), resp.Header.Get("Content-Range"))
+			return 0, false, "", "", fmt.Errorf("source: probe %s: malformed Content-Range %q", SafeURL(rawURL), resp.Header.Get("Content-Range"))
 		}
 		return total, true, etag, lastModified, nil
 	case http.StatusOK:
 		return resp.ContentLength, false, etag, lastModified, nil
 	default:
-		return 0, false, "", "", fmt.Errorf("source: probe %s: unexpected status %s", safeURL(rawURL), resp.Status)
+		return 0, false, "", "", fmt.Errorf("source: probe %s: unexpected status %s", SafeURL(rawURL), resp.Status)
 	}
 }
 
@@ -222,7 +222,7 @@ func (r *rangeReaderAt) chunk(idx int64) ([]byte, error) {
 func (r *rangeReaderAt) fetchRange(lo, hi int64) ([]byte, error) {
 	req, err := http.NewRequestWithContext(r.ctx, http.MethodGet, r.url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("source: range %s: build request: %w", safeURL(r.url), unwrapURLErr(err))
+		return nil, fmt.Errorf("source: range %s: build request: %w", SafeURL(r.url), unwrapURLErr(err))
 	}
 	r.creds.apply(req)
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", lo, hi))
@@ -230,7 +230,7 @@ func (r *rangeReaderAt) fetchRange(lo, hi int64) ([]byte, error) {
 
 	resp, err := r.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("source: range %s: %w", safeURL(r.url), unwrapURLErr(err))
+		return nil, fmt.Errorf("source: range %s: %w", SafeURL(r.url), unwrapURLErr(err))
 	}
 	defer resp.Body.Close()
 
@@ -238,9 +238,9 @@ func (r *rangeReaderAt) fetchRange(lo, hi int64) ([]byte, error) {
 	case http.StatusPartialContent:
 		// expected: the server honoured the Range request.
 	case http.StatusPreconditionFailed:
-		return nil, fmt.Errorf("source: range %s: object changed during read (412 precondition failed)", safeURL(r.url))
+		return nil, fmt.Errorf("source: range %s: object changed during read (412 precondition failed)", SafeURL(r.url))
 	case http.StatusRequestedRangeNotSatisfiable:
-		return nil, fmt.Errorf("source: range %s: range not satisfiable (416)", safeURL(r.url))
+		return nil, fmt.Errorf("source: range %s: range not satisfiable (416)", SafeURL(r.url))
 	default:
 		// This also catches a bare 200: probeRange already established
 		// that this server honours ranges, so a 200 here means it (or
@@ -250,12 +250,12 @@ func (r *rangeReaderAt) fetchRange(lo, hi int64) ([]byte, error) {
 		// assumes — silently accepting it would cache wrong-offset
 		// bytes under this chunk's index and serve them as if they came
 		// from lo. Hard-fail instead of risking that.
-		return nil, fmt.Errorf("source: range %s: unexpected status %s", safeURL(r.url), resp.Status)
+		return nil, fmt.Errorf("source: range %s: unexpected status %s", SafeURL(r.url), resp.Status)
 	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("source: range %s: read body: %w", safeURL(r.url), err)
+		return nil, fmt.Errorf("source: range %s: read body: %w", SafeURL(r.url), err)
 	}
 
 	// Defense in depth against a 206 that claims success but returns the
@@ -263,7 +263,7 @@ func (r *rangeReaderAt) fetchRange(lo, hi int64) ([]byte, error) {
 	// silently misindexed by ReadAt, the same corruption a bare 200
 	// causes.
 	if want := hi - lo + 1; int64(len(data)) != want {
-		return nil, fmt.Errorf("source: range %s: chunk length mismatch: got %d bytes, want %d (range bytes=%d-%d)", safeURL(r.url), len(data), want, lo, hi)
+		return nil, fmt.Errorf("source: range %s: chunk length mismatch: got %d bytes, want %d (range bytes=%d-%d)", SafeURL(r.url), len(data), want, lo, hi)
 	}
 
 	return data, nil

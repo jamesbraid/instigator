@@ -3,6 +3,9 @@ package serve
 import (
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -268,6 +271,59 @@ install_sets:
 	// the inventory is server log content, not console UX
 	if hasSubstring(c.instructions, "layer base") {
 		t.Errorf("inventory leaked into the operator instructions:\n%s", strings.Join(c.instructions, "\n"))
+	}
+}
+
+// TestStartupLogRedactsURLSourceCredentials covers finding 1: a URL layer
+// source with embedded userinfo and a query-string secret must never reach
+// the leveled server log verbatim - the same redaction the source package
+// applies to its own errors has to hold for the inventory line too.
+func TestStartupLogRedactsURLSourceCredentials(t *testing.T) {
+	img := efstest.New()
+	sa := img.AddFile(0o644, []byte("SA"))
+	img.SetRoot(map[string]uint32{"dist": img.AddDir(map[string]uint32{"sa": sa})})
+	data := img.CDImage(64, nil)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	u.User = url.UserPassword("ci", "s3cret-token")
+	u.RawQuery = "token=abc123"
+	srcURL := u.String()
+
+	yaml := fmt.Sprintf(`
+server_ip: 192.0.2.10
+clients:
+  - {name: octane, mac: "08:00:69:0e:af:12", ip: 127.0.0.1}
+install_sets:
+  - name: "6.5.30"
+    layers:
+      - {name: base, source: %q}
+`, srcURL)
+	cfg, err := config.Parse([]byte(yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Ports = config.Ports{}
+
+	_, c := captureStart(t, cfg)
+
+	for _, l := range c.log {
+		if strings.Contains(l, "s3cret-token") || strings.Contains(l, "ci:") {
+			t.Errorf("server log leaked the source URL's userinfo: %q", l)
+		}
+		if strings.Contains(l, "token=abc123") {
+			t.Errorf("server log leaked the source URL's query string: %q", l)
+		}
+	}
+	if !hasSubstring(c.log, "dist dist") {
+		t.Errorf("server log missing the layer inventory line at all, got:\n%s", strings.Join(c.log, "\n"))
 	}
 }
 

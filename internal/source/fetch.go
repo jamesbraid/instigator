@@ -24,13 +24,13 @@ import (
 func fetchWhole(ctx context.Context, client *http.Client, rawURL string, creds Credentials, sha256hex string, dstFile string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return fmt.Errorf("source: fetch %s: build request: %w", safeURL(rawURL), unwrapURLErr(err))
+		return fmt.Errorf("source: fetch %s: build request: %w", SafeURL(rawURL), unwrapURLErr(err))
 	}
 	creds.apply(req)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("source: fetch %s: %w", safeURL(rawURL), unwrapURLErr(err))
+		return fmt.Errorf("source: fetch %s: %w", SafeURL(rawURL), unwrapURLErr(err))
 	}
 	defer resp.Body.Close()
 
@@ -59,19 +59,24 @@ func fetchWhole(ctx context.Context, client *http.Client, rawURL string, creds C
 	return nil
 }
 
-// safeURL returns rawURL with any userinfo (username and/or password)
-// stripped, safe to fold into an error message or a log line. Basic auth
-// is normally attached out-of-band via creds.apply, never embedded in the
-// URL itself, but this is defense in depth against a caller (or a
-// redirect) that does embed one. If rawURL fails to parse, the raw string
-// is not echoed back either — it could itself carry credentials — so a
-// fixed placeholder is returned instead.
-func safeURL(rawURL string) string {
+// SafeURL returns rawURL with any userinfo (username and/or password) and
+// any query or fragment stripped, safe to fold into an error message, a log
+// line, or a recorded manifest. Basic auth is normally attached out-of-band
+// via creds.apply, never embedded in the URL itself, but this is defense in
+// depth against a caller (or a redirect) that does embed one; the query is
+// stripped too since a bearer token or signed-URL secret travels there just
+// as often as in userinfo. If rawURL fails to parse, the raw string is not
+// echoed back either — it could itself carry credentials — so a fixed
+// placeholder is returned instead.
+func SafeURL(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "<unparseable url>"
 	}
 	u.User = nil
+	u.RawQuery = ""
+	u.Fragment = ""
+	u.RawFragment = ""
 	return u.String()
 }
 
@@ -79,7 +84,7 @@ func safeURL(rawURL string) string {
 // transport errors in. That wrapper's own Error() text embeds the request
 // URL verbatim — net/http redacts only the password, not the username, so
 // it is not safe on its own — so the wrapper is discarded in favor of the
-// safeURL rendering fetchWhole builds itself, keeping only the underlying
+// SafeURL rendering fetchWhole builds itself, keeping only the underlying
 // cause (a parse complaint, a dial failure, and so on), which is not
 // URL-shaped and safe to surface as-is. err is returned unchanged if it is
 // not a *url.Error.

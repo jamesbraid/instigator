@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -578,6 +579,19 @@ func generate(cfg *config.Config, tree *vfs.Tree) (profile, error) {
 	return p, nil
 }
 
+// sanitizeSource returns a layer's Source safe to log or record. A source
+// that parses as an http(s) URL has its userinfo and query/fragment
+// stripped by source.SafeURL - a bare "user:pass@host" or a "?token=..."
+// would otherwise bypass the redaction the source package applies
+// everywhere else it handles a URL. A local path never carries credentials
+// and is returned verbatim.
+func sanitizeSource(src string) string {
+	if u, err := url.Parse(src); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+		return source.SafeURL(src)
+	}
+	return src
+}
+
 // logStartup logs the install-set inventory at INFO - what each set was
 // assembled from, in layer order, which collisions configuration
 // settled, and where a representative file's bytes actually came from -
@@ -600,7 +614,7 @@ func logStartup(cfg *config.Config, tree *vfs.Tree, p profile, logger *logging.L
 				role = ", boot"
 			}
 			logger.Infof("set %s: layer %s  <-  source %q  dist %s%s",
-				set.Name, l.Name, l.Source, l.Dist, role)
+				set.Name, l.Name, sanitizeSource(l.Source), l.Dist, role)
 		}
 		for _, path := range sortedKeys(set.Collisions) {
 			logger.Infof("set %s: collision %s  <-  layer %s", set.Name, path, set.Collisions[path])
@@ -763,15 +777,18 @@ func waitTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
 // buildProvenance assembles run.json's provenance from the config. Each
 // configured layer's Source becomes a media-manifest entry named by its
 // basename - never the operator's absolute path, and never a content hash
-// (hashing multi-GB ISOs at startup is out of scope). Size and mtime come
-// from an os.Stat of Source, so they are populated for a local disc image
-// or directory and simply left zero for a remote URL, which stat cannot see.
+// (hashing multi-GB ISOs at startup is out of scope). A URL source is run
+// through sanitizeSource first, so a basename computed from it can never
+// carry embedded userinfo or a query-string secret into run.json. Size and
+// mtime come from an os.Stat of Source, so they are populated for a local
+// disc image or directory and simply left zero for a remote URL, which stat
+// cannot see.
 func buildProvenance(cfg *config.Config) capture.Provenance {
 	var media []capture.Media
 	for _, set := range cfg.InstallSets {
 		for _, layer := range set.Layers {
 			src := layer.Source
-			m := capture.Media{Media: set.Name, Disc: layer.Name, Image: filepath.Base(src)}
+			m := capture.Media{Media: set.Name, Disc: layer.Name, Image: filepath.Base(sanitizeSource(src))}
 			if fi, err := os.Stat(src); err == nil {
 				m.Size = fi.Size()
 				m.Mtime = fi.ModTime().UTC().Format(time.RFC3339)
