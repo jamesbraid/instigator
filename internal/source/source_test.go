@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +13,28 @@ import (
 	"github.com/jamesbraid/instigator/efs/efstest"
 	"github.com/jamesbraid/instigator/internal/vfs"
 )
+
+// cacheHasFile reports whether dir holds any regular file. Only the
+// cache-backed branches (whole-file fetch, archive extraction) write under a
+// Resolver's CacheDir; the range branch never touches it, so a non-empty
+// CacheDir proves a whole-file fetch ran.
+func cacheHasFile(t *testing.T, dir string) bool {
+	t.Helper()
+	found := false
+	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			found = true
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk cache dir: %v", err)
+	}
+	return found
+}
 
 // efsImage builds a minimal SGI CD image whose EFS root holds one file, the
 // same shape vfs's makeImage produces, so a resolved image has a known path
@@ -140,23 +163,42 @@ func TestResolveRawWholeFileFallback(t *testing.T) {
 
 // TestResolveForceWholeOnRangeServer: with ForceWhole set, a range-capable
 // server is still fetched whole and opened from the cache as an OriginImage,
-// never taking the range branch.
+// never taking the range branch. Kind and content alone cannot tell the
+// branches apart (both yield an OriginImage serving the same bytes), so this
+// asserts the two side effects only the whole-file branch produces: exactly
+// one fetchWhole GET with no Range header, and a populated CacheDir. Either
+// would fail if ForceWhole were dropped or the condition inverted.
 func TestResolveForceWholeOnRangeServer(t *testing.T) {
 	raw := efsImageDistSA(t)
+
+	// ServeContent honours Range, so absent ForceWhole the resolver would read
+	// this by Range-bearing chunk GETs and never issue a Range-less fetch. A
+	// no-Range GET here is the whole-file fetch; the probe carries Range.
+	var noRangeFetches atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Range") == "" {
+			noRangeFetches.Add(1)
+		}
 		http.ServeContent(w, r, "tools.image", time.Time{}, bytes.NewReader(raw))
 	}))
 	defer srv.Close()
 
-	r := New(Options{CacheDir: t.TempDir(), Client: srv.Client(), ForceWhole: true})
+	cacheDir := t.TempDir()
+	r := New(Options{CacheDir: cacheDir, Client: srv.Client(), ForceWhole: true})
 	res, err := r.Resolve(srv.URL+"/tools.image", "")
 	if err != nil || res.Kind != vfs.OriginImage {
 		t.Fatalf("kind=%v err=%v", res.Kind, err)
 	}
 	defer res.Closer.Close()
 
-	b, err := fs.ReadFile(res.FS, "dist/sa")
-	if err != nil || string(b) != "SA" {
+	if b, err := fs.ReadFile(res.FS, "dist/sa"); err != nil || string(b) != "SA" {
 		t.Fatalf("dist/sa=%q err=%v", b, err)
+	}
+
+	if got := noRangeFetches.Load(); got != 1 {
+		t.Errorf("no-Range full fetches=%d, want 1 (ForceWhole must fetch whole, not by range)", got)
+	}
+	if !cacheHasFile(t, cacheDir) {
+		t.Errorf("CacheDir %s is empty; ForceWhole did not cache a whole-file fetch", cacheDir)
 	}
 }
