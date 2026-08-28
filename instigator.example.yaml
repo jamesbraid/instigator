@@ -24,9 +24,9 @@ clients:
 #     username: instigator
 #     password: ${FORGEJO_TOKEN}
 
-# Where fetched archives and extracted trees are cached across runs.
-# Defaults to the user cache dir (/var/cache/instigator in a minimal
-# container with no HOME).
+# Where fetched archives are cached across runs (each run re-extracts an
+# archive fresh; only the download is reused). Defaults to the user cache
+# dir (/var/cache/instigator in a minimal container with no HOME).
 # cache_dir: /var/cache/instigator
 
 # Each install set is one served IRIX distribution tree, assembled by
@@ -108,9 +108,9 @@ install_sets:
   # Optional freeware media are opened last in the proven base profile.
   # This one is fetched over HTTPS instead of read from local disk: the
   # tarball unpacks to disc1/dist/..., so base points at disc1. sha256
-  # is checked against the downloaded file before it's unpacked, and
-  # the extracted tree is kept under cache_dir so a repeat run skips
-  # the fetch.
+  # is checked against the downloaded file before it's unpacked, and the
+  # downloaded archive is kept under cache_dir so a repeat run skips the
+  # fetch (the tree is re-extracted fresh each run).
   - name: freeware
     layers:
       - name: freeware
