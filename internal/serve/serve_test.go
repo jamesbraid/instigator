@@ -109,10 +109,10 @@ clients:
 install_sets:
   - name: "6.5.30"
     layers:
-      - {name: base, image: %q, boot: true}
+      - {name: base, source: %q, boot: true}
   - name: applications
     layers:
-      - {name: apps, image: %q}
+      - {name: apps, source: %q}
 `, baseImage(t, dir, "base.image"), distImage(t, dir, "apps.image", "apps.sw"))
 	c, err := config.Parse([]byte(yaml))
 	if err != nil {

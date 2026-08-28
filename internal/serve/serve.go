@@ -461,30 +461,19 @@ func setSpecs(cfg *config.Config) []vfs.SetSpec {
 	for _, set := range cfg.InstallSets {
 		layers := make([]vfs.LayerSpec, 0, len(set.Layers))
 		for _, l := range set.Layers {
-			// TODO(task-10): config gains source/base/stand/sha256; for now a
-			// layer still names a local image or directory, and either is just
-			// a local path the resolver opens as Source.
 			layers = append(layers, vfs.LayerSpec{
 				Name:   l.Name,
-				Source: firstNonEmpty(l.Image, l.Dir),
+				Source: l.Source,
+				Base:   l.Base,
 				Dist:   l.Dist,
+				Stand:  l.Stand,
+				Sha256: l.Sha256,
 				Boot:   l.Boot,
 			})
 		}
 		sets = append(sets, vfs.SetSpec{Name: set.Name, Layers: layers, Collisions: set.Collisions})
 	}
 	return sets
-}
-
-// firstNonEmpty returns the first non-empty string, bridging a config
-// layer's Image-or-Dir to the resolver's single Source reference.
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // profile is what the enabled sets add up to: the dist path of every set
@@ -583,16 +572,12 @@ func logStartup(cfg *config.Config, tree *vfs.Tree, p profile, logger *logging.L
 		}
 		logger.Infof("set %s: %s, %s", set.Name, state, plural(len(set.Layers), "layer"))
 		for _, l := range set.Layers {
-			kind, source := "image", l.Image
-			if l.Dir != "" {
-				kind, source = "directory", l.Dir
-			}
 			role := ""
 			if l.Boot {
 				role = ", boot"
 			}
-			logger.Infof("set %s: layer %s  <-  %s %q  dist %s%s",
-				set.Name, l.Name, kind, source, l.Dist, role)
+			logger.Infof("set %s: layer %s  <-  source %q  dist %s%s",
+				set.Name, l.Name, l.Source, l.Dist, role)
 		}
 		for _, path := range sortedKeys(set.Collisions) {
 			logger.Infof("set %s: collision %s  <-  layer %s", set.Name, path, set.Collisions[path])
@@ -753,18 +738,16 @@ func waitTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
 }
 
 // buildProvenance assembles run.json's provenance from the config. Each
-// configured layer's backing source (a disc image or a directory) becomes
-// a media-manifest entry with its basename, size, and mtime - never the
-// operator's absolute path, and never a content hash (hashing multi-GB
-// ISOs at startup is out of scope).
+// configured layer's Source becomes a media-manifest entry named by its
+// basename - never the operator's absolute path, and never a content hash
+// (hashing multi-GB ISOs at startup is out of scope). Size and mtime come
+// from an os.Stat of Source, so they are populated for a local disc image
+// or directory and simply left zero for a remote URL, which stat cannot see.
 func buildProvenance(cfg *config.Config) capture.Provenance {
 	var media []capture.Media
 	for _, set := range cfg.InstallSets {
 		for _, layer := range set.Layers {
-			src := layer.Image
-			if src == "" {
-				src = layer.Dir
-			}
+			src := layer.Source
 			m := capture.Media{Media: set.Name, Disc: layer.Name, Image: filepath.Base(src)}
 			if fi, err := os.Stat(src); err == nil {
 				m.Size = fi.Size()

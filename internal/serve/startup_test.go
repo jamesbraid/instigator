@@ -127,16 +127,16 @@ clients:
 install_sets:
   - name: "6.5.30"
     layers:
-      - {name: base, image: %q%s}
+      - {name: base, source: %q%s}
   - name: foundations
     layers:
-      - {name: foundations1, image: %q}
+      - {name: foundations1, source: %q}
   - name: applications
     layers:
-      - {name: apps, image: %q}
+      - {name: apps, source: %q}
   - name: development
     layers:
-      - {name: dev, image: %q}
+      - {name: dev, source: %q}
 `,
 		primaryImage(t, dir, "base.image", withStand), boot,
 		distImage(t, dir, "foundations.image", "eoe.sw"),
@@ -238,11 +238,11 @@ clients:
 install_sets:
   - name: "6.5.30"
     layers:
-      - {name: base, image: %q, boot: true}
+      - {name: base, source: %q, boot: true}
   - name: applications
     layers:
-      - {name: apps1, image: %q}
-      - {name: apps2, image: %q}
+      - {name: apps1, source: %q}
+      - {name: apps2, source: %q}
     collisions: {"applications/dist/inst.README": apps2}
 `, base, one, two)
 	cfg, err := config.Parse([]byte(yaml))
@@ -254,9 +254,9 @@ install_sets:
 	_, c := captureStart(t, cfg)
 	for _, want := range []string{
 		"set 6.5.30: enabled, 1 layer",
-		fmt.Sprintf("set 6.5.30: layer base  <-  image %q  dist dist, boot", base),
+		fmt.Sprintf("set 6.5.30: layer base  <-  source %q  dist dist, boot", base),
 		"set applications: enabled, 2 layers",
-		fmt.Sprintf("set applications: layer apps2  <-  image %q  dist dist", two),
+		fmt.Sprintf("set applications: layer apps2  <-  source %q  dist dist", two),
 		"set applications: collision applications/dist/inst.README  <-  layer apps2",
 		"set 6.5.30: /6.5.30/stand/fx.64  <-  image base:/stand/fx.64",
 		"set 6.5.30: /6.5.30/dist/sa  <-  image base:/dist/sa",
