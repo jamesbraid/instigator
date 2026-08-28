@@ -136,7 +136,7 @@ func (r *Resolver) resolveLocal(ref string) (vfs.Resolved, error) {
 // image it wraps.
 func (r *Resolver) resolveArchive(ctx context.Context, ref string, u *url.URL, sha256hex string) (vfs.Resolved, error) {
 	base := path.Base(u.Path)
-	archive := filepath.Join(r.cacheDir, base)
+	archive := r.cacheDest(ref, base)
 	if err := r.download(ctx, ref, sha256hex, archive); err != nil {
 		return vfs.Resolved{}, err
 	}
@@ -221,7 +221,7 @@ func (r *Resolver) resolveRaw(ctx context.Context, ref string, u *url.URL, sha25
 		if name == "." || name == "/" || name == "" {
 			name = "image"
 		}
-		dst := filepath.Join(r.cacheDir, name)
+		dst := r.cacheDest(ref, name)
 		if err := r.download(ctx, ref, sha256hex, dst); err != nil {
 			return vfs.Resolved{}, err
 		}
@@ -261,6 +261,18 @@ func (r *Resolver) resolveRaw(ctx context.Context, ref string, u *url.URL, sha25
 		return vfs.Resolved{}, fmt.Errorf("source: %w", err)
 	}
 	return vfs.Resolved{FS: disc.FSys(), Kind: vfs.OriginImage, Closer: disc}, nil
+}
+
+// cacheDest maps a source URL to its on-disk cache path: a per-URL
+// subdirectory named by a prefix of the URL's sha256, holding a file named
+// after the URL's basename. Keying on the whole URL, not the basename alone,
+// keeps two sources that share a basename - .../6.5.30/disc1.tar.gz and
+// .../6.5.22/disc1.tar.gz - in separate files, so grab's skip-if-already-
+// complete never serves one version's bytes for the other. The subdirectory
+// is created by download's MkdirAll of the destination's parent.
+func (r *Resolver) cacheDest(rawURL, base string) string {
+	sum := sha256.Sum256([]byte(rawURL))
+	return filepath.Join(r.cacheDir, hex.EncodeToString(sum[:])[:16], base)
 }
 
 // download fetches ref into dst via grab: a complete dst already on disk is
