@@ -1,10 +1,12 @@
 package source
 
 import (
+	"archive/tar"
 	"bytes"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -108,56 +110,66 @@ func TestResolveRemoteRangeImage(t *testing.T) {
 	}
 }
 
-// TestResolveRawWholeFileFallback: a raw image on a server that ignores Range
-// (always 200, whole body) resolves to an OriginImage fetched whole into the
-// cache and opened from there - a distinct closer from the range branch (a
-// Disc over a cache file, not the range reader). A second Resolve of the same
-// URL is served from the cache, issuing no second full download.
-func TestResolveRawWholeFileFallback(t *testing.T) {
+// TestResolveRawNonRangeServer: a raw image on a server that ignores Range
+// (always 200, whole body) still resolves to a readable OriginImage. The
+// range reader (httpreaderat) detects the missing range support from its
+// probe and falls back to buffering the whole object into its Store, so the
+// image opens and a known in-image file reads back. Two resolves in a row
+// both succeed - the fallback is per-resolve, not a persistent cache.
+func TestResolveRawNonRangeServer(t *testing.T) {
 	raw := efsImageDistSA(t)
 
-	// The probe (probeRange) sends "Range: bytes=0-0"; the whole-file fetch
-	// (fetchWhole) sends none. This server ignores Range and always returns
-	// the full body with 200, so probeRange sees ranges=false. Counting by
-	// the presence of the Range header separates the two.
-	var probes, fetches atomic.Int64
+	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Range") != "" {
-			probes.Add(1)
-		} else {
-			fetches.Add(1)
-		}
-		w.Write(raw)
+		hits.Add(1)
+		w.Write(raw) // ignores Range: always the whole body with 200
 	}))
 	defer srv.Close()
 
 	r := New(Options{CacheDir: t.TempDir(), Client: srv.Client()})
 	url := srv.URL + "/tools.image"
 
-	res, err := r.Resolve(url, "")
-	if err != nil || res.Kind != vfs.OriginImage {
-		t.Fatalf("first resolve: kind=%v err=%v", res.Kind, err)
+	for _, pass := range []string{"first", "second"} {
+		res, err := r.Resolve(url, "")
+		if err != nil || res.Kind != vfs.OriginImage {
+			t.Fatalf("%s resolve: kind=%v err=%v", pass, res.Kind, err)
+		}
+		if b, err := fs.ReadFile(res.FS, "dist/sa"); err != nil || string(b) != "SA" {
+			t.Fatalf("%s read: dist/sa=%q err=%v", pass, b, err)
+		}
+		res.Closer.Close()
 	}
-	if b, err := fs.ReadFile(res.FS, "dist/sa"); err != nil || string(b) != "SA" {
-		t.Fatalf("first read: dist/sa=%q err=%v", b, err)
+	if hits.Load() == 0 {
+		t.Fatal("server never hit; resolve did not go remote")
 	}
-	res.Closer.Close()
-	if got := fetches.Load(); got != 1 {
-		t.Fatalf("first resolve: full-body fetches=%d, want 1", got)
-	}
+}
 
-	// Second resolve of the same URL: the cache serves the image, so no new
-	// full-body fetch is issued (the probe still runs to key the cache).
-	res2, err := r.Resolve(url, "")
-	if err != nil || res2.Kind != vfs.OriginImage {
-		t.Fatalf("second resolve: kind=%v err=%v", res2.Kind, err)
+// TestResolveMaliciousArchiveContained: a served .tar.gz whose entries try to
+// escape the extraction directory - a "../" file and a symlink pointing out -
+// must be refused, so Resolve errors and nothing lands outside. This guards
+// our go-extract wiring (default security check on, symlink traversal never
+// enabled), not go-extract itself. The extraction dir sits directly under
+// CacheDir, so a "../ESCAPED" entry that slipped through would surface at
+// CacheDir/ESCAPED.
+func TestResolveMaliciousArchiveContained(t *testing.T) {
+	cacheDir := t.TempDir()
+	data := tarWith(t, []tar.Header{
+		{Name: "../ESCAPED", Typeflag: tar.TypeReg},
+		{Name: "evil-link", Typeflag: tar.TypeSymlink, Linkname: "../ESCAPED"},
+	}, map[string]string{"../ESCAPED": "pwned"})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	r := New(Options{CacheDir: cacheDir, Client: srv.Client()})
+	res, err := r.Resolve(srv.URL+"/evil.tar.gz", "")
+	if err == nil {
+		res.Closer.Close()
+		t.Fatal("Resolve accepted a traversing archive; want rejection")
 	}
-	if b, err := fs.ReadFile(res2.FS, "dist/sa"); err != nil || string(b) != "SA" {
-		t.Fatalf("second read: dist/sa=%q err=%v", b, err)
-	}
-	res2.Closer.Close()
-	if got := fetches.Load(); got != 1 {
-		t.Fatalf("second resolve re-downloaded: full-body fetches=%d, want 1 (cache reuse)", got)
+	if _, statErr := os.Stat(filepath.Join(cacheDir, "ESCAPED")); !os.IsNotExist(statErr) {
+		t.Fatalf("archive escaped the extraction dir: CacheDir/ESCAPED exists (stat err=%v)", statErr)
 	}
 }
 
