@@ -74,12 +74,28 @@ func TestOpenImageReaderMatchesOpenImage(t *testing.T) {
 	}
 	defer got.Close()
 
-	f, err := got.FSys().Open("dist/sa")
+	wantBytes, err := readFile(want, "dist/sa")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read want dist/sa: %v", err)
 	}
-	b, _ := io.ReadAll(f)
-	if string(b) != "SA" {
-		t.Fatalf("dist/sa = %q, want SA", b)
+	if string(wantBytes) != "SA" {
+		t.Fatalf("want dist/sa = %q, want SA", wantBytes)
 	}
+	gotBytes, err := readFile(got, "dist/sa")
+	if err != nil {
+		t.Fatalf("read got dist/sa: %v", err)
+	}
+	if !bytes.Equal(gotBytes, wantBytes) {
+		t.Fatalf("OpenImageReader dist/sa = %q, OpenImage dist/sa = %q", gotBytes, wantBytes)
+	}
+}
+
+// readFile reads name from a Disc's filesystem.
+func readFile(d *Disc, name string) ([]byte, error) {
+	f, err := d.FSys().Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(f)
 }
