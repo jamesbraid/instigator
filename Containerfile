@@ -11,5 +11,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /instigator ./cmd/insti
 FROM scratch
 COPY --from=build /instigator /instigator
 # media is mounted read-only at /media, config at /etc/instigator.yaml
+# CA bundle from the build stage: scratch has none, and an https:// source
+# fetch needs it to verify the server's certificate.
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 ENTRYPOINT ["/instigator"]
 CMD ["serve", "/etc/instigator.yaml"]

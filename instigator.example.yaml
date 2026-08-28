@@ -16,13 +16,29 @@ clients:
     mac: "08:00:69:0e:af:12"
     ip: 192.0.2.30
 
+# HTTP Basic auth for private https:// sources, matched by host. A
+# ${VAR} password is expanded from the environment at config load. A
+# literal password is used as-is.
+# credentials:
+#   - host: media.example.com
+#     username: instigator
+#     password: ${FORGEJO_TOKEN}
+
+# Where fetched archives and extracted trees are cached across runs.
+# Defaults to the user cache dir (/var/cache/instigator in a minimal
+# container with no HOME).
+# cache_dir: /var/cache/instigator
+
 # Each install set is one served IRIX distribution tree, assembled by
-# layering ordered CD images (or pre-extracted directories) on top of
-# each other. No disc name ever appears in the served path - a set's
-# layers merge into one tree at /<name>. Every configured set is always
-# built and browsable. "enabled" defaults to true. The second set below
-# shows the option. It controls only whether a set is offered in the generated
-# admin-source command file. See docs/install.md for the operator guide.
+# layering ordered sources on top of each other. A layer's "source" is
+# a local path (an SGI image or an extracted directory) or an
+# http(s):// URL - instigator auto-detects image vs. directory. No
+# disc name ever appears in the served path - a set's layers merge
+# into one tree at /<name>. Every configured set is always built and
+# browsable. "enabled" defaults to true. The second set below shows
+# the option. It controls only whether a set is offered in the
+# generated admin-source command file. See docs/install.md for the
+# operator guide.
 install_sets:
   # The base release, and the one set the PROM boots. Every layer
   # contributes its distribution directory to this set's single dist;
@@ -33,13 +49,13 @@ install_sets:
   - name: "6.5.30"
     layers:
       - name: overlays1
-        image: /media/6.5.30/overlays1.image
+        source: /media/6.5.30/overlays1.image
         boot: true
       - name: overlays2
-        image: /media/6.5.30/overlays2.image
+        source: /media/6.5.30/overlays2.image
         dist: dist
       - name: overlays3
-        image: /media/6.5.30/overlays3.image
+        source: /media/6.5.30/overlays3.image
         dist: dist
 
   # A second set, opened after the first at the Inst> prompt. Its
@@ -54,12 +70,12 @@ install_sets:
   - name: foundations
     layers:
       - name: foundation1
-        image: /media/foundations/foundation1.image
+        source: /media/foundations/foundation1.image
       - name: foundation2
-        image: /media/foundations/foundation2.image
+        source: /media/foundations/foundation2.image
         dist: dist
       - name: onc3-nfs
-        image: /media/foundations/onc3-nfs.image
+        source: /media/foundations/onc3-nfs.image
         dist: dist6.5
     collisions:
       foundations/dist/inst.README: foundation1
@@ -71,10 +87,10 @@ install_sets:
   - name: development
     layers:
       - name: devlibs
-        image: /media/foundations/devlibs.image
+        source: /media/foundations/devlibs.image
         dist: dist
       - name: devfoundation
-        image: /media/foundations/devfoundation.image
+        source: /media/foundations/devfoundation.image
         dist: dist/dist6.5
 
   # Applications and Complementary Applications are separate sets. They
@@ -82,18 +98,25 @@ install_sets:
   - name: applications
     layers:
       - name: applications
-        image: /media/6.5.30/applications.image
+        source: /media/6.5.30/applications.image
 
   - name: complementary
     layers:
       - name: complementary
-        image: /media/6.5.30/complementary-applications.image
+        source: /media/6.5.30/complementary-applications.image
 
   # Optional freeware media are opened last in the proven base profile.
+  # This one is fetched over HTTPS instead of read from local disk: the
+  # tarball unpacks to disc1/dist/..., so base points at disc1. sha256
+  # is checked against the downloaded file before it's unpacked, and
+  # the extracted tree is kept under cache_dir so a repeat run skips
+  # the fetch.
   - name: freeware
     layers:
       - name: freeware
-        image: /media/irix/freeware-february-2003-part3.image
+        source: https://media.example.com/irix/freeware-february-2003.tar.gz
+        base: disc1
+        sha256: ce4145e1e72c42b371e030480f7e2a15fd6355db2ab642e523741e8deaedcfc0
 
 services:
   bootp: true

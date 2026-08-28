@@ -79,25 +79,42 @@ the multi-homed-host trap that bites laptops.
 ## Configuration
 
 `install_sets` are the logical trees exposed to `inst`. Each set contains
-ordered `layers`, and each layer is either an SGI image or an extracted
-directory:
+ordered `layers`, and each layer names one `source`: a local path or an
+`http(s)://` URL.
 
 ```yaml
 install_sets:
   - name: "6.5.30"
     layers:
       - name: overlays1
-        image: /media/irix/overlays1.image
+        source: /media/irix/overlays1.image
         boot: true
       - name: overlays2
-        image: /media/irix/overlays2.image
+        source: /media/irix/overlays2.image
 ```
 
-Use `dir:` instead of `image:` for an extracted tree. `dist:` maps a media
-directory such as `dist6.5` into the canonical `/<set>/dist` path. `boot: true`
-marks the one layer whose `stand/` files are served to the PROM. `collisions`
-records an explicit winner when two layers contain different bytes at the
-same logical path. Identical duplicates are accepted.
+`instigator` auto-detects whether a source is an SGI image or an extracted
+directory. `base:` names a subdirectory inside the source that holds the
+install tree, for archives that unpack with an extra path component (a
+tarball that unpacks to `disc1/dist/…` needs `base: disc1`). `dist:` and
+`stand:` resolve under `base` and default to `dist` and `stand`. Set `dist:`
+for a media directory such as `dist6.5`. `boot: true` marks the one layer
+whose `stand/` files are served to the PROM. `collisions` records an
+explicit winner when two layers contain different bytes at the same logical
+path. Identical duplicates are accepted.
+
+### Remote sources
+
+`source:` also accepts an `http(s)://` URL. A `.tar.gz`/`.tgz`/`.tar`/`.gz`
+archive is fetched whole and unpacked. A raw `.image` on a server that
+supports HTTP byte ranges is read lazily, so an install only pulls the bytes
+it actually touches. Private hosts need a top-level `credentials:` entry,
+matched by host, for HTTP Basic auth. A `${VAR}` password is expanded from
+the environment at config load, a literal password is used as-is. `sha256:`
+verifies a whole-file fetch and doesn't apply to a lazy range read. Fetched
+archives and extracted trees are cached under `cache_dir:` (default: the
+user cache dir, or `/var/cache/instigator` when there's no `HOME`) and
+reused across runs.
 
 The complete example also shows client filtering, service toggles, and the
 low TFTP transfer-port range required by SGI PROMs.
