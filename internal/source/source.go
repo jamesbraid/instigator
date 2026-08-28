@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	bufra "github.com/avvmoto/buf-readerat"
 	"github.com/cavaliergopher/grab/v3"
@@ -58,15 +59,28 @@ var _ vfs.Resolver = (*Resolver)(nil)
 //
 // Both the range reader and grab share one derived *http.Client. It is built
 // fresh rather than mutating opts.Client (often the shared http.DefaultClient),
-// keeping the caller's transport and cookie jar but adding a CheckRedirect that
-// never forwards credentials across a host boundary.
+// keeping the caller's transport and cookie jar but adding two safeguards: a
+// CheckRedirect that never forwards credentials across a host boundary, and,
+// when the caller supplied no transport, a response-header timeout so a hung
+// server fails fast instead of blocking Resolve forever.
 func New(opts Options) *Resolver {
 	base := opts.Client
 	if base == nil {
 		base = http.DefaultClient
 	}
+	transport := base.Transport
+	if transport == nil {
+		// Clone the standard transport (which already carries a dial timeout)
+		// and add a response-header timeout, so a server that accepts the
+		// connection but never answers is abandoned. A total client.Timeout is
+		// deliberately not set: it would also kill a legitimately slow but
+		// still-progressing large download.
+		t := http.DefaultTransport.(*http.Transport).Clone()
+		t.ResponseHeaderTimeout = 30 * time.Second
+		transport = t
+	}
 	client := &http.Client{
-		Transport:     base.Transport,
+		Transport:     transport,
 		CheckRedirect: stripAuthOnCrossHostRedirect,
 		Jar:           base.Jar,
 		Timeout:       base.Timeout,
