@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -301,4 +302,52 @@ func TestResolveRangeImageConcurrentReadsRace(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
+}
+
+// TestFetchCacheKeyedOnFullURL proves the fetch cache keys on the whole URL,
+// not the basename: two archive URLs that differ only in their version
+// directory - .../6.5.30/disc1.tar.gz and .../6.5.22/disc1.tar.gz - must land
+// in distinct cache files and each serve its own bytes. Keyed on the basename
+// alone they would collide and grab's skip-if-complete would serve the first
+// version's bytes for the second.
+func TestFetchCacheKeyedOnFullURL(t *testing.T) {
+	a := tgz(t, map[string]string{"dist/version": "6.5.30"})
+	b := tgz(t, map[string]string{"dist/version": "6.5.22"})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "6.5.30"):
+			w.Write(a)
+		case strings.Contains(r.URL.Path, "6.5.22"):
+			w.Write(b)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	r := New(Options{CacheDir: t.TempDir(), Client: srv.Client()})
+	url30 := srv.URL + "/6.5.30/disc1.tar.gz"
+	url22 := srv.URL + "/6.5.22/disc1.tar.gz"
+
+	if d30, d22 := r.cacheDest(url30, "disc1.tar.gz"), r.cacheDest(url22, "disc1.tar.gz"); d30 == d22 {
+		t.Fatalf("cacheDest collides for distinct URLs sharing a basename: both %s", d30)
+	}
+
+	res30, err := r.Resolve(url30, "")
+	if err != nil {
+		t.Fatalf("resolve 6.5.30: %v", err)
+	}
+	defer res30.Closer.Close()
+	res22, err := r.Resolve(url22, "")
+	if err != nil {
+		t.Fatalf("resolve 6.5.22: %v", err)
+	}
+	defer res22.Closer.Close()
+
+	if got, _ := fs.ReadFile(res30.FS, "dist/version"); string(got) != "6.5.30" {
+		t.Errorf("6.5.30/disc1.tar.gz served %q, want 6.5.30", got)
+	}
+	if got, _ := fs.ReadFile(res22.FS, "dist/version"); string(got) != "6.5.22" {
+		t.Errorf("6.5.22/disc1.tar.gz served %q, want 6.5.22 (basename cache collision?)", got)
+	}
 }
