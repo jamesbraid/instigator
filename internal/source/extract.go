@@ -22,8 +22,10 @@ const (
 
 // maxExtractBytes bounds the total bytes Extract will write from one
 // archive, so a hostile or corrupt source cannot exhaust the disk via a
-// compression bomb or an unbounded entry stream.
-const maxExtractBytes = 8 << 30
+// compression bomb or an unbounded entry stream. It is a var, not a const,
+// so a test can lower it to make the cap reachable without building a
+// multi-gigabyte archive.
+var maxExtractBytes int64 = 8 << 30
 
 // Extract materializes src into dstDir, dispatching on name's (lowercased)
 // extension: a .tar.gz or .tgz is gunzipped and untarred into dstDir, a
@@ -132,7 +134,7 @@ func untar(src io.Reader, dstDir string) error {
 	defer root.Close()
 
 	tr := tar.NewReader(src)
-	budget := int64(maxExtractBytes)
+	budget := maxExtractBytes
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -174,7 +176,19 @@ func untar(src io.Reader, dstDir string) error {
 			}
 
 		case tar.TypeSymlink:
-			if path.IsAbs(hdr.Linkname) {
+			// hdr.Linkname is checked with the forward-slash-only "path"
+			// package below, which would misread a Windows-style target:
+			// "C:\Windows\x" doesn't look absolute to path.IsAbs, and
+			// "..\..\x" doesn't look like a climbing ".." segment to
+			// path.Clean, since backslash is just an ordinary character to
+			// both. A tar entry's Linkname is only ever meaningfully
+			// forward-slash-separated, so any backslash is rejected
+			// outright rather than guessed at - this also catches a
+			// Windows drive-letter target (which always contains one).
+			if strings.ContainsRune(hdr.Linkname, '\\') {
+				return fmt.Errorf("symlink %s -> %s: backslash is not a supported path separator in a tar entry", name, hdr.Linkname)
+			}
+			if filepath.IsAbs(hdr.Linkname) || path.IsAbs(hdr.Linkname) {
 				return fmt.Errorf("symlink %s -> %s: absolute target escapes the archive root", name, hdr.Linkname)
 			}
 			if target := path.Clean(path.Join(path.Dir(name), hdr.Linkname)); target == ".." || strings.HasPrefix(target, "../") {
