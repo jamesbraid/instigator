@@ -3,11 +3,13 @@ package source
 import (
 	"archive/tar"
 	"bytes"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -213,4 +215,90 @@ func TestResolveForceWholeOnRangeServer(t *testing.T) {
 	if !cacheHasFile(t, cacheDir) {
 		t.Errorf("CacheDir %s is empty; ForceWhole did not cache a whole-file fetch", cacheDir)
 	}
+}
+
+// efsImageFarApartFiles builds a CD image holding n small files whose data
+// blocks are separated by gap bytes, so reading two of them forces ReadAt
+// offsets more than the range reader's 1 MiB buffer apart - the spacing that
+// evicts and refills that shared buffer. Each file's content is a distinct
+// repeated byte, so a torn concurrent read surfaces as wrong bytes, not merely
+// a race-detector report. The gaps are laid down with AddData, which advances
+// the data-block cursor without spending an inode, so the fixture stays within
+// efstest's eight-inode geometry however wide the gaps are. It returns the
+// image and the expected content of each file by name.
+func efsImageFarApartFiles(t *testing.T, n, size, gap int) ([]byte, map[string]string) {
+	t.Helper()
+	b := efstest.New()
+	want := make(map[string]string, n)
+	root := make(map[string]uint32, n)
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("f%d", i)
+		content := string(bytes.Repeat([]byte{byte('A' + i)}, size))
+		root[name] = b.AddFile(0o644, []byte(content))
+		want[name] = content
+		if i < n-1 {
+			b.AddData(make([]byte, gap)) // pushes the next file's blocks past the buffer, no inode spent
+		}
+	}
+	b.SetRoot(root)
+	return b.CDImage(64, nil), want
+}
+
+// TestResolveRangeImageConcurrentReadsRace drives the range path the way the
+// servers do: one Resolved.FS read by many goroutines at once. The image's
+// files sit multiple megabytes apart, so concurrent reads keep evicting and
+// refilling the range reader's shared 1 MiB buffer. Without the syncReaderAt
+// guard around that buffer this races (buf-readerat mutates its buffer, offset
+// and error with no locking) and can return wrong bytes; it must run clean
+// under `go test -race`, with every read yielding its file's exact content.
+func TestResolveRangeImageConcurrentReadsRace(t *testing.T) {
+	const (
+		files = 4
+		size  = 4096
+		gap   = 2 << 20 // 2 MiB, comfortably past the 1 MiB range-reader buffer
+	)
+	raw, want := efsImageFarApartFiles(t, files, size, gap)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// ServeContent honours Range on seekable content, so the resolver takes
+		// the range branch. Zero modtime keeps Last-Modified out of it.
+		http.ServeContent(w, r, "tools.image", time.Time{}, bytes.NewReader(raw))
+	}))
+	defer srv.Close()
+
+	r := New(Options{CacheDir: t.TempDir(), Client: srv.Client()})
+	res, err := r.Resolve(srv.URL+"/tools.image", "")
+	if err != nil || res.Kind != vfs.OriginImage {
+		t.Fatalf("kind=%v err=%v", res.Kind, err)
+	}
+	defer res.Closer.Close()
+
+	names := make([]string, 0, len(want))
+	for name := range want {
+		names = append(names, name)
+	}
+
+	const (
+		workers = 64
+		iters   = 20
+	)
+	var wg sync.WaitGroup
+	for g := 0; g < workers; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				name := names[(g+i)%len(names)]
+				b, err := fs.ReadFile(res.FS, name)
+				if err != nil {
+					t.Errorf("worker %d read %s: %v", g, name, err)
+					return
+				}
+				if string(b) != want[name] {
+					t.Errorf("worker %d read %s: wrong/torn bytes (got %d bytes)", g, name, len(b))
+					return
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
 }
