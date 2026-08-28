@@ -102,18 +102,22 @@ func New(opts Options) *Resolver {
 }
 
 // stripAuthOnCrossHostRedirect is the CheckRedirect for the fetch and range
-// client. net/http compares only hostnames when deciding whether to carry the
-// Authorization header across a redirect, so it would forward a credentialed
-// source's token to a different port on the same host - an object store reached
-// at the same address, say. This deletes Authorization whenever the redirect
-// target's host:port differs from the original request's, and still enforces
-// net/http's usual ten-redirect ceiling (a custom CheckRedirect replaces the
-// default limit, so it must impose its own).
+// client. The Authorization token survives a redirect only to the exact same
+// host:port with no scheme downgrade. net/http compares hostnames alone, so on
+// its own it would carry the token across a port change or, worse, an
+// https->http downgrade that puts Basic credentials on the wire in cleartext
+// (credentials are only ever attached to an https request, so any http target
+// of an originally-https request is a downgrade). This deletes Authorization
+// on a host change or a downgrade, and still enforces net/http's usual
+// ten-redirect ceiling (a custom CheckRedirect replaces the default limit, so
+// it must impose its own).
 func stripAuthOnCrossHostRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) == 0 {
 		return nil
 	}
-	if req.URL.Host != via[0].URL.Host {
+	orig := via[0].URL
+	downgraded := orig.Scheme == "https" && req.URL.Scheme != "https"
+	if req.URL.Host != orig.Host || downgraded {
 		req.Header.Del("Authorization")
 	}
 	if len(via) >= 10 {
@@ -294,11 +298,13 @@ func (r *Resolver) resolveRaw(ctx context.Context, ref string, u *url.URL, sha25
 	}
 	r.creds.apply(req)
 
-	// StoreFile spills the fallback whole download to a temporary file, so a
-	// large non-range image cannot exhaust memory. On the range path the store
-	// stays empty and its Close is a no-op; either way Close is the closer that
-	// frees the reader.
-	store := httpreaderat.NewStoreFile()
+	// The store spills the fallback whole download (only when the server
+	// ignores Range) to a temporary file under cacheDir, so a large non-range
+	// image cannot exhaust memory - and, unlike httpreaderat's own StoreFile,
+	// it does not depend on an OS temp dir, which the scratch image does not
+	// have. On the range path the store stays empty and its Close is a no-op;
+	// either way Close is the closer that frees the reader.
+	store := newCacheStore(r.cacheDir)
 	hra, err := httpreaderat.New(r.client, req, store)
 	if err != nil {
 		store.Close()

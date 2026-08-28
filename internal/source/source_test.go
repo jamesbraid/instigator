@@ -447,3 +447,43 @@ func TestClientKeepsAuthOnSameHostRedirect(t *testing.T) {
 		t.Fatal("same-host redirect never reached /final")
 	}
 }
+
+// TestStripAuthOnCrossHostRedirect exercises the redirect credential policy
+// directly: Authorization survives only a same-host redirect that does not
+// downgrade https to http. A downgrade would put Basic credentials on the wire
+// in cleartext; a host or port change would hand them to a different server.
+func TestStripAuthOnCrossHostRedirect(t *testing.T) {
+	cases := []struct {
+		name     string
+		from, to string
+		wantKeep bool
+	}{
+		{"same host https", "https://media.example/a", "https://media.example/b", true},
+		{"same host http", "http://media.example/a", "http://media.example/b", true},
+		{"downgrade to http", "https://media.example/a", "http://media.example/b", false},
+		{"cross host", "https://media.example/a", "https://other.example/b", false},
+		{"port change", "https://media.example/a", "https://media.example:8443/b", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			orig, err := http.NewRequest(http.MethodGet, tc.from, nil)
+			if err != nil {
+				t.Fatalf("orig request: %v", err)
+			}
+			next, err := http.NewRequest(http.MethodGet, tc.to, nil)
+			if err != nil {
+				t.Fatalf("next request: %v", err)
+			}
+			next.Header.Set("Authorization", "Basic c2VrcmV0")
+			if err := stripAuthOnCrossHostRedirect(next, []*http.Request{orig}); err != nil {
+				t.Fatalf("stripAuthOnCrossHostRedirect: %v", err)
+			}
+			switch got := next.Header.Get("Authorization"); {
+			case tc.wantKeep && got == "":
+				t.Errorf("Authorization was stripped, want kept")
+			case !tc.wantKeep && got != "":
+				t.Errorf("Authorization survived as %q, want stripped", got)
+			}
+		})
+	}
+}
