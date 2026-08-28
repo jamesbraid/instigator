@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"bytes"
 	"io"
 	"os"
 	"path/filepath"
@@ -47,5 +48,38 @@ func TestOpenImageRejectsJunk(t *testing.T) {
 	path := writeImage(t, "junk.iso", make([]byte, 4096))
 	if _, err := OpenImage(path); err == nil {
 		t.Fatal("OpenImage accepted junk")
+	}
+}
+
+// TestOpenImageReaderMatchesOpenImage: an image opened from a bytes.Reader
+// (no file) yields the same tree as one opened from a path, since a later
+// task fetches an image over HTTP and reads it lazily by byte-range rather
+// than from a file.
+func TestOpenImageReaderMatchesOpenImage(t *testing.T) {
+	dir := t.TempDir()
+	path := makeImage(t, dir, "tools.image", map[string]string{"dist/sa": "SA"})
+	want, err := OpenImage(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer want.Close()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := OpenImageReader(bytes.NewReader(raw), io.NopCloser(nil), "tools.image")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Close()
+
+	f, err := got.FSys().Open("dist/sa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(f)
+	if string(b) != "SA" {
+		t.Fatalf("dist/sa = %q, want SA", b)
 	}
 }
