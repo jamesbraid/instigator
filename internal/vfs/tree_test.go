@@ -24,7 +24,7 @@ func standardTree(t *testing.T) *Tree {
 		Name: "6.5.30",
 		Layers: []LayerSpec{
 			bootLayer("tools", img),
-			{Name: "foundations", Dir: extracted},
+			{Name: "foundations", Source: extracted},
 		},
 	}})
 	if err := tree.AddGenerated("install.cmds", "admin-source", []byte("open server:/foundations/dist\n")); err != nil {

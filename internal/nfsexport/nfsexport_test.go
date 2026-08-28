@@ -8,6 +8,7 @@ import (
 
 	"github.com/jamesbraid/instigator/efs/efstest"
 	"github.com/jamesbraid/instigator/internal/nfsexport"
+	"github.com/jamesbraid/instigator/internal/source"
 	"github.com/jamesbraid/instigator/internal/vfs"
 	"github.com/jamesbraid/instigator/nfs"
 )
@@ -37,9 +38,9 @@ func buildTestTree(t *testing.T) *vfs.Tree {
 	tree, err := vfs.Build([]vfs.SetSpec{{
 		Name: "6.5.30",
 		Layers: []vfs.LayerSpec{
-			{Name: "media", Image: imgPath},
+			{Name: "media", Source: imgPath},
 		},
-	}})
+	}}, source.New(source.Options{CacheDir: t.TempDir()}))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -333,12 +334,12 @@ func buildTwoSetTree(t *testing.T) *vfs.Tree {
 
 	tree, err := vfs.Build([]vfs.SetSpec{
 		{Name: "6.5.30", Layers: []vfs.LayerSpec{
-			{Name: "media", Image: imgPath},
+			{Name: "media", Source: imgPath},
 		}},
 		{Name: "applications", Layers: []vfs.LayerSpec{
-			{Name: "apps", Image: imgPath},
+			{Name: "apps", Source: imgPath},
 		}},
-	})
+	}, source.New(source.Options{CacheDir: t.TempDir()}))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

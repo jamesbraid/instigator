@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jamesbraid/instigator/internal/source"
 	"github.com/jamesbraid/instigator/internal/vfs"
 )
 
@@ -117,8 +118,8 @@ func TestRSHRealMediaDD(t *testing.T) {
 	}
 	tree, err := vfs.Build([]vfs.SetSpec{{
 		Name:   "6.5.30",
-		Layers: []vfs.LayerSpec{{Name: "tools", Image: realMediaImage, Boot: true}},
-	}})
+		Layers: []vfs.LayerSpec{{Name: "tools", Source: realMediaImage, Boot: true}},
+	}}, source.New(source.Options{CacheDir: t.TempDir()}))
 	if err != nil {
 		t.Fatal(err)
 	}

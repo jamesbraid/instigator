@@ -36,8 +36,8 @@ func applicationsSpec(dir string, collisions map[string]string) SetSpec {
 	return SetSpec{
 		Name: "applications",
 		Layers: []LayerSpec{
-			{Name: "applications", Image: filepath.Join(dir, "Applications.image")},
-			{Name: "complementary", Image: filepath.Join(dir, "Complementary_Applications.image")},
+			{Name: "applications", Source: filepath.Join(dir, "Applications.image")},
+			{Name: "complementary", Source: filepath.Join(dir, "Complementary_Applications.image")},
 		},
 		Collisions: collisions,
 	}
@@ -52,7 +52,7 @@ func TestRealMediaApplicationsCollisionFailsWithoutOverride(t *testing.T) {
 	if _, err := os.Stat(realMediaDir); err != nil {
 		t.Skip("real IRIX 6.5.30 media not present")
 	}
-	_, err := Build([]SetSpec{applicationsSpec(realMediaDir, nil)})
+	_, err := Build([]SetSpec{applicationsSpec(realMediaDir, nil)}, localResolver{})
 	if err == nil {
 		t.Fatal("Build succeeded over colliding real media; want a differing-collision error")
 	}
@@ -80,7 +80,7 @@ func TestRealMediaApplicationsCollisionOverrideResolves(t *testing.T) {
 	})
 
 	start := time.Now()
-	tree, err := Build([]SetSpec{spec})
+	tree, err := Build([]SetSpec{spec}, localResolver{})
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -126,22 +126,22 @@ const realBaseMediaDir = "/storage/software/os/irix/irix_6.5base_iso"
 func fullProfileSets() []SetSpec {
 	return []SetSpec{
 		{Name: "6.5.30", Layers: []LayerSpec{
-			{Name: "overlays1", Image: filepath.Join(realMediaDir, "Instalation_Tools_and_Overlays1.image"), Boot: true},
-			{Name: "overlays2", Image: filepath.Join(realMediaDir, "Overlays2.image")},
-			{Name: "overlays3", Image: filepath.Join(realMediaDir, "Overlays3.image")},
+			{Name: "overlays1", Source: filepath.Join(realMediaDir, "Instalation_Tools_and_Overlays1.image"), Boot: true},
+			{Name: "overlays2", Source: filepath.Join(realMediaDir, "Overlays2.image")},
+			{Name: "overlays3", Source: filepath.Join(realMediaDir, "Overlays3.image")},
 		}},
 		{Name: "foundations", Layers: []LayerSpec{
-			{Name: "foundation1", Image: filepath.Join(realBaseMediaDir, "irix6.5_foundation1.iso")},
-			{Name: "foundation2", Image: filepath.Join(realBaseMediaDir, "irix6.5_foundation2.iso")},
-			{Name: "nfs", Image: filepath.Join(realBaseMediaDir, "irix6.5_nfs.iso"), Dist: "dist6.5"},
+			{Name: "foundation1", Source: filepath.Join(realBaseMediaDir, "irix6.5_foundation1.iso")},
+			{Name: "foundation2", Source: filepath.Join(realBaseMediaDir, "irix6.5_foundation2.iso")},
+			{Name: "nfs", Source: filepath.Join(realBaseMediaDir, "irix6.5_nfs.iso"), Dist: "dist6.5"},
 		}},
 		applicationsSpec(realMediaDir, map[string]string{
 			realAppsInstREADME: "applications",
 			realAppsSwmgr:      "applications",
 		}),
 		{Name: "development", Layers: []LayerSpec{
-			{Name: "devlibs", Image: filepath.Join(realBaseMediaDir, "irix6.5_devlibs.iso")},
-			{Name: "devfoundation", Image: filepath.Join(realBaseMediaDir, "irix6.5_devfoundation.iso"), Dist: "dist/dist6.5"},
+			{Name: "devlibs", Source: filepath.Join(realBaseMediaDir, "irix6.5_devlibs.iso")},
+			{Name: "devfoundation", Source: filepath.Join(realBaseMediaDir, "irix6.5_devfoundation.iso"), Dist: "dist/dist6.5"},
 		}},
 	}
 }
@@ -170,7 +170,7 @@ func TestRealMediaFullProfileBuild(t *testing.T) {
 	}
 
 	start := time.Now()
-	tree, err := Build(fullProfileSets())
+	tree, err := Build(fullProfileSets(), localResolver{})
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("Build of the four-set profile: %v", err)
@@ -230,7 +230,7 @@ func TestRealMediaOverlayBootPackagePair(t *testing.T) {
 	if _, err := os.Stat(realMediaDir); err != nil {
 		t.Skip("real IRIX 6.5.30 media not present")
 	}
-	tree, err := Build(fullProfileSets())
+	tree, err := Build(fullProfileSets(), localResolver{})
 	if err != nil {
 		t.Fatalf("Build of the four-set profile: %v", err)
 	}

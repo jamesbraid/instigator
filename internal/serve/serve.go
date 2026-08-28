@@ -28,6 +28,7 @@ import (
 	"github.com/jamesbraid/instigator/internal/instcmd"
 	"github.com/jamesbraid/instigator/internal/instscript"
 	"github.com/jamesbraid/instigator/internal/logging"
+	"github.com/jamesbraid/instigator/internal/source"
 	"github.com/jamesbraid/instigator/internal/tftp"
 	"github.com/jamesbraid/instigator/internal/vfs"
 	"github.com/jamesbraid/instigator/rcmd"
@@ -281,7 +282,13 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 	for _, opt := range opts {
 		opt(&o)
 	}
-	tree, err := vfs.Build(setSpecs(cfg))
+	cacheBase, err := os.UserCacheDir()
+	if err != nil {
+		cacheBase = os.TempDir()
+	}
+	// TODO(task-10): wire credentials + cache_dir from config.
+	res := source.New(source.Options{CacheDir: filepath.Join(cacheBase, "instigator")})
+	tree, err := vfs.Build(setSpecs(cfg), res)
 	if err != nil {
 		return nil, err
 	}
@@ -454,17 +461,30 @@ func setSpecs(cfg *config.Config) []vfs.SetSpec {
 	for _, set := range cfg.InstallSets {
 		layers := make([]vfs.LayerSpec, 0, len(set.Layers))
 		for _, l := range set.Layers {
+			// TODO(task-10): config gains source/base/stand/sha256; for now a
+			// layer still names a local image or directory, and either is just
+			// a local path the resolver opens as Source.
 			layers = append(layers, vfs.LayerSpec{
-				Name:  l.Name,
-				Image: l.Image,
-				Dir:   l.Dir,
-				Dist:  l.Dist,
-				Boot:  l.Boot,
+				Name:   l.Name,
+				Source: firstNonEmpty(l.Image, l.Dir),
+				Dist:   l.Dist,
+				Boot:   l.Boot,
 			})
 		}
 		sets = append(sets, vfs.SetSpec{Name: set.Name, Layers: layers, Collisions: set.Collisions})
 	}
 	return sets
+}
+
+// firstNonEmpty returns the first non-empty string, bridging a config
+// layer's Image-or-Dir to the resolver's single Source reference.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // profile is what the enabled sets add up to: the dist path of every set

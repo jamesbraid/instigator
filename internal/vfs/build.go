@@ -5,9 +5,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"os"
 	"path"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -33,8 +31,12 @@ const (
 // Each set becomes a directory holding the ordered merge of its layers'
 // distribution directories at <set>/dist, plus <set>/stand from the set's
 // boot layer if it has one; no disc name appears anywhere in the result.
-// Every source is opened once and stays open for the tree's life, so
+// The resolver r opens each layer's source - local path or remote URL - and
+// every unique source is opened once and stays open for the tree's life, so
 // Close it when done.
+//
+// A layer's Dist and Stand are joined under its Base, so a source whose tree
+// sits below a subdirectory is read as if that subdirectory were the root.
 //
 // Build fails rather than guess: a layer whose source or distribution
 // directory is missing, a boot layer whose source has no stand directory,
@@ -43,9 +45,9 @@ const (
 // delivers, or a symlink that does not resolve, contained, to a regular
 // file all stop the build. Content is read lazily on Open; only files two
 // layers both claim are read here, to compare them.
-func Build(sets []SetSpec) (*Tree, error) {
+func Build(sets []SetSpec, r Resolver) (*Tree, error) {
 	t := &Tree{root: newDir(".", Origin{})}
-	sources := map[string]source{}
+	resolved := map[string]Resolved{}
 
 	for _, set := range sets {
 		if set.Name == "" {
@@ -58,7 +60,7 @@ func Build(sets []SetSpec) (*Tree, error) {
 		}
 		t.root.children[set.Name] = newDir(set.Name, Origin{})
 		for _, layer := range set.Layers {
-			if err := t.addLayer(set, layer, sources); err != nil {
+			if err := t.addLayer(set, layer, r, resolved); err != nil {
 				t.Close()
 				return nil, fmt.Errorf("install set %q: layer %q: %w", set.Name, layer.Name, err)
 			}
@@ -73,101 +75,90 @@ func Build(sets []SetSpec) (*Tree, error) {
 }
 
 // addLayer merges one layer's distribution directory into the set's dist,
-// and for the set's boot layer serves its stand directory alongside.
-func (t *Tree) addLayer(set SetSpec, layer LayerSpec, sources map[string]source) error {
+// and for the set's boot layer serves its stand directory alongside. The
+// resolver opens the layer's source, sharing an already-opened one when a
+// later layer names the same reference, so each unique source is opened once
+// and closed once with the tree.
+func (t *Tree) addLayer(set SetSpec, layer LayerSpec, r Resolver, resolved map[string]Resolved) error {
 	if layer.Name == "" {
 		return fmt.Errorf("layer with no name")
 	}
+	if layer.Source == "" {
+		return fmt.Errorf("names no source")
+	}
+	res, ok := resolved[layer.Source]
+	if !ok {
+		var err error
+		res, err = r.Resolve(layer.Source, layer.Sha256)
+		if err != nil {
+			return err
+		}
+		resolved[layer.Source] = res
+		if res.Closer != nil {
+			t.closers = append(t.closers, res.Closer)
+		}
+	}
+
 	dist, err := cleanDir(layer.Dist)
 	if err != nil {
 		return fmt.Errorf("distribution directory: %w", err)
 	}
-
-	switch {
-	case layer.Image != "" && layer.Dir != "":
-		return fmt.Errorf("names both an image and a directory")
-	case layer.Image != "":
-		src, err := t.openImageSource(layer.Image, sources)
-		if err != nil {
-			return err
-		}
-		return t.addSourceLayer(set, layer, src, dist)
-	case layer.Dir != "":
-		src, err := t.openDirSource(layer.Dir, sources)
-		if err != nil {
-			return err
-		}
-		return t.addSourceLayer(set, layer, src, dist)
-	default:
-		return fmt.Errorf("names neither an image nor a directory")
-	}
-}
-
-// source is one opened layer filesystem: the fs.FS the walker reads. The
-// closer that releases it lives in t.closers, appended alongside.
-type source struct {
-	fsys fs.FS
-}
-
-// openImageSource opens an EFS disc image once and shares it. The Disc
-// stays the closer; its fs view is what the walker reads.
-func (t *Tree) openImageSource(image string, cache map[string]source) (source, error) {
-	key := filepath.Clean(image)
-	if s, ok := cache[key]; ok {
-		return s, nil
-	}
-	d, err := OpenImage(key)
+	distPath, err := underBase(layer.Base, dist)
 	if err != nil {
-		return source{}, err
+		return fmt.Errorf("distribution directory: %w", err)
 	}
-	s := source{fsys: d.FS().FSys()}
-	cache[key] = s
-	t.closers = append(t.closers, d)
-	return s, nil
-}
-
-// openDirSource opens a directory layer under os.OpenRoot, whose fs view
-// keeps a symlink inside it from serving a host path.
-func (t *Tree) openDirSource(dir string, cache map[string]source) (source, error) {
-	key := filepath.Clean(dir)
-	if s, ok := cache[key]; ok {
-		return s, nil
-	}
-	r, err := os.OpenRoot(key)
-	if err != nil {
-		return source{}, err
-	}
-	s := source{fsys: r.FS()}
-	cache[key] = s
-	t.closers = append(t.closers, r)
-	return s, nil
-}
-
-// addSourceLayer merges a layer's distribution directory into the set's
-// dist, and for the set's boot layer serves its stand directory too. The
-// origin kind records which sort of source it was, for provenance.
-func (t *Tree) addSourceLayer(set SetSpec, layer LayerSpec, src source, dist string) error {
-	kind := OriginImage
-	if layer.Dir != "" {
-		kind = OriginDirectory
-	}
-	if err := t.mergeTree(set, layer, src, kind, dist, path.Join(set.Name, distDir)); err != nil {
+	if err := t.mergeTree(set, layer, res.FS, res.Kind, distPath, path.Join(set.Name, distDir)); err != nil {
 		return err
 	}
 	if !layer.Boot {
 		return nil
 	}
-	if _, err := fs.Stat(src.fsys, standDir); err != nil {
+	stand, err := standOr(layer.Stand)
+	if err != nil {
+		return fmt.Errorf("stand directory: %w", err)
+	}
+	standPath, err := underBase(layer.Base, stand)
+	if err != nil {
+		return fmt.Errorf("stand directory: %w", err)
+	}
+	if _, err := fs.Stat(res.FS, standPath); err != nil {
 		return fmt.Errorf("boot layer has no %s directory: %w", standDir, err)
 	}
-	return t.mergeTree(set, layer, src, kind, standDir, path.Join(set.Name, standDir))
+	return t.mergeTree(set, layer, res.FS, res.Kind, standPath, path.Join(set.Name, standDir))
+}
+
+// underBase joins a layer's distribution or stand directory under its base
+// and confirms the result stays a relative path within the source. An empty
+// base leaves dir where it is.
+func underBase(base, dir string) (string, error) {
+	joined := dir
+	if base != "" {
+		joined = path.Join(base, dir)
+	}
+	if !fs.ValidPath(joined) {
+		return "", fmt.Errorf("%q is not a relative path within its source", joined)
+	}
+	return joined, nil
 }
 
 // cleanDir normalizes a configured Dist to an io/fs name; empty means the
 // ordinary "dist", which is what all but the version-stub media use.
 func cleanDir(dir string) (string, error) {
+	return cleanRel(dir, distDir)
+}
+
+// standOr normalizes a configured Stand to an io/fs name; empty means the
+// ordinary "stand", the boot directory every bootable medium ships.
+func standOr(dir string) (string, error) {
+	return cleanRel(dir, standDir)
+}
+
+// cleanRel normalizes a configured relative directory to an io/fs name,
+// defaulting an empty one to def and refusing anything that would climb out
+// of its source.
+func cleanRel(dir, def string) (string, error) {
 	if dir == "" {
-		return distDir, nil
+		return def, nil
 	}
 	clean := path.Clean(dir)
 	if !fs.ValidPath(clean) {
@@ -178,8 +169,8 @@ func cleanDir(dir string) (string, error) {
 
 // mergeTree walks one subtree of a source onto a tree path. srcDir is the
 // directory within the source (dist or stand); target is where it lands.
-func (t *Tree) mergeTree(set SetSpec, layer LayerSpec, src source, kind OriginKind, srcDir, target string) error {
-	info, srcPath, err := statFollow(src.fsys, srcDir)
+func (t *Tree) mergeTree(set SetSpec, layer LayerSpec, fsys fs.FS, kind OriginKind, srcDir, target string) error {
+	info, srcPath, err := statFollow(fsys, srcDir)
 	if err != nil {
 		return err
 	}
@@ -190,11 +181,11 @@ func (t *Tree) mergeTree(set SetSpec, layer LayerSpec, src source, kind OriginKi
 	if err != nil {
 		return err
 	}
-	return t.walkFS(set, layer, src, kind, srcPath, target, dir)
+	return t.walkFS(set, layer, fsys, kind, srcPath, target, dir)
 }
 
-func (t *Tree) walkFS(set SetSpec, layer LayerSpec, src source, kind OriginKind, srcPath, target string, dir *node) error {
-	ents, err := fs.ReadDir(src.fsys, srcPath)
+func (t *Tree) walkFS(set SetSpec, layer LayerSpec, fsys fs.FS, kind OriginKind, srcPath, target string, dir *node) error {
+	ents, err := fs.ReadDir(fsys, srcPath)
 	if err != nil {
 		return fmt.Errorf("%s: %w", srcPath, err)
 	}
@@ -211,7 +202,7 @@ func (t *Tree) walkFS(set SetSpec, layer LayerSpec, src source, kind OriginKind,
 			// that escapes the layer - so one aimed outside simply finds
 			// nothing. Serving the set without it would be a quiet lie
 			// about what the media holds, so resolveLink names the link.
-			info, childSrc, err = resolveLink(src.fsys, childSrc)
+			info, childSrc, err = resolveLink(fsys, childSrc)
 			if err != nil {
 				return err
 			}
@@ -234,7 +225,7 @@ func (t *Tree) walkFS(set SetSpec, layer LayerSpec, src source, kind OriginKind,
 			if err != nil {
 				return err
 			}
-			if err := t.walkFS(set, layer, src, kind, childSrc, childTarget, sub); err != nil {
+			if err := t.walkFS(set, layer, fsys, kind, childSrc, childTarget, sub); err != nil {
 				return err
 			}
 		case info.Mode().IsRegular():
@@ -248,7 +239,7 @@ func (t *Tree) walkFS(set SetSpec, layer LayerSpec, src source, kind OriginKind,
 				uid:    uid,
 				gid:    gid,
 				nlink:  nlink,
-				fsys:   src.fsys,
+				fsys:   fsys,
 			}
 			if _, err := mergeChild(dir, f, childTarget, set.Collisions); err != nil {
 				return err
