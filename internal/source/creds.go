@@ -4,7 +4,6 @@ package source
 
 import (
 	"net/http"
-	"os"
 	"strings"
 )
 
@@ -31,36 +30,4 @@ func (c Credentials) apply(req *http.Request) {
 			return
 		}
 	}
-}
-
-// ExpandEnv returns os.Getenv(NAME) when v is exactly "${NAME}"; otherwise
-// it returns v unchanged. Config calls this when building Credentials from
-// a literal or an environment reference.
-func ExpandEnv(v string) string {
-	if len(v) < 4 || !strings.HasPrefix(v, "${") || !strings.HasSuffix(v, "}") {
-		return v
-	}
-	name := v[2 : len(v)-1]
-	if !isEnvName(name) {
-		return v
-	}
-	return os.Getenv(name)
-}
-
-// isEnvName reports whether name matches ^[A-Za-z_][A-Za-z0-9_]*$.
-func isEnvName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for i, r := range name {
-		switch {
-		case r == '_':
-		case r >= 'A' && r <= 'Z':
-		case r >= 'a' && r <= 'z':
-		case r >= '0' && r <= '9' && i > 0:
-		default:
-			return false
-		}
-	}
-	return true
 }

@@ -307,8 +307,8 @@ func Parse(b []byte) (*Config, error) {
 
 // expandEnv returns os.Getenv(NAME) when v is exactly "${NAME}"; any other
 // value, including one merely containing such a reference, passes through
-// unchanged. Kept local rather than calling internal/source's ExpandEnv so
-// config never has to import the source package just to parse credentials.
+// unchanged. Kept local rather than shared with internal/source so config
+// never has to import the source package just to parse credentials.
 func expandEnv(v string) string {
 	if len(v) < 4 || !strings.HasPrefix(v, "${") || !strings.HasSuffix(v, "}") {
 		return v

@@ -26,13 +26,3 @@ func TestCredentialsApplyHTTPSOnlyByHost(t *testing.T) {
 		t.Error("basic auth attached to a non-matching host")
 	}
 }
-
-func TestExpandEnv(t *testing.T) {
-	t.Setenv("FJ_TOKEN", "tok123")
-	if got := ExpandEnv("${FJ_TOKEN}"); got != "tok123" {
-		t.Errorf("ExpandEnv(${FJ_TOKEN}) = %q, want tok123", got)
-	}
-	if got := ExpandEnv("literal"); got != "literal" {
-		t.Errorf("ExpandEnv(literal) = %q, want literal", got)
-	}
-}
