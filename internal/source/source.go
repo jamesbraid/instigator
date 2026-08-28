@@ -27,15 +27,26 @@ import (
 // compression bomb or an oversized input.
 const maxExtractBytes = 8 << 30
 
+const (
+	// chunkCacheChunk is the aligned unit the range reader fetches and caches.
+	// EFS's scattered 512-byte reads coalesce into 1 MiB range GETs.
+	chunkCacheChunk = 1 << 20
+	// chunkCacheBudget caps the resident chunk cache of one range-served image.
+	// Past it the least-recently-used chunks are evicted (and re-fetched only if
+	// touched again), so serving never grows memory without limit. An install
+	// reads file data once and re-reads only a small hot set of directory and
+	// inode blocks, which fits well inside this budget; total memory across a
+	// serve is this budget times the number of range-served images.
+	chunkCacheBudget = 32 << 20
+)
+
 // Options configures a Resolver: where fetched archives are cached, the
-// credentials offered to https hosts, the HTTP client to fetch with
-// (http.DefaultClient when nil), and whether to force a whole-file download
-// even for a range-capable server.
+// credentials offered to https hosts, and the HTTP client to fetch with
+// (http.DefaultClient when nil).
 type Options struct {
 	CacheDir    string
 	Credentials Credentials
 	Client      *http.Client
-	ForceWhole  bool
 }
 
 // Resolver turns a source reference - a local path or an http(s) URL - into a
@@ -43,11 +54,10 @@ type Options struct {
 // image or an extracted directory, and the closer that frees it. It satisfies
 // vfs.Resolver.
 type Resolver struct {
-	cacheDir   string
-	creds      Credentials
-	client     *http.Client
-	grab       *grab.Client
-	forceWhole bool
+	cacheDir string
+	creds    Credentials
+	client   *http.Client
+	grab     *grab.Client
 }
 
 var _ vfs.Resolver = (*Resolver)(nil)
@@ -84,11 +94,10 @@ func New(opts Options) *Resolver {
 		Timeout:       base.Timeout,
 	}
 	return &Resolver{
-		cacheDir:   opts.CacheDir,
-		creds:      opts.Credentials,
-		client:     client,
-		grab:       &grab.Client{HTTPClient: client, UserAgent: "instigator"},
-		forceWhole: opts.ForceWhole,
+		cacheDir: opts.CacheDir,
+		creds:    opts.Credentials,
+		client:   client,
+		grab:     &grab.Client{HTTPClient: client, UserAgent: "instigator"},
 	}
 }
 
@@ -113,10 +122,11 @@ func stripAuthOnCrossHostRedirect(req *http.Request, via []*http.Request) error 
 	return nil
 }
 
-// Resolve turns ref into a read-only filesystem. sha256hex, when non-empty,
-// is the layer's expected digest; it is verified against a whole-file fetch
-// (an archive or a ForceWhole image) and ignored for a local source or a
-// range-served image, where a partial read cannot be hashed.
+// Resolve turns ref into a read-only filesystem. sha256hex, when non-empty, is
+// the layer's expected digest. Verifying it requires reading the whole object,
+// so an archive or a raw image with a digest is fetched whole and hashed before
+// use. It is ignored for a local source; a raw image with no digest is read
+// lazily by byte-range, where a partial read cannot be hashed.
 func (r *Resolver) Resolve(ref string, sha256hex string) (vfs.Resolved, error) {
 	if !isURL(ref) {
 		return r.resolveLocal(ref)
@@ -255,13 +265,14 @@ func (r *Resolver) extract(ctx context.Context, archive, outName string) (string
 	return tmp, nil
 }
 
-// resolveRaw opens a URL with no archive extension as a single EFS image.
-// Without ForceWhole the image is read lazily by byte-range - nothing hitting
+// resolveRaw opens a URL with no archive extension as a single EFS image. With
+// no expected digest the image is read lazily by byte-range - nothing hitting
 // disk on a range-capable server, and buffered whole into a temporary file
-// only if the server ignores ranges. With ForceWhole it is fetched whole into
-// the cache (verifying sha256) and opened from there.
+// only if the server ignores ranges. When sha256hex is given the whole image
+// must be read to verify it, so it is fetched whole into the cache, checked,
+// and opened from there.
 func (r *Resolver) resolveRaw(ctx context.Context, ref string, u *url.URL, sha256hex string) (vfs.Resolved, error) {
-	if r.forceWhole {
+	if sha256hex != "" {
 		name := path.Base(u.Path)
 		if name == "." || name == "/" || name == "" {
 			name = "image"
@@ -293,13 +304,14 @@ func (r *Resolver) resolveRaw(ctx context.Context, ref string, u *url.URL, sha25
 		store.Close()
 		return vfs.Resolved{}, fmt.Errorf("source: fetch %s: %w", SafeURL(ref), unwrapURLErr(err))
 	}
-	// Coalesce efs's small scattered reads into 1 MiB aligned chunks, cached
-	// so each is fetched at most once. httpreaderat owns the range GETs and is
-	// itself concurrency-safe; cachingReaderAt adds the chunk cache and is
-	// thread-safe by construction, which this reader must be - it backs a
-	// single Resolved.FS read concurrently at serve time, TFTP, NFS and rsh
-	// each reading it from their own goroutines.
-	reader := newCachingReaderAt(hra, 1<<20)
+	// Coalesce efs's small scattered reads into aligned chunks, cached under a
+	// memory budget so serving a large image never grows without limit.
+	// httpreaderat owns the range GETs and is itself concurrency-safe;
+	// cachingReaderAt adds the bounded chunk cache and is thread-safe by
+	// construction, which this reader must be - it backs a single Resolved.FS
+	// read concurrently at serve time, TFTP, NFS and rsh each reading it from
+	// their own goroutines.
+	reader := newCachingReaderAt(hra, chunkCacheChunk, chunkCacheBudget)
 	disc, err := vfs.OpenImageReader(reader, store, SafeURL(ref))
 	if err != nil {
 		store.Close()
