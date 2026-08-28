@@ -46,6 +46,10 @@ const (
 // file all stop the build. Content is read lazily on Open; only files two
 // layers both claim are read here, to compare them.
 func Build(sets []SetSpec, r Resolver) (*Tree, error) {
+	digests, err := sourceDigests(sets)
+	if err != nil {
+		return nil, err
+	}
 	t := &Tree{root: newDir(".", Origin{})}
 	resolved := map[string]Resolved{}
 
@@ -60,7 +64,7 @@ func Build(sets []SetSpec, r Resolver) (*Tree, error) {
 		}
 		t.root.children[set.Name] = newDir(set.Name, Origin{})
 		for _, layer := range set.Layers {
-			if err := t.addLayer(set, layer, r, resolved); err != nil {
+			if err := t.addLayer(set, layer, r, resolved, digests); err != nil {
 				t.Close()
 				return nil, fmt.Errorf("install set %q: layer %q: %w", set.Name, layer.Name, err)
 			}
@@ -74,12 +78,43 @@ func Build(sets []SetSpec, r Resolver) (*Tree, error) {
 	return t, nil
 }
 
+// sourceDigests collects the expected sha256 of each layer source across every
+// set. One source may be named by several layers; if more than one pins a
+// non-empty digest they must agree. It returns source -> agreed digest (absent
+// when no layer pins one) and fails on a conflict, so that resolving a shared
+// source once - with this map's digest rather than whichever layer happens to
+// resolve it first - can never skip a digest a later layer asked for. Layers
+// are named, not their source URLs, to keep a possibly credential-bearing URL
+// out of the error, as the rest of this package does.
+func sourceDigests(sets []SetSpec) (map[string]string, error) {
+	type pin struct{ digest, layer string }
+	pins := map[string]pin{}
+	for _, set := range sets {
+		for _, layer := range set.Layers {
+			if layer.Source == "" || layer.Sha256 == "" {
+				continue
+			}
+			if prev, ok := pins[layer.Source]; ok && prev.digest != layer.Sha256 {
+				return nil, fmt.Errorf("layers %q and %q pin the same source to conflicting sha256 digests", prev.layer, layer.Name)
+			}
+			pins[layer.Source] = pin{digest: layer.Sha256, layer: layer.Name}
+		}
+	}
+	digests := make(map[string]string, len(pins))
+	for src, p := range pins {
+		digests[src] = p.digest
+	}
+	return digests, nil
+}
+
 // addLayer merges one layer's distribution directory into the set's dist,
 // and for the set's boot layer serves its stand directory alongside. The
 // resolver opens the layer's source, sharing an already-opened one when a
 // later layer names the same reference, so each unique source is opened once
-// and closed once with the tree.
-func (t *Tree) addLayer(set SetSpec, layer LayerSpec, r Resolver, resolved map[string]Resolved) error {
+// and closed once with the tree. A shared source is resolved with the digest
+// from digests, not this layer's own, so the sharing can never let a
+// digest-bearing layer be satisfied by an earlier digestless resolution.
+func (t *Tree) addLayer(set SetSpec, layer LayerSpec, r Resolver, resolved map[string]Resolved, digests map[string]string) error {
 	if layer.Name == "" {
 		return fmt.Errorf("layer with no name")
 	}
@@ -89,7 +124,7 @@ func (t *Tree) addLayer(set SetSpec, layer LayerSpec, r Resolver, resolved map[s
 	res, ok := resolved[layer.Source]
 	if !ok {
 		var err error
-		res, err = r.Resolve(layer.Source, layer.Sha256)
+		res, err = r.Resolve(layer.Source, digests[layer.Source])
 		if err != nil {
 			return err
 		}
