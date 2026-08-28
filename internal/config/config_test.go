@@ -14,14 +14,14 @@ clients:
 install_sets:
   - name: "6.5.30"
     layers:
-      - {name: overlays1, image: /media/6.5.30/overlay1.iso, boot: true}
-      - {name: overlays2, dir: /media/6.5.30/overlay2, dist: dist6.5}
+      - {name: overlays1, source: /media/6.5.30/overlay1.iso, boot: true}
+      - {name: overlays2, source: /media/6.5.30/overlay2, dist: dist6.5}
     collisions:
       "applications/dist/inst.README": overlays1
   - name: "6.5.22"
     enabled: false
     layers:
-      - {name: base, image: /media/6.5.22/base.iso}
+      - {name: base, source: /media/6.5.22/base.iso}
 services:
   bootp: true
   tftp:
@@ -62,14 +62,14 @@ func TestParseSample(t *testing.T) {
 		t.Fatalf("install_sets[0].Layers = %+v", first.Layers)
 	}
 	l0, l1 := first.Layers[0], first.Layers[1]
-	if l0.Name != "overlays1" || l0.Image != "/media/6.5.30/overlay1.iso" || l0.Dir != "" {
+	if l0.Name != "overlays1" || l0.Source != "/media/6.5.30/overlay1.iso" {
 		t.Fatalf("layer 0 = %+v", l0)
 	}
 	// dist omitted: the ordinary "dist" every layer merges into.
 	if l0.Dist != "dist" || !l0.Boot {
 		t.Fatalf("layer 0 dist/boot = %+v", l0)
 	}
-	if l1.Name != "overlays2" || l1.Dir != "/media/6.5.30/overlay2" || l1.Image != "" {
+	if l1.Name != "overlays2" || l1.Source != "/media/6.5.30/overlay2" {
 		t.Fatalf("layer 1 = %+v", l1)
 	}
 	// A version-stub layer names the catalog it really carries; only the
@@ -112,7 +112,7 @@ clients: [{name: o, mac: "08:00:69:00:00:01", ip: 192.0.2.30}]
 install_sets:
   - name: m
     layers:
-      - {name: base, image: /media/m/base.iso}
+      - {name: base, source: /media/m/base.iso}
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -134,51 +134,146 @@ install_sets:
 func TestRejects(t *testing.T) {
 	cases := map[string]string{
 		"no clients": "server_ip: 192.0.2.10\n" +
-			"install_sets: [{name: m, layers: [{name: base, image: /media/m/base.iso}]}]",
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]",
 		"bad mac": "server_ip: 192.0.2.10\nclients: [{name: o, mac: nope, ip: 192.0.2.30}]\n" +
-			"install_sets: [{name: m, layers: [{name: base, image: /media/m/base.iso}]}]",
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]",
 		"bad ip": "server_ip: 192.0.2.10\nclients: [{name: o, mac: \"08:00:69:00:00:01\", ip: banana}]\n" +
-			"install_sets: [{name: m, layers: [{name: base, image: /media/m/base.iso}]}]",
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]",
 		"no serverip": "clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
-			"install_sets: [{name: m, layers: [{name: base, image: /media/m/base.iso}]}]",
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]",
 		"no install sets": "server_ip: 192.0.2.10\n" +
 			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]",
-		"layer with both image and dir": "server_ip: 192.0.2.10\n" +
-			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
-			"install_sets: [{name: m, layers: [{name: base, image: /media/m/base.iso, dir: /media/m/base}]}]",
-		"layer with neither image nor dir": "server_ip: 192.0.2.10\n" +
+		"layer with no source": "server_ip: 192.0.2.10\n" +
 			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
 			"install_sets: [{name: m, layers: [{name: base}]}]",
+		// image:/dir: are the retired field names; a config still using them
+		// carries no source at all, so it fails the same way an empty layer
+		// does rather than being silently accepted.
+		"layer using retired image key": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, image: /media/m/base.iso}]}]",
+		"layer using retired dir key": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, dir: /media/m/base}]}]",
 		"duplicate layer names": "server_ip: 192.0.2.10\n" +
 			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
-			"install_sets: [{name: m, layers: [{name: base, image: /media/m/a.iso}, {name: base, image: /media/m/b.iso}]}]",
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/a.iso}, {name: base, source: /media/m/b.iso}]}]",
 		// A set name is one directory under the served root, so anything
 		// that is not a single path element cannot be one: "." and ".."
 		// name the root and its parent, and a slashed name would build a
 		// nested root no set owns.
 		"set named dot": "server_ip: 192.0.2.10\n" +
 			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
-			"install_sets: [{name: \".\", layers: [{name: base, image: /media/m/base.iso}]}]",
+			"install_sets: [{name: \".\", layers: [{name: base, source: /media/m/base.iso}]}]",
 		"set named dotdot": "server_ip: 192.0.2.10\n" +
 			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
-			"install_sets: [{name: \"..\", layers: [{name: base, image: /media/m/base.iso}]}]",
+			"install_sets: [{name: \"..\", layers: [{name: base, source: /media/m/base.iso}]}]",
 		"set name with a slash": "server_ip: 192.0.2.10\n" +
 			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
-			"install_sets: [{name: a/b, layers: [{name: base, image: /media/m/base.iso}]}]",
+			"install_sets: [{name: a/b, layers: [{name: base, source: /media/m/base.iso}]}]",
 		// Only one stand directory can be served per set, so two layers
 		// claiming it would leave the PROM's fx.64 to layer order.
 		"two boot layers in one set": "server_ip: 192.0.2.10\n" +
 			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
-			"install_sets: [{name: m, layers: [{name: a, image: /media/m/a.iso, boot: true}, " +
-			"{name: b, image: /media/m/b.iso, boot: true}]}]",
+			"install_sets: [{name: m, layers: [{name: a, source: /media/m/a.iso, boot: true}, " +
+			"{name: b, source: /media/m/b.iso, boot: true}]}]",
 		"duplicate set names": "server_ip: 192.0.2.10\n" +
 			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
-			"install_sets: [{name: m, layers: [{name: a, image: /media/m/a.iso}]}, " +
-			"{name: m, layers: [{name: b, image: /media/m/b.iso}]}]",
+			"install_sets: [{name: m, layers: [{name: a, source: /media/m/a.iso}]}, " +
+			"{name: m, layers: [{name: b, source: /media/m/b.iso}]}]",
 	}
 	for name, y := range cases {
 		if _, err := Parse([]byte(y)); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+func TestParseSourceAndCredentials(t *testing.T) {
+	t.Setenv("FJ", "tok")
+	cfg, err := Parse([]byte(`
+server_ip: 10.0.0.1
+clients: [{name: a, mac: "02:00:00:00:00:01", ip: 10.0.0.2}]
+credentials:
+  - host: forge.example
+    username: ci
+    password: ${FJ}
+install_sets:
+  - name: "6.5.30"
+    layers:
+      - name: disc1
+        source: https://forge.example/x/disc1.tar.gz
+        base: disc1
+        sha256: abc123
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := cfg.InstallSets[0].Layers[0]
+	if l.Source == "" || l.Base != "disc1" || l.Sha256 != "abc123" {
+		t.Fatalf("layer = %+v", l)
+	}
+	if len(cfg.Credentials) != 1 || cfg.Credentials[0].Password != "tok" {
+		t.Fatalf("creds = %+v", cfg.Credentials)
+	}
+}
+
+func TestCredentialLiteralPassword(t *testing.T) {
+	// A password that isn't a "${VAR}" reference passes through unchanged -
+	// expandEnv only touches the exact-match case.
+	cfg, err := Parse([]byte(`
+server_ip: 10.0.0.1
+clients: [{name: a, mac: "02:00:00:00:00:01", ip: 10.0.0.2}]
+credentials:
+  - {host: forge.example, username: ci, password: "not-a-var-ref"}
+  - {host: other.example, username: bot, password: "${NOT_SET_ANYWHERE_12345}"}
+install_sets:
+  - name: m
+    layers: [{name: base, source: /media/m/base.iso}]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Credentials) != 2 {
+		t.Fatalf("creds = %+v", cfg.Credentials)
+	}
+	if cfg.Credentials[0].Password != "not-a-var-ref" {
+		t.Fatalf("literal password mangled: %+v", cfg.Credentials[0])
+	}
+	// An unset env var expands to "", same as os.Getenv would report.
+	if cfg.Credentials[1].Password != "" {
+		t.Fatalf("unset-var password = %q, want empty", cfg.Credentials[1].Password)
+	}
+}
+
+func TestCacheDir(t *testing.T) {
+	cfg, err := Parse([]byte(`
+server_ip: 10.0.0.1
+clients: [{name: a, mac: "02:00:00:00:00:01", ip: 10.0.0.2}]
+cache_dir: /var/cache/instigator
+install_sets:
+  - name: m
+    layers: [{name: base, source: /media/m/base.iso}]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CacheDir != "/var/cache/instigator" {
+		t.Fatalf("cache_dir = %q", cfg.CacheDir)
+	}
+
+	// Unset stays empty - serve supplies its own default.
+	cfg2, err := Parse([]byte(`
+server_ip: 10.0.0.1
+clients: [{name: a, mac: "02:00:00:00:00:01", ip: 10.0.0.2}]
+install_sets:
+  - name: m
+    layers: [{name: base, source: /media/m/base.iso}]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg2.CacheDir != "" {
+		t.Fatalf("cache_dir default = %q, want empty", cfg2.CacheDir)
 	}
 }

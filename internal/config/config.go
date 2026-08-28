@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net"
 	"net/netip"
+	"os"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -20,9 +21,13 @@ type Client struct {
 	IP   netip.Addr
 }
 
-// Layer is one directory or image contributing files to an install set.
-// Exactly one of Image or Dir names its source: Image is a disc image
-// mounted read-only, Dir is a directory served as-is.
+// Layer is one directory, image, or remote archive contributing files to
+// an install set. Source names it: a local path (a disc image or a
+// directory) or an http(s) URL (a raw image, fetched by byte-range or
+// whole, or a tar/gz archive extracted into the cache). Base, when set,
+// selects a subtree of Source rather than serving it whole - the layer's
+// files are those under Base, rebased to the layer's root. Sha256, when
+// set, is the digest a whole-file fetch of Source is verified against.
 //
 // Dist is the distribution directory inside that source, defaulting to
 // "dist"; whatever it is called there, it merges into the set's own dist.
@@ -30,15 +35,19 @@ type Client struct {
 // "dist/dist6.5" where the disc hides it behind a .redirect), which
 // rebases it so inst only ever sees /<set>/dist.
 //
-// Boot marks the layer whose stand directory is served at /<set>/stand,
-// where the PROM fetches fx.64. At most one layer per set may set it, and
-// only a set an operator actually netboots needs one at all.
+// Stand names the stand directory inside Source, defaulting like Dist to
+// the layer's own "stand". Boot marks the layer whose stand directory is
+// served at /<set>/stand, where the PROM fetches fx.64. At most one layer
+// per set may set it, and only a set an operator actually netboots needs
+// one at all.
 type Layer struct {
-	Name  string
-	Image string
-	Dir   string
-	Dist  string
-	Boot  bool
+	Name   string
+	Source string
+	Base   string
+	Dist   string
+	Stand  string
+	Sha256 string
+	Boot   bool
 }
 
 // InstallSet is one served IRIX install tree, assembled by layering Layers
@@ -74,6 +83,14 @@ type Ports struct {
 	RSH   int
 }
 
+// Credential is HTTP Basic auth offered to one host when a layer's Source
+// is fetched over https. Password is expanded from a "${VAR}" environment
+// reference at parse time, so the config file itself never carries a
+// secret in the clear.
+type Credential struct {
+	Host, Username, Password string
+}
+
 // Config is a validated instigator configuration.
 type Config struct {
 	ServerIP    netip.Addr
@@ -82,6 +99,10 @@ type Config struct {
 	InstallSets []InstallSet
 	Services    Services
 	Ports       Ports
+	Credentials []Credential
+	// CacheDir is where a fetched or extracted remote source is cached;
+	// empty means the caller (serve) supplies its own default.
+	CacheDir string
 }
 
 // raw mirrors the YAML shape before validation.
@@ -93,15 +114,23 @@ type raw struct {
 		MAC  string `yaml:"mac"`
 		IP   string `yaml:"ip"`
 	} `yaml:"clients"`
+	Credentials []struct {
+		Host     string `yaml:"host"`
+		Username string `yaml:"username"`
+		Password string `yaml:"password"`
+	} `yaml:"credentials"`
+	CacheDir    string `yaml:"cache_dir"`
 	InstallSets []struct {
 		Name    string `yaml:"name"`
 		Enabled *bool  `yaml:"enabled"`
 		Layers  []struct {
-			Name  string `yaml:"name"`
-			Image string `yaml:"image"`
-			Dir   string `yaml:"dir"`
-			Dist  string `yaml:"dist"`
-			Boot  bool   `yaml:"boot"`
+			Name   string `yaml:"name"`
+			Source string `yaml:"source"`
+			Base   string `yaml:"base"`
+			Dist   string `yaml:"dist"`
+			Stand  string `yaml:"stand"`
+			Sha256 string `yaml:"sha256"`
+			Boot   bool   `yaml:"boot"`
 		} `yaml:"layers"`
 		Collisions map[string]string `yaml:"collisions"`
 	} `yaml:"install_sets"`
@@ -169,6 +198,15 @@ func Parse(b []byte) (*Config, error) {
 		c.Clients = append(c.Clients, Client{Name: rc.Name, MAC: mac, IP: cip})
 	}
 
+	for _, rc := range r.Credentials {
+		c.Credentials = append(c.Credentials, Credential{
+			Host:     rc.Host,
+			Username: rc.Username,
+			Password: expandEnv(rc.Password),
+		})
+	}
+	c.CacheDir = r.CacheDir
+
 	if len(r.InstallSets) == 0 {
 		return nil, fmt.Errorf("config: at least one install set is required")
 	}
@@ -203,8 +241,8 @@ func Parse(b []byte) (*Config, error) {
 				return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d]: duplicate layer name %q", i, rs.Name, j, rl.Name)
 			}
 			seen[rl.Name] = true
-			if (rl.Image == "") == (rl.Dir == "") {
-				return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d] (%s): exactly one of image or dir is required", i, rs.Name, j, rl.Name)
+			if rl.Source == "" {
+				return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d] (%s): source is required", i, rs.Name, j, rl.Name)
 			}
 			// One stand directory can be served per set, so two layers
 			// claiming the boot role would leave which media the PROM
@@ -220,11 +258,13 @@ func Parse(b []byte) (*Config, error) {
 				dist = "dist"
 			}
 			layers = append(layers, Layer{
-				Name:  rl.Name,
-				Image: rl.Image,
-				Dir:   rl.Dir,
-				Dist:  dist,
-				Boot:  rl.Boot,
+				Name:   rl.Name,
+				Source: rl.Source,
+				Base:   rl.Base,
+				Dist:   dist,
+				Stand:  rl.Stand,
+				Sha256: rl.Sha256,
+				Boot:   rl.Boot,
 			})
 		}
 		c.InstallSets = append(c.InstallSets, InstallSet{
@@ -263,4 +303,15 @@ func Parse(b []byte) (*Config, error) {
 		}
 	}
 	return c, nil
+}
+
+// expandEnv returns os.Getenv(NAME) when v is exactly "${NAME}"; any other
+// value, including one merely containing such a reference, passes through
+// unchanged. Kept local rather than calling internal/source's ExpandEnv so
+// config never has to import the source package just to parse credentials.
+func expandEnv(v string) string {
+	if len(v) < 4 || !strings.HasPrefix(v, "${") || !strings.HasSuffix(v, "}") {
+		return v
+	}
+	return os.Getenv(v[2 : len(v)-1])
 }

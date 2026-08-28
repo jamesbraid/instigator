@@ -32,10 +32,10 @@ clients:
 install_sets:
   - name: "6.5.30"
     layers:
-      - {name: base, image: %q}
+      - {name: base, source: %q}
   - name: foundations
     layers:
-      - {name: foundations, image: %q}
+      - {name: foundations, source: %q}
 services:
   bootp: false
   tftp: {enabled: false}
