@@ -220,10 +220,11 @@ func TestResolveForceWholeOnRangeServer(t *testing.T) {
 
 // efsImageFarApartFiles builds a CD image holding n small files whose data
 // blocks are separated by gap bytes, so reading two of them forces ReadAt
-// offsets more than the range reader's 1 MiB buffer apart - the spacing that
-// evicts and refills that shared buffer. Each file's content is a distinct
-// repeated byte, so a torn concurrent read surfaces as wrong bytes, not merely
-// a race-detector report. The gaps are laid down with AddData, which advances
+// offsets that land in different 1 MiB chunks of the caching reader - the
+// spacing that would trip an unlocked shared-buffer reader. Each file's
+// content is a distinct repeated byte, so a torn concurrent read surfaces as
+// wrong bytes, not merely a race-detector report. The gaps are laid down with
+// AddData, which advances
 // the data-block cursor without spending an inode, so the fixture stays within
 // efstest's eight-inode geometry however wide the gaps are. It returns the
 // image and the expected content of each file by name.
@@ -247,11 +248,12 @@ func efsImageFarApartFiles(t *testing.T, n, size, gap int) ([]byte, map[string]s
 
 // TestResolveRangeImageConcurrentReadsRace drives the range path the way the
 // servers do: one Resolved.FS read by many goroutines at once. The image's
-// files sit multiple megabytes apart, so concurrent reads keep evicting and
-// refilling the range reader's shared 1 MiB buffer. Without the syncReaderAt
-// guard around that buffer this races (buf-readerat mutates its buffer, offset
-// and error with no locking) and can return wrong bytes; it must run clean
-// under `go test -race`, with every read yielding its file's exact content.
+// files sit multiple megabytes apart, so concurrent reads keep touching
+// different 1 MiB chunks of the caching reader. A reader that shared one
+// mutable buffer with no locking would race here (mutating its buffer, offset
+// and error) and could return wrong bytes; cachingReaderAt is thread-safe by
+// construction, so this must run clean under `go test -race`, with every read
+// yielding its file's exact content.
 func TestResolveRangeImageConcurrentReadsRace(t *testing.T) {
 	const (
 		files = 4
