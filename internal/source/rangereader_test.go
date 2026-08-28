@@ -7,7 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -149,5 +152,147 @@ func TestRangeReaderAtConcurrentReads(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Error(err)
+	}
+}
+
+// TestRangeReaderAtChunkFetchHardErrors covers the three ways a chunk GET
+// can go wrong once probeRange has already established the server is
+// range-capable: the pinned object changed underneath the read (412), the
+// requested range became impossible (416), and the server reverts to
+// ignoring Range entirely (200) — which, if silently accepted, would cache
+// bytes from the wrong absolute offset (a 200 response starts at offset 0,
+// not at the chunk's lo) under this chunk's index and serve corrupted data
+// with a nil error. All three must surface as a real error naming the
+// object, never a corrupted or short read.
+//
+// The URL carries embedded userinfo so the assertions also confirm the
+// error text never leaks the credential — every error in this path is
+// built through safeURL, matching fetch.go's fetchWhole errors.
+func TestRangeReaderAtChunkFetchHardErrors(t *testing.T) {
+	body := bytes.Repeat([]byte("0123456789"), 2000) // 20000 bytes
+
+	cases := []struct {
+		name       string
+		chunkResp  func(w http.ResponseWriter, r *http.Request)
+		wantSubstr string
+	}{
+		{
+			name: "412 precondition failed (object changed)",
+			chunkResp: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusPreconditionFailed)
+			},
+			wantSubstr: "412",
+		},
+		{
+			name: "416 range not satisfiable",
+			chunkResp: func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			},
+			wantSubstr: "416",
+		},
+		{
+			name: "200 ignores Range after probe said it was capable",
+			chunkResp: func(w http.ResponseWriter, r *http.Request) {
+				// A server (or something in front of it) that stops
+				// honouring Range returns the WHOLE object starting at
+				// offset 0. Accepting this used to get cached as if it
+				// were the requested [lo,hi] span — silent corruption.
+				w.WriteHeader(http.StatusOK)
+				w.Write(body)
+			},
+			wantSubstr: "200",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var reqNum int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// The first request is probeRange's own bytes=0-0
+				// probe; let it succeed normally so the reader
+				// believes the server is range-capable. Every request
+				// after that is the "real" chunk fetch this test is
+				// targeting.
+				if atomic.AddInt32(&reqNum, 1) == 1 {
+					w.Header().Set("Accept-Ranges", "bytes")
+					http.ServeContent(w, r, "img", time.Unix(0, 0), bytes.NewReader(body))
+					return
+				}
+				tc.chunkResp(w, r)
+			}))
+			defer srv.Close()
+
+			u, err := url.Parse(srv.URL)
+			if err != nil {
+				t.Fatalf("parse server URL: %v", err)
+			}
+			u.User = url.UserPassword("probe-user", "super-secret-password")
+			target := u.String()
+
+			size, ranges, etag, lm, err := probeRange(context.Background(), srv.Client(), target, nil)
+			if err != nil || !ranges {
+				t.Fatalf("probe: size=%d ranges=%v err=%v", size, ranges, err)
+			}
+			ra := newRangeReaderAt(context.Background(), srv.Client(), target, nil, size, etag, lm)
+			defer ra.Close()
+
+			// Offset 12003 forces a real chunk fetch (it's not the
+			// bytes=0-0 the probe already satisfied).
+			p := make([]byte, 5)
+			n, err := ra.ReadAt(p, 12003)
+			if err == nil {
+				t.Fatalf("ReadAt: want error, got n=%d err=nil", n)
+			}
+			if n != 0 {
+				t.Errorf("ReadAt: want n=0 alongside the error, got %d", n)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Errorf("ReadAt error = %q, want it to mention %q", err.Error(), tc.wantSubstr)
+			}
+			if strings.Contains(err.Error(), "super-secret-password") || strings.Contains(err.Error(), "probe-user") {
+				t.Errorf("ReadAt error leaks the URL's credential: %q", err.Error())
+			}
+		})
+	}
+}
+
+// TestRangeReaderAtChunkLengthMismatch asserts that a 206 response whose
+// body doesn't match the requested [lo,hi] span (the server claims success
+// but returns the wrong number of bytes) is a hard error rather than a
+// cached, wrongly-indexed chunk.
+func TestRangeReaderAtChunkLengthMismatch(t *testing.T) {
+	body := bytes.Repeat([]byte("0123456789"), 2000) // 20000 bytes
+
+	var reqNum int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&reqNum, 1) == 1 {
+			w.Header().Set("Accept-Ranges", "bytes")
+			http.ServeContent(w, r, "img", time.Unix(0, 0), bytes.NewReader(body))
+			return
+		}
+		// Claim 206 but hand back fewer bytes than the Range asked for.
+		w.Header().Set("Content-Range", "bytes 12000-16095/20000")
+		w.WriteHeader(http.StatusPartialContent)
+		w.Write(body[12000:15000])
+	}))
+	defer srv.Close()
+
+	size, ranges, etag, lm, err := probeRange(context.Background(), srv.Client(), srv.URL, nil)
+	if err != nil || !ranges {
+		t.Fatalf("probe: size=%d ranges=%v err=%v", size, ranges, err)
+	}
+	ra := newRangeReaderAt(context.Background(), srv.Client(), srv.URL, nil, size, etag, lm)
+	defer ra.Close()
+
+	p := make([]byte, 5)
+	n, err := ra.ReadAt(p, 12003)
+	if err == nil {
+		t.Fatalf("ReadAt: want error, got n=%d err=nil", n)
+	}
+	if n != 0 {
+		t.Errorf("ReadAt: want n=0 alongside the error, got %d", n)
+	}
+	if !strings.Contains(err.Error(), "length mismatch") {
+		t.Errorf("ReadAt error = %q, want it to mention a length mismatch", err.Error())
 	}
 }
