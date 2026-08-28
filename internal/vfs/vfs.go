@@ -70,5 +70,5 @@ func (d *Disc) FSys() fs.FS { return d.fs.FSys() }
 // Header returns the disc's volume header.
 func (d *Disc) Header() *dvh.Header { return d.hdr }
 
-// Close releases the underlying image file.
+// Close releases the disc's underlying resource.
 func (d *Disc) Close() error { return d.c.Close() }
