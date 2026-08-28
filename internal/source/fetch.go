@@ -13,16 +13,6 @@ import (
 	"strings"
 )
 
-// Object is the response metadata a probe captures for a remote object,
-// used to key the cache and to decide whether a byte-range read is
-// possible.
-type Object struct {
-	ETag          string
-	LastModified  string
-	ContentLength int64
-	AcceptsRanges bool
-}
-
 // fetchWhole GETs url (credentials applied via creds.apply), streaming the
 // response body to dstFile through a sha256 tee so the whole object is
 // never held in memory. If sha256hex is non-empty, the streamed digest is
