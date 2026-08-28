@@ -167,7 +167,7 @@ func TestRangeReaderAtConcurrentReads(t *testing.T) {
 //
 // The URL carries embedded userinfo so the assertions also confirm the
 // error text never leaks the credential — every error in this path is
-// built through safeURL, matching fetch.go's fetchWhole errors.
+// built through SafeURL, matching fetch.go's fetchWhole errors.
 func TestRangeReaderAtChunkFetchHardErrors(t *testing.T) {
 	body := bytes.Repeat([]byte("0123456789"), 2000) // 20000 bytes
 

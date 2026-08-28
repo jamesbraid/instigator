@@ -62,7 +62,7 @@ func (r *Resolver) Resolve(ref string, sha256 string) (vfs.Resolved, error) {
 	}
 	u, err := url.Parse(ref)
 	if err != nil {
-		return vfs.Resolved{}, fmt.Errorf("source: parse %s: %w", safeURL(ref), unwrapURLErr(err))
+		return vfs.Resolved{}, fmt.Errorf("source: parse %s: %w", SafeURL(ref), unwrapURLErr(err))
 	}
 	if isArchivePath(u.Path) {
 		return r.resolveArchive(ref, u, sha256)
@@ -198,9 +198,9 @@ func (r *Resolver) resolveRaw(ref string, u *url.URL, sha256 string) (vfs.Resolv
 	if ranges && !r.forceWhole {
 		rr := newRangeReaderAt(ctx, r.client, ref, r.creds, size, etag, lastModified)
 		// The Disc owns rr as both its reader and its closer, so closing the
-		// Disc closes the range reader. safeURL keeps any userinfo out of the
-		// name that appears in the Disc's errors.
-		disc, err := vfs.OpenImageReader(rr, rr, safeURL(ref))
+		// Disc closes the range reader. SafeURL keeps any userinfo or query
+		// out of the name that appears in the Disc's errors.
+		disc, err := vfs.OpenImageReader(rr, rr, SafeURL(ref))
 		if err != nil {
 			rr.Close()
 			return vfs.Resolved{}, fmt.Errorf("source: %w", err)
