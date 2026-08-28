@@ -42,11 +42,19 @@ func fetchWhole(ctx context.Context, client *http.Client, rawURL string, creds C
 	if err != nil {
 		return fmt.Errorf("source: fetch: create %s: %w", dstFile, err)
 	}
-	defer f.Close()
 
 	hasher := sha256.New()
 	if _, err := io.Copy(io.MultiWriter(f, hasher), resp.Body); err != nil {
+		f.Close()
 		return fmt.Errorf("source: fetch: write %s: %w", dstFile, err)
+	}
+
+	// Close explicitly and check its error before trusting the digest: the
+	// tee above hashed bytes as they streamed, not what actually landed on
+	// disk, so a flush error surfaced only at Close (ENOSPC, a network
+	// filesystem) could leave a truncated file that still hashes clean.
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("source: fetch: close %s: %w", dstFile, err)
 	}
 
 	if sha256hex != "" {
