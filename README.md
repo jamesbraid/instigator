@@ -115,9 +115,10 @@ password is expanded from the environment at config load, a literal password
 is used as-is. `sha256:` verifies a layer against its expected digest; since
 that means reading every byte, a raw `.image` given a `sha256:` is fetched
 whole and checked rather than read by range (archives are always fetched
-whole and verified). Fetched archives and extracted trees are cached under
-`cache_dir:` (default: the user cache dir, or `/var/cache/instigator` when
-there's no `HOME`) and reused across runs.
+whole and verified). Fetched archives are cached under `cache_dir:` (default:
+the user cache dir, or `/var/cache/instigator` when there's no `HOME`) and
+reused across runs; each run re-extracts an archive fresh into a temporary
+directory that is removed when serving stops.
 
 The complete example also shows client filtering, service toggles, and the
 low TFTP transfer-port range required by SGI PROMs.
