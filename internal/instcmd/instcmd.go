@@ -54,7 +54,7 @@ type ImageResolver interface {
 type FileInfo struct {
 	Ino   uint64
 	IsDir bool
-	Perm  uint32 // permission bits only, e.g. 0o755
+	Perm  uint32 // permission bits incl. setuid/setgid/sticky, e.g. 0o4755
 	Nlink int
 	UID   uint32
 	GID   uint32

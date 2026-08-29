@@ -192,7 +192,9 @@ func (f cmdFS) Stat(path string) (instcmd.FileInfo, error) {
 	return instcmd.FileInfo{
 		Ino:   md.Ino,
 		IsDir: info.IsDir(),
-		Perm:  uint32(info.Mode().Perm()),
+		// The tree stores the full twelve permission bits numerically in
+		// its Mode (Perm() would drop setuid/setgid/sticky).
+		Perm:  uint32(info.Mode() & 0o7777),
 		Nlink: md.Nlink,
 		UID:   md.UID,
 		GID:   md.GID,
