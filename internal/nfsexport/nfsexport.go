@@ -139,7 +139,10 @@ func realIno(statter fs.StatFS, hasStat bool, p string) (uint64, bool) {
 // nfs.Node.Mode documents: 0o040000|perm for a directory, 0o100000|perm
 // for a regular file. The tree materializes only these two kinds.
 func unixMode(info fs.FileInfo) uint32 {
-	perm := uint32(info.Mode().Perm())
+	// The tree stores the full twelve permission bits numerically in its
+	// Mode; Perm() would drop setuid/setgid/sticky, which NFS attributes
+	// carry to the client.
+	perm := uint32(info.Mode() & 0o7777)
 	if info.IsDir() {
 		return 0o040000 | perm
 	}
