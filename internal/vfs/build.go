@@ -350,14 +350,26 @@ func statFollow(fsys fs.FS, name string) (fs.FileInfo, string, error) {
 // Sys() rather than info.Mode() because io/fs.FileInfo.Mode() masks the
 // setuid, setgid, and sticky bits an EFS regular file may carry, and the
 // tree serves those bits as the media holds them. A directory layer
-// reports no Sys() owner and never carried the extra bits, so its files
-// stay unowned with a single link and the low nine permission bits
-// info.Mode().Perm() already reports.
+// reports no Sys() owner, so its files stay unowned with a single link,
+// but its mode can carry the same three bits - os reports them as the
+// symbolic ModeSetuid, ModeSetgid, and ModeSticky, which Perm() drops -
+// so they are mapped back onto the numeric form the tree serves.
 func ownerOf(info fs.FileInfo) (uid, gid uint32, nlink int, perm fs.FileMode) {
 	if st, ok := info.Sys().(*efs.Stat); ok {
 		return uint32(st.UID), uint32(st.GID), int(st.Nlink), fs.FileMode(st.Mode & 0o7777)
 	}
-	return 0, 0, 1, info.Mode().Perm()
+	mode := info.Mode()
+	perm = mode.Perm()
+	if mode&fs.ModeSetuid != 0 {
+		perm |= 0o4000
+	}
+	if mode&fs.ModeSetgid != 0 {
+		perm |= 0o2000
+	}
+	if mode&fs.ModeSticky != 0 {
+		perm |= 0o1000
+	}
+	return 0, 0, 1, perm
 }
 
 // originOf builds the provenance for a walked path: the kind of source,

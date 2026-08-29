@@ -54,3 +54,56 @@ func TestBuildRejectsSpecialFileLinksInDirectoryLayers(t *testing.T) {
 		t.Fatalf("ReadDir = %v, want [foundation.sw]: a bare special file is skipped, not served", got)
 	}
 }
+
+// TestBuildPreservesSpecialModeBitsFromDirectoryLayer is the
+// directory-layer half of the special-bits rule: a file in an extracted
+// layer that carries setuid, setgid, or sticky must serve with that bit
+// intact, exactly as the image case does. os reports these as the
+// symbolic fs.ModeSetuid, ModeSetgid, and ModeSticky bits, which
+// Mode().Perm() silently drops. Unix-tagged because chmod on Windows
+// carries none of these bits.
+func TestBuildPreservesSpecialModeBitsFromDirectoryLayer(t *testing.T) {
+	layer := t.TempDir()
+	dist := filepath.Join(layer, "dist")
+	if err := os.Mkdir(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		mode os.FileMode
+	}{
+		{"su", os.ModeSetuid | 0o711},
+		{"sg", os.ModeSetgid | 0o755},
+		{"tmp", os.ModeSticky | 0o644},
+	} {
+		p := filepath.Join(dist, tc.name)
+		if err := os.WriteFile(p, []byte(tc.name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, tc.mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tree := build(t, []SetSpec{{
+		Name:   "6.5.30",
+		Layers: []LayerSpec{distLayer("extracted", layer)},
+	}})
+
+	for _, tc := range []struct {
+		path string
+		want uint16
+	}{
+		{"6.5.30/dist/su", 0o4711},
+		{"6.5.30/dist/sg", 0o2755},
+		{"6.5.30/dist/tmp", 0o1644},
+	} {
+		info, err := tree.Stat(tc.path)
+		if err != nil {
+			t.Fatalf("Stat(%s): %v", tc.path, err)
+		}
+		if got := uint16(info.Mode()) & 0o7777; got != tc.want {
+			t.Errorf("Stat(%s).Mode()&0o7777 = %#o, want %#o", tc.path, got, tc.want)
+		}
+	}
+}
