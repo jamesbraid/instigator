@@ -20,9 +20,6 @@ distribution directories as one coherent tree. The installer sees the merged
 tree, not the individual discs. Duplicate files must agree, and real
 collisions are named in the configuration instead of being silently guessed.
 
-The result is a repeatable path from local image files to a real IRIX install:
-one server process, one configuration, and no staging tree to prepare first.
-
 The current profile has completed on a real Octane2 with IRIX 6.5.30: the
 machine netbooted, installed from merged media, booted from its disk, and
 reached the IRIX console login.
@@ -61,9 +58,8 @@ generated selections and start the install:
 admin source <server-ip>:/install.cmds
 ```
 
-That is the short version. The [installation guide](docs/install.md) has the
-full command sequence, profile ordering, first-boot checks, and captured
-install notes.
+The [installation guide](docs/install.md) has the full command sequence,
+profile ordering, first-boot checks, and captured install notes.
 
 ## Host platforms
 
@@ -71,8 +67,8 @@ The server is pure Go and runs on Linux, macOS, and Windows. Real installs have
 been proven on Linux (the Octane2 run above). macOS and Windows are supported
 build and test targets.
 
-Binding UDP 67 (BOOTP) and 69 (TFTP) — the ports the SGI PROM expects — needs
-privilege. Use `sudo` on Linux and macOS. On Windows, run as Administrator and
+Binding UDP 67 (BOOTP) and 69 (TFTP) needs privilege. Use `sudo` on Linux and
+macOS. On Windows, run as Administrator and
 allow UDP 67/69 and TCP 514 through the firewall. The installation guide covers
 the multi-homed-host trap that bites laptops.
 
@@ -106,19 +102,14 @@ path. Identical duplicates are accepted.
 ### Remote sources
 
 `source:` also accepts an `http(s)://` URL. A `.tar.gz`/`.tgz`/`.tar`/`.gz`
-archive is fetched whole and unpacked. A raw `.image` on a server that
-supports HTTP byte ranges is read lazily, so an install only pulls the bytes
-it actually touches; its in-memory chunk cache is bounded, so serving a large
-image stays within a fixed memory budget. Private hosts need a top-level
-`credentials:` entry, matched by host, for HTTP Basic auth. A `${VAR}`
-password is expanded from the environment at config load, a literal password
-is used as-is. `sha256:` verifies a layer against its expected digest; since
-that means reading every byte, a raw `.image` given a `sha256:` is fetched
-whole and checked rather than read by range (archives are always fetched
-whole and verified). Fetched archives are cached under `cache_dir:` (default:
-the user cache dir, or `/var/cache/instigator` when there's no `HOME`) and
-reused across runs; each run re-extracts an archive fresh into a temporary
-directory that is removed when serving stops.
+archive is downloaded and unpacked; a raw `.image` on a range-capable server
+is read lazily, pulling only the bytes an install touches. `credentials:`
+supply host-matched HTTP Basic auth over HTTPS, with a `${VAR}` password read
+from the environment. A `sha256:` digest is verified against a full download,
+so a digested raw image is fetched whole rather than ranged (archives are
+always downloaded whole and verified). Downloads are cached under `cache_dir:`
+(default: the user cache dir) and reused across runs; each run re-extracts an
+archive fresh.
 
 The complete example also shows client filtering, service toggles, and the
 low TFTP transfer-port range required by SGI PROMs.
@@ -139,9 +130,8 @@ need local IRIX media skip when that media is unavailable:
 go test -run RealMedia -v ./internal/vfs ./internal/instcmd
 ```
 
-Captures retain request, transfer, and timing data from real runs. They make
-it possible to compare a later install with a known-good one and turn useful
-hardware observations into small synthetic regressions.
+Captures retain request, transfer, and timing data from real runs, so a later
+install can be compared against a known-good one.
 
 ## License
 
