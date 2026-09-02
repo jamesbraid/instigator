@@ -29,10 +29,8 @@ func shellTestFS() *fakeFS {
 	}
 }
 
-// runShell runs a shell script and returns stdout/stderr. It logs at
-// DEBUG so every command line and any refusal shows up in the test log
-// (t.Logf), matching what RunShell now sends to the server's own log
-// instead of the old per-line callback.
+// runShell runs a shell script and returns stdout/stderr, logging at
+// DEBUG so every command line and any refusal shows up in t.Logf.
 func runShell(t *testing.T, script string) (string, string) {
 	t.Helper()
 	out, errb, _ := runShellWithFS(t, shellTestFS(), logging.LevelDebug, script)
@@ -101,8 +99,8 @@ func TestShellMarkerProtocol(t *testing.T) {
 	}
 }
 
-// TestShellPipeIntoDD is inst's capability probe: a pipe feeding dd's
-// stdin, which the old hand-rolled command table could never support.
+// TestShellPipeIntoDD covers inst's capability probe: a pipe feeding
+// dd's stdin.
 func TestShellPipeIntoDD(t *testing.T) {
 	out, errb := runShell(t, "echo abc|dd iseek=0\n")
 	if out != "abc\n" {
@@ -128,11 +126,9 @@ func TestShellDDReadsVFSByteExact(t *testing.T) {
 	}
 }
 
-// TestShellDDLogsServedFileWithImage is the steady-state manifest this
-// logging overhaul exists for: at the default (non-verbose) level, dd
-// reading a real vfs path must log which file it served and which
-// image it actually came from, not the raw "dd if=..." command line -
-// that trace stays behind -v (DEBUG).
+// TestShellDDLogsServedFileWithImage checks that at the default
+// (non-verbose) level, dd logs the served path and its backing image,
+// not the raw "dd if=..." command line - that trace stays behind -v.
 func TestShellDDLogsServedFileWithImage(t *testing.T) {
 	fs := resolvingFS{
 		fakeFS: shellTestFS(),
@@ -176,9 +172,8 @@ func TestShellCatLogsServedFile(t *testing.T) {
 }
 
 // TestShellUnknownCommandRefused checks that a command outside the
-// whitelist fails with a diagnostic and a nonzero exit, but - unlike the
-// old table's early-return Run() - the shell keeps going afterward, as a
-// real shell does for a ';'-separated command list.
+// whitelist fails with a diagnostic and a nonzero exit, and the shell
+// keeps going afterward, as a real shell does for a ';'-separated list.
 func TestShellUnknownCommandRefused(t *testing.T) {
 	out, errb := runShell(t, "rm -rf /\necho survived\n")
 	if !strings.Contains(out, "survived") {
@@ -365,13 +360,8 @@ func TestShellLsPlainStaysNameOnly(t *testing.T) {
 // tests check.
 var logLineRE = regexp.MustCompile(`(?m)^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}) +(DEBUG|INFO|WARN|ERROR) +(.*)$`)
 
-// TestShellRefusedCommandLogsErrorOnServerSide is the headline fix this
-// package's logging overhaul exists for: instcmd refusing fgrep went
-// only to inst's own stderr, never to serve.log, and that silence was
-// why a live install failure took a real capture to diagnose instead of
-// a log line. A command this shell refuses must now show up in the
-// server's own log at ERROR - even at the default (non-verbose) level,
-// where DEBUG's per-command trace is off - not just on the client.
+// A refused command must reach both client stderr and the default-level
+// server log.
 func TestShellRefusedCommandLogsErrorOnServerSide(t *testing.T) {
 	var out, errb, logbuf strings.Builder
 	logger := logging.New(&logbuf, logging.LevelInfo) // default level: no -v

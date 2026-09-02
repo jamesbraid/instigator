@@ -25,12 +25,9 @@ import (
 // errReadOnly is returned by the open handler for any write attempt.
 var errReadOnly = errors.New("read-only filesystem")
 
-// shellEnv is the state shared by every handler for one rsh shell
-// session: FileSystem access plus the tracked working directory. cd is
-// hand-rolled (see callHandler's "cd" case), so every handler resolves
-// paths against this cwd itself rather than against the interpreter's
-// own Dir, which this shell never updates. Handlers report failures
-// through warnf and refusef, which fix the WARN-vs-ERROR log policy.
+// shellEnv holds one session's VFS, working directory, logging, and
+// capture state. cwd is tracked here, not via the interpreter's own Dir,
+// because cd is hand-rolled - see callHandler's "cd" case.
 type shellEnv struct {
 	fsys   FileSystem
 	cwd    string // always an absolute, path.Clean'd vfs path
@@ -50,10 +47,9 @@ func newShellEnv(fsys FileSystem, logger *logging.Logger) *shellEnv {
 	return &shellEnv{fsys: fsys, cwd: "/", logger: logger}
 }
 
-// resolve turns a possibly-relative path into an absolute vfs path
-// against cwd, collapsing "." and ".." lexically. That's the "path"
-// package, not "path/filepath": vfs paths are always forward-slash,
-// never host paths.
+// resolve turns p into an absolute vfs path against cwd, using "path"
+// (not "path/filepath"): vfs paths are always forward-slash, never host
+// paths.
 func (e *shellEnv) resolve(p string) string {
 	if p == "" {
 		p = "."
@@ -70,8 +66,6 @@ func (e *shellEnv) fsPath(p string) string {
 	return strings.TrimPrefix(e.resolve(p), "/")
 }
 
-// warnf reports a routine failure - a missing file, a malformed value -
-// to the client's stderr and, at WARN, the server log.
 func (e *shellEnv) warnf(w io.Writer, format string, args ...any) {
 	fmt.Fprintf(w, format+"\n", args...)
 	e.logger.Warnf("instcmd: "+format, args...)
@@ -88,8 +82,6 @@ func (e *shellEnv) refusef(w io.Writer, format string, args ...any) {
 	e.refused.Store(true)
 }
 
-// stdinOr returns the command's pipeline stdin, or an empty reader when
-// the shell gave it none.
 func stdinOr(hc interp.HandlerContext) io.Reader {
 	if hc.Stdin != nil {
 		return hc.Stdin
@@ -97,16 +89,9 @@ func stdinOr(hc interp.HandlerContext) io.Reader {
 	return strings.NewReader("")
 }
 
-// logServed logs the steady-state INFO line for a file a leaf command
-// actually read: the served tree path and, when the FileSystem can
-// say, the image and in-image path it resolved to - "served
-// /irix6.5.30/foundation1/dist/eoe.sw  <-  irix6.5_foundation1.iso:/dist/eoe.sw".
-// This is what the default (non-verbose) log shows for a shell
-// session instead of the raw command line, which stays at DEBUG: a
-// running manifest of what's actually being installed, not a command
-// trace. rawPath is exactly what the leaf command was given (dd's
-// if=, cat's operand), resolved and reported the same way the command
-// itself resolved it.
+// logServed logs the served path, and its backing image when known, at
+// INFO - the raw command line stays at DEBUG. rawPath is what the leaf
+// command was given (dd's if=, cat's operand).
 func (e *shellEnv) logServed(rawPath string) {
 	abs := e.resolve(rawPath)
 	if ir, ok := e.fsys.(ImageResolver); ok {
@@ -120,26 +105,13 @@ func (e *shellEnv) logServed(rawPath string) {
 	e.sess.RecordServed(abs, "", "")
 }
 
-// baseName returns the last path component of a command name, so
-// /usr/5bin/ls and /bin/ls are recognized the same as ls: inst invokes
-// ls from more than one absolute path.
-func baseName(cmd string) string {
-	if i := strings.LastIndex(cmd, "/"); i >= 0 {
-		return cmd[i+1:]
-	}
-	return cmd
-}
-
 // RunShell serves the shell inst opens over rsh with "exec /bin/sh": one
 // mvdan/sh Runner for the life of the connection, fed one line at a time
-// so state (variables, trap registrations, $?) persists across lines the
-// way a real shell's does. logger, when set, records every line at
-// DEBUG for observability and ERROR/WARN for anything a leaf command
-// refuses or fails - see shellEnv's own comment for that distinction.
-// A command that fails writes its own diagnostic to stderr and the
-// shell keeps going - a real shell continues past a ';'-separated
-// failure - matching inst's expectation that the trailing marker
-// wrapper always still runs.
+// so state (variables, traps, $?) persists across lines like a real
+// shell's does. logger records every line at DEBUG, and ERROR/WARN for
+// anything a leaf command refuses or fails (see refusef). A failing
+// command writes its own diagnostic and the shell keeps going, matching
+// inst's expectation that the trailing marker wrapper always still runs.
 func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, logger *logging.Logger, sess *capture.Session) error {
 	// With capture on, count every EFS backing read against the current
 	// command (countingFS) and every socket write - stdout and stderr both
@@ -168,14 +140,9 @@ func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, logger
 		return fmt.Errorf("instcmd: shell setup: %w", err)
 	}
 
-	// LangPOSIX, not the default LangBash: it's the closer behavioral
-	// match for IRIX's actual /bin/sh, and it structurally rules out
-	// bash-only grammar we never want to support here - notably process
-	// substitution (<(...)), which upstream's own subshell plumbing
-	// backs with a real mkfifo() on the host's temp directory. Under
-	// LangPOSIX the lexer never tokenizes <( as process substitution at
-	// all, so that host-filesystem write is unreachable, not just
-	// unused.
+	// LangPOSIX matches IRIX's actual /bin/sh and blocks Bash process
+	// substitution (<(...)); upstream's implementation of it would create
+	// a real host FIFO, which this shell must never do.
 	parser := syntax.NewParser(syntax.Variant(syntax.LangPOSIX))
 	ctx := context.Background()
 
@@ -223,16 +190,13 @@ func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, logger
 }
 
 // callHandler intercepts specific builtin names before the runner's own
-// Funcs/builtin/exec dispatch, which is how a shell function is allowed
-// to shadow a builtin (r.call checks Funcs before IsBuiltin), and reuses
-// that same precedence here without needing to build real *syntax.Stmt
-// function bodies. Every other command passes through unchanged to the
-// runner's normal dispatch, ending at execHandler for anything that
-// isn't itself a builtin.
+// dispatch, reusing the Funcs-before-builtin precedence a real shell
+// function shadowing a builtin would get (r.call checks Funcs before
+// IsBuiltin). Everything else passes through to execHandler.
 func callHandler(env *shellEnv) interp.CallHandlerFunc {
 	return func(ctx context.Context, args []string) ([]string, error) {
 		hc := interp.HandlerCtx(ctx)
-		switch baseName(args[0]) {
+		switch path.Base(args[0]) {
 		case "echo":
 			// mvdan/sh's builtin echo has no \c support even with -e,
 			// and inst wraps every command in echo 'TOKEN\c' to delimit
@@ -453,17 +417,11 @@ func binaryTest(a, op, b string) (bool, error) {
 	}
 }
 
-// execHandler runs for any simple command that is neither a shell
-// function nor a builtin - the vfs-backed leaf commands, and a refusal
-// for everything else. This is the whitelist: dd, ls, cat, and the grep
-// family are the only external-looking programs this shell can run. grep
-// is here because inst reads a product's machine-conditional lines by
-// piping its .idb through `fgrep ' mach('`; without it those products
-// read as "No valid products in distribution".
+// execHandler permits only the external commands observed from inst.
 func execHandler(env *shellEnv) interp.ExecHandlerFunc {
 	return func(ctx context.Context, args []string) error {
 		hc := interp.HandlerCtx(ctx)
-		switch baseName(args[0]) {
+		switch path.Base(args[0]) {
 		case "dd":
 			return shDD(env, hc, args[1:])
 		case "ls":
@@ -471,7 +429,7 @@ func execHandler(env *shellEnv) interp.ExecHandlerFunc {
 		case "cat":
 			return shCat(env, hc, args[1:])
 		case "grep", "fgrep", "egrep":
-			return shGrep(env, hc, baseName(args[0]), args[1:])
+			return shGrep(env, hc, path.Base(args[0]), args[1:])
 		default:
 			env.refusef(hc.Stderr, "%s: not supported", args[0])
 			return interp.ExitStatus(1)
@@ -479,14 +437,12 @@ func execHandler(env *shellEnv) interp.ExecHandlerFunc {
 	}
 }
 
-// shGrep implements the grep family inst pipes .idb reads through, most
+// shGrep implements the grep forms inst pipes .idb reads through, most
 // importantly `fgrep ' mach('` to find a product's machine-conditional
-// lines. It filters lines from stdin (or, given file operands, from the
-// vfs like cat) and follows grep's exit status: 0 if any line matched,
-// 1 if none, 2 on a usage/pattern error - inst keys on that status. Only
-// the flags inst is known to use are honored (-v, -i, -e); an unknown
-// flag is refused loudly rather than silently ignored, so a gap here is
-// visible. fgrep matches a fixed string, grep/egrep a regexp.
+// lines - without it those products read as "No valid products in
+// distribution". It follows grep's exit status (0 match, 1 no match, 2
+// usage/pattern error) and refuses any flag beyond -v/-i/-e rather than
+// silently ignoring it. fgrep matches a fixed string, grep/egrep a regexp.
 func shGrep(env *shellEnv, hc interp.HandlerContext, name string, args []string) error {
 	var (
 		invert, ignoreCase bool
@@ -679,9 +635,7 @@ func lsLongLine(withInode bool, name string, info FileInfo) string {
 	return line
 }
 
-// permString renders the type + rwxrwxrwx string ls -l shows.
-// instigator's vfs never sets setuid/setgid/sticky, so those bits are
-// out of scope.
+// permString renders file type and rwx permission columns.
 func permString(isDir bool, perm uint32) string {
 	b := []byte("----------")
 	if isDir {
@@ -862,14 +816,10 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 	return nil
 }
 
-// openHandler backs every redirect the shell parses. Reads resolve
-// through the vfs, cwd-relative like every other path here, exactly as
-// dd/ls/cat do; anything with a write intent is refused before the vfs
-// is even consulted, and /dev/null is synthesized rather than left to
-// touch a real device node. There is no other path here: a redirect or
-// test against a real host path (/etc/passwd, say) is just a miss
-// against the vfs, indistinguishable from any other path that doesn't
-// exist in it.
+// openHandler backs every redirect. Reads resolve through the vfs like
+// dd/ls/cat; any write intent is refused before the vfs is consulted, and
+// /dev/null is synthesized. A path outside the vfs (/etc/passwd, say) is
+// just a miss, never a real host filesystem access.
 func openHandler(env *shellEnv) interp.OpenHandlerFunc {
 	return func(ctx context.Context, path string, flag int, perm os.FileMode) (io.ReadWriteCloser, error) {
 		if path == "/dev/null" {
@@ -981,7 +931,11 @@ func statHandler(env *shellEnv) interp.StatHandlerFunc {
 		if err != nil {
 			return nil, err
 		}
-		return fsInfoAdapter{name: baseName(strings.TrimSuffix(abs, "/")), info: info}, nil
+		name := strings.TrimSuffix(abs, "/")
+		if i := strings.LastIndex(name, "/"); i >= 0 {
+			name = name[i+1:]
+		}
+		return fsInfoAdapter{name: name, info: info}, nil
 	}
 }
 
