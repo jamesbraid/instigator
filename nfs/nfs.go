@@ -91,14 +91,14 @@ func (s *Server) SetPorts(mount, nfs uint32) {
 // ServePortmap answers portmap GETPORT so a client can find mountd and
 // nfsd. Conventionally bound to UDP 111.
 func (s *Server) ServePortmap(pc net.PacketConn) error {
-	return s.serveRPC(pc, progPortmap, 2, map[uint32]handlerFunc{
+	return s.serveRPC(pc, progPortmap, map[uint32]handlerFunc{
 		3: s.pmapGetport, // PMAPPROC_GETPORT
 	})
 }
 
 // ServeMount answers the mount protocol. Conventionally bound to UDP 635.
 func (s *Server) ServeMount(pc net.PacketConn) error {
-	return s.serveRPC(pc, progMount, 1, map[uint32]handlerFunc{
+	return s.serveRPC(pc, progMount, map[uint32]handlerFunc{
 		1: s.mountMnt, // MOUNTPROC_MNT
 		3: s.mountUmnt,
 		0: func(net.Addr, *xdrReader) []byte { return nil }, // NULL
@@ -107,7 +107,7 @@ func (s *Server) ServeMount(pc net.PacketConn) error {
 
 // ServeNFS answers NFSv2. Conventionally bound to UDP 2049.
 func (s *Server) ServeNFS(pc net.PacketConn) error {
-	return s.serveRPC(pc, progNFS, 2, map[uint32]handlerFunc{
+	return s.serveRPC(pc, progNFS, map[uint32]handlerFunc{
 		0:  func(net.Addr, *xdrReader) []byte { return nil }, // NULL
 		1:  s.nfsGetattr,
 		4:  s.nfsLookup,
