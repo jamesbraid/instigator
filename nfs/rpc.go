@@ -33,8 +33,8 @@ const (
 type handlerFunc func(caller net.Addr, args *xdrReader) []byte
 
 // serveRPC reads ONC-RPC calls on pc and dispatches by procedure. prog
-// and vers identify this service; dispatch maps procedure to handler.
-func (s *Server) serveRPC(pc net.PacketConn, prog, vers uint32, dispatch map[uint32]handlerFunc) error {
+// identifies this service; dispatch maps procedure to handler.
+func (s *Server) serveRPC(pc net.PacketConn, prog uint32, dispatch map[uint32]handlerFunc) error {
 	buf := make([]byte, 65536)
 	for {
 		n, addr, err := pc.ReadFrom(buf)
@@ -46,13 +46,13 @@ func (s *Server) serveRPC(pc net.PacketConn, prog, vers uint32, dispatch map[uin
 		}
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
-		if reply := s.dispatch(addr, pkt, prog, vers, dispatch); reply != nil {
+		if reply := s.dispatch(addr, pkt, prog, dispatch); reply != nil {
 			pc.WriteTo(reply, addr)
 		}
 	}
 }
 
-func (s *Server) dispatch(addr net.Addr, pkt []byte, prog, vers uint32, dispatch map[uint32]handlerFunc) []byte {
+func (s *Server) dispatch(addr net.Addr, pkt []byte, prog uint32, dispatch map[uint32]handlerFunc) []byte {
 	r := &xdrReader{b: pkt}
 	xid := r.uint32()
 	if r.uint32() != callMsg {

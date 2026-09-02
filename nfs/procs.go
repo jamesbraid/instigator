@@ -20,8 +20,6 @@ const (
 	nfNON = 0
 	nfREG = 1
 	nfDIR = 2
-	nfBLK = 3
-	nfCHR = 4
 	nfLNK = 5
 )
 

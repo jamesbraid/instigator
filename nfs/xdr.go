@@ -19,12 +19,6 @@ func (r *xdrReader) uint32() uint32 {
 	return v
 }
 
-func (r *xdrReader) uint64() uint64 {
-	hi := uint64(r.uint32())
-	lo := uint64(r.uint32())
-	return hi<<32 | lo
-}
-
 // bytes reads a fixed-length opaque of exactly n bytes (no length prefix,
 // no padding), used for the 32-byte NFSv2 filehandle.
 func (r *xdrReader) bytes(n int) []byte {
@@ -56,11 +50,6 @@ func (w *xdrWriter) uint32(v uint32) {
 	var t [4]byte
 	binary.BigEndian.PutUint32(t[:], v)
 	w.b = append(w.b, t[:]...)
-}
-
-func (w *xdrWriter) uint64(v uint64) {
-	w.uint32(uint32(v >> 32))
-	w.uint32(uint32(v))
 }
 
 // fixed appends raw bytes with no length prefix or padding.
