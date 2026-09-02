@@ -33,11 +33,7 @@ func inOrder(t *testing.T, s string, subs ...string) {
 }
 
 // TestCommandsExactFourSetSequence pins Commands' output byte-for-byte
-// for a four-set profile: Sets[0] is already open when inst loads the
-// file, so it opens each later set in order, reopens the primary release
-// last, then runs the fixed selection block, one command per line, trailing
-// newline. This is served as the admin-source file, so any deviation here
-// is a deviation an operator's serial console will see.
+// for a four-set profile; this is served verbatim to admin source.
 func TestCommandsExactFourSetSequence(t *testing.T) {
 	p := testParams()
 	got := Commands(p)
@@ -131,10 +127,9 @@ func TestCommandsKeepsInstalledSoftwareBeforeStandard(t *testing.T) {
 	}
 }
 
-// TestCommandsNeverEmitsRetiredDirectives guards against regressing back
-// to the old release-stream vocabulary: no install feature/maint/prereqs,
-// positional conflicts, or quit. These bytes are served verbatim to a real
-// inst(1M) session.
+// TestCommandsNeverEmitsRetiredDirectives guards against regressing to
+// the old release-stream vocabulary: no install feature/maint/prereqs,
+// positional conflicts, or quit.
 func TestCommandsNeverEmitsRetiredDirectives(t *testing.T) {
 	p := testParams()
 	got := Commands(p)
