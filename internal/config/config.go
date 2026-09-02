@@ -21,25 +21,12 @@ type Client struct {
 	IP   netip.Addr
 }
 
-// Layer is one directory, image, or remote archive contributing files to
-// an install set. Source names it: a local path (a disc image or a
-// directory) or an http(s) URL (a raw image, fetched by byte-range or
-// whole, or a tar/gz archive extracted into the cache). Base, when set,
-// selects a subtree of Source rather than serving it whole - the layer's
-// files are those under Base, rebased to the layer's root. Sha256, when
-// set, is the digest a whole-file fetch of Source is verified against.
-//
-// Dist is the distribution directory inside that source, defaulting to
-// "dist"; whatever it is called there, it merges into the set's own dist.
-// A version-stub disc names its real catalog instead ("dist6.5", or
-// "dist/dist6.5" where the disc hides it behind a .redirect), which
-// rebases it so inst only ever sees /<set>/dist.
-//
-// Stand names the stand directory inside Source, defaulting like Dist to
-// the layer's own "stand". Boot marks the layer whose stand directory is
-// served at /<set>/stand, where the PROM fetches fx.64. At most one layer
-// per set may set it, and only a set an operator actually netboots needs
-// one at all.
+// Layer is one ordered source (local path or http(s) URL) contributing
+// files to an install set. Base, when set, rebases the layer to a subtree
+// of Source. Dist and Stand default to "dist" and "stand" within that
+// source; a version-stub disc sets Dist to its real catalog (e.g.
+// "dist6.5") to unwrap a .redirect. Boot marks the at-most-one layer per
+// set whose stand directory the PROM fetches fx.64 from.
 type Layer struct {
 	Name   string
 	Source string
@@ -83,10 +70,9 @@ type Ports struct {
 	RSH   int
 }
 
-// Credential is HTTP Basic auth offered to one host when a layer's Source
-// is fetched over https. Password is expanded from a "${VAR}" environment
-// reference at parse time, so the config file itself never carries a
-// secret in the clear.
+// Credential supplies HTTP Basic auth to one host when a layer's Source
+// is fetched over https. Password may be a literal or an exact "${VAR}"
+// environment reference, expanded at parse time.
 type Credential struct {
 	Host, Username, Password string
 }
