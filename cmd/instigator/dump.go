@@ -11,11 +11,8 @@ import (
 	"github.com/jamesbraid/instigator/internal/vfs"
 )
 
-// runDump extracts the file or directory at srcPath within image to outdir
-// on the host, recreating the directory structure below it. It is the
-// documented last-resort fallback for sites where serving the tree over
-// rsh proves difficult: point a user at dump and let them copy the
-// distribution to disk by hand.
+// runDump extracts image's srcPath tree to outdir on the host - the
+// last-resort fallback for sites where serving over rsh is difficult.
 func runDump(w io.Writer, image, srcPath, outdir string) error {
 	d, err := vfs.OpenImage(image)
 	if err != nil {
@@ -79,10 +76,8 @@ func (ex *dumper) extractDir(node *efs.Inode, dst string) error {
 		return err
 	}
 	for _, e := range ents {
-		// "." and ".." are the ordinary self/parent entries every EFS
-		// directory carries; skipping them unconditionally also closes
-		// off ".." as an escape vector without needing to special-case
-		// it below.
+		// Skip the self/parent entries; dropping ".." also blocks it as an
+		// escape vector.
 		if e.Name == "." || e.Name == ".." {
 			continue
 		}
