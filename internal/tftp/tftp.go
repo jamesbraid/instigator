@@ -93,13 +93,10 @@ type Server struct {
 	// transfer is abandoned (default 5).
 	Retries int
 
-	// FinalRetries and FinalTimeout govern only the last DATA block of a
-	// transfer (default 1 retry, 300ms). SGI PROMs reopen a file to seek
-	// within it and routinely stop listening once they have what they
-	// need, without ACKing the last block sent; the ordinary mid-transfer
-	// retry budget (Retries x RetryInterval) exists for real packet loss,
-	// not for that expected silence, so the last block gets a cheaper
-	// policy to avoid paying it on every reopen.
+	// FinalRetries and FinalTimeout govern only the last DATA block
+	// (default 1 retry, 300ms): SGI PROMs routinely stop acking it once
+	// they have what they need, so it gets a cheaper retry budget than
+	// mid-transfer loss.
 	FinalRetries int
 	FinalTimeout time.Duration
 
@@ -269,13 +266,8 @@ func parseRRQ(pkt []byte) (file, mode string, trailing []byte, err error) {
 	return file, mode, trailing, nil
 }
 
-// parseOptions interprets the bytes trailing an RRQ's mode string as RFC
-// 2347 TFTP options: complete NAME\0VALUE\0 pairs, both printable ASCII.
-// It returns ok=false for anything else, including the junk an SGI PROM's
-// uninitialized request buffer leaves there (real captures: 9f c5 d2 00,
-// or leftover fragments like "stal" from a prior request's filename) --
-// that junk is neither reliably printable nor paired, so it never gets
-// mistaken for an option.
+// parseOptions accepts complete printable NAME\0VALUE\0 pairs; malformed
+// PROM tail data is ignored.
 func parseOptions(trailing []byte) (opts map[string]string, ok bool) {
 	if len(trailing) == 0 {
 		return nil, true
@@ -310,15 +302,10 @@ func isPrintableASCII(b []byte) bool {
 	return true
 }
 
-// negotiateOptions turns a parsed option set into the OACK body to send
-// (nil if none is accepted) and the block size / per-block timeout this
-// transfer should use. Only blksize (RFC 2348), timeout, and tsize (RFC
-// 2349) are understood. Anything else -- including an RFC 7440 windowsize
-// -- is left out of the OACK, which by RFC 2347 means "not negotiated":
-// exactly today's classic one-block-per-ACK behavior for that option, so
-// an unsupported option degrades safely instead of failing the transfer.
-// A malformed value for a known option is likewise just dropped rather
-// than erroring the whole negotiation.
+// negotiateOptions returns the OACK body to send (nil if none accepted) and
+// the negotiated block size and timeout. It accepts blksize, timeout, and
+// tsize; unsupported or malformed options are silently ignored, degrading
+// to classic one-block-per-ACK behavior rather than failing the transfer.
 func negotiateOptions(opts map[string]string, fileSize int64, defaultBlockSize int, defaultTimeout time.Duration) (oack []byte, blkSize int, timeout time.Duration) {
 	blkSize = defaultBlockSize
 	timeout = defaultTimeout
@@ -387,12 +374,9 @@ func (s *Server) listenTransfer() (*net.UDPConn, error) {
 // an ACK for wantBlock arrives from the client (block 0 acknowledges an
 // OACK). acked reports success; aborted reports the send itself failing or
 // the client sending a TFTP ERROR - both end the transfer immediately.
-// resends is how many retransmits it took (0 if the first send was acked),
-// so a transfer can report its total retry count. ackbuf is caller-owned
-// and reused across calls so a transfer allocates it once, not per block.
-// Uses the AddrPort-flavored UDPConn calls, not ReadFrom/WriteTo: those
-// return/take a net.Addr interface and allocate a new *net.UDPAddr for
-// every single packet.
+// resends is how many retransmits it took (0 if the first send was acked).
+// ackbuf is caller-owned and reused across calls so a transfer allocates it
+// once, not per block.
 func (s *Server) sendAndWaitAck(pc *net.UDPConn, clientAP netip.AddrPort, ackbuf, pkt []byte, wantBlock uint16, timeout time.Duration, retries int) (acked, aborted bool, resends int) {
 	for attempt := 0; attempt <= retries; attempt++ {
 		if _, err := pc.WriteToUDPAddrPort(pkt, clientAP); err != nil {
@@ -613,10 +597,7 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 			s.Logger.Debugf("tftp: %s: DATA block %d (%d bytes, off %d)", client, block, want, off)
 		}
 
-		// The last DATA block of a transfer routinely goes unacknowledged:
-		// an SGI PROM reopens the file to seek and stops listening once it
-		// has what it needs. Give up on it cheaply instead of paying the
-		// mid-transfer retry budget on every reopen.
+		// See FinalRetries: an unacked final block is expected PROM behavior.
 		isFinal := want < int64(effBlockSize)
 		blockRetries, blockTimeout := retries, retry
 		if isFinal {
@@ -637,9 +618,7 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 			result = "aborted"
 			return
 		case isFinal:
-			// An unacked final block is the normal SGI PROM case, not a
-			// failure: the client stopped listening once it had the file.
-			// Give it its own result so the summary does not warn on it.
+			// Its own result so the summary doesn't warn on this expected case.
 			if acked {
 				result = "ok"
 				s.Logger.Infof("tftp: %s: %q done", client, name)
