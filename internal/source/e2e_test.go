@@ -79,12 +79,10 @@ func (c *countingResponseWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// efsImagePaddedDistSA builds a CD image with dist/sa = "SA", the same
-// fixture efsImageDistSA builds, plus a large unreferenced trailing file
-// that pushes the image well past one range-reader chunk (rangeChunkSize,
-// 4 MiB). No directory ever names the padding, so it is written into the
-// image's data blocks (efstest.Builder's Bytes always sizes to the highest
-// block written) without being on the path Build walks to reach dist/sa.
+// efsImagePaddedDistSA builds the efsImageDistSA fixture (dist/sa = "SA") plus
+// a large unreferenced trailing file. No directory names the padding, so it
+// sits in the image's data blocks without being on the path Build walks to
+// reach dist/sa - letting a test prove the tail is never fetched.
 func efsImagePaddedDistSA(t *testing.T, padBytes int) []byte {
 	t.Helper()
 	img := efstest.New()
@@ -95,14 +93,11 @@ func efsImagePaddedDistSA(t *testing.T, padBytes int) []byte {
 	return img.CDImage(64, nil)
 }
 
-// TestEndToEndRangeImageTransfersOnlyTouchedBytes proves the range path is
-// lazy end to end: a raw EFS image (no archive extension, so resolveRaw
-// takes the range branch) is served from a range-capable httptest server,
-// built into a set, and read through Build's returned Tree. dist/sa's
-// bytes and the metadata needed to find them all sit in the image's first
-// rangeChunkSize bytes; a multi-megabyte unreferenced tail never gets
-// fetched. Counting bytes written by the server - not just requests -
-// confirms that: strictly fewer bytes cross the wire than the image holds.
+// TestEndToEndRangeImageTransfersOnlyTouchedBytes proves the range path is lazy
+// end to end: a raw EFS image served from a range-capable httptest server,
+// built and read through Build's Tree, transfers strictly fewer bytes than the
+// image holds - the unreferenced multi-megabyte tail is never fetched. Counting
+// bytes written by the server, not just requests, is what confirms it.
 func TestEndToEndRangeImageTransfersOnlyTouchedBytes(t *testing.T) {
 	const padBytes = 16 << 20 // 16 MiB: several chunks past dist/sa and its metadata
 	raw := efsImagePaddedDistSA(t, padBytes)

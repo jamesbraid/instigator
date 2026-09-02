@@ -6,17 +6,9 @@ import (
 	"os"
 )
 
-// cacheStore is an httpreaderat.Store whose fallback temporary file lives under
-// the resolver's cache directory rather than the OS temp dir. It is used only
-// when a raw-image server ignores Range requests and httpreaderat must buffer
-// the whole object: writing it to a file keeps a large image off the heap.
-//
-// httpreaderat ships StoreFile, but that calls os.CreateTemp("", ...), which
-// needs an OS temp dir - and the shipped scratch container has no /tmp, so the
-// fallback would fail there outright. Keying the temp file to cacheDir (which
-// the config already points at real storage) makes the fallback work inside the
-// container and keeps it under the operator's chosen directory. The file is
-// removed on Close.
+// cacheStore is an httpreaderat.Store that spills a non-range whole-object
+// download to a file under cacheDir. httpreaderat's own StoreFile uses the OS
+// temp dir, which the scratch container lacks; Close removes the file.
 type cacheStore struct {
 	dir  string
 	f    *os.File
@@ -25,9 +17,6 @@ type cacheStore struct {
 
 func newCacheStore(dir string) *cacheStore { return &cacheStore{dir: dir} }
 
-// ReadFrom buffers r into a fresh temporary file under dir, replacing any
-// previous contents. It is not safe for concurrent use, matching the
-// httpreaderat.Store contract; httpreaderat calls it once before serving reads.
 func (s *cacheStore) ReadFrom(r io.Reader) (int64, error) {
 	if s.f != nil {
 		s.Close()
@@ -45,8 +34,6 @@ func (s *cacheStore) ReadFrom(r io.Reader) (int64, error) {
 	return n, err
 }
 
-// ReadAt serves bytes from the buffered file. It is safe for concurrent use.
-// Before any ReadFrom (the range path never buffers) it reports an empty store.
 func (s *cacheStore) ReadAt(p []byte, off int64) (int, error) {
 	if s.f == nil {
 		return 0, nil
@@ -54,11 +41,8 @@ func (s *cacheStore) ReadAt(p []byte, off int64) (int, error) {
 	return s.f.ReadAt(p, off)
 }
 
-// Size is the number of bytes buffered by the last ReadFrom.
 func (s *cacheStore) Size() int64 { return s.size }
 
-// Close closes and removes the temporary file. It is a no-op on the range
-// path, where ReadFrom never ran.
 func (s *cacheStore) Close() error {
 	if s.f == nil {
 		return nil
