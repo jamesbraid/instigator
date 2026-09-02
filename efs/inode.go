@@ -72,14 +72,10 @@ type DirEntry struct {
 // Inode reads inode number ino.
 func (fs *FS) Inode(ino uint32) (*Inode, error) {
 	inopcg := uint32(fs.cgISize) * inodesPerBB
-	if inopcg == 0 {
-		return nil, fmt.Errorf("efs: zero inodes per cylinder group")
-	}
 	cg := ino / inopcg
-	// Full-width compare: int16(cg) would truncate, so cg in
-	// [32768,65535] wrapped negative and slipped past the guard, letting a
-	// forged inode number read arbitrary blocks. ncg is validated > 0 at
-	// Open, so the uint32 conversion is safe.
+	// Compare at full width: int16(cg) would truncate, so a cg of 32768-65535
+	// could wrap negative and slip past the bound, letting a forged inode number
+	// read arbitrary blocks. Open validates cgISize and ncg > 0.
 	if cg >= uint32(fs.ncg) {
 		return nil, fmt.Errorf("efs: inode %d beyond %d cylinder groups", ino, fs.ncg)
 	}
@@ -108,7 +104,7 @@ func (fs *FS) Inode(ino uint32) (*Inode, error) {
 		return nil, fmt.Errorf("efs: inode %d: negative size %d", ino, n.Size)
 	}
 	numext := int(int16(binary.BigEndian.Uint16(d[28:])))
-	if numext < 0 || numext > 0xffff {
+	if numext < 0 {
 		return nil, fmt.Errorf("efs: inode %d: implausible extent count %d", ino, numext)
 	}
 	if numext <= directExtents {
