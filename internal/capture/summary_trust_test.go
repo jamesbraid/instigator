@@ -88,7 +88,7 @@ func TestSummarizePerPathBytesNotOvercountedForMultiFile(t *testing.T) {
 	for _, p := range sum.Paths {
 		total += p.Bytes
 	}
-	if total > 1000 {
-		t.Errorf("per-path bytes total = %d, want <= 1000 (the command only read 1000); overcounted", total)
+	if total != 0 {
+		t.Errorf("per-path bytes total = %d, want 0 (a multi-file command's bytes are not attributable to one path)", total)
 	}
 }

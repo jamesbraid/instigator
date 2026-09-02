@@ -1,9 +1,8 @@
 package capture
 
-// header is the envelope every event carries, embedded in each event
-// struct so its fields land at the top level of the JSON object. The
-// recorder fills V/TS/Run at emit time; each event method fills Event
-// and, where they apply, Session/Client/Result/Err.
+// header is the JSON envelope embedded in every event: the recorder
+// fills V/TS/Run at emit time, and each event method fills Event and
+// whichever of Session/Client/Result/Err it needs.
 type header struct {
 	V       int    `json:"v"`
 	TS      string `json:"ts"`
@@ -21,34 +20,19 @@ func (h *header) setEnvelope(v int, ts, run string) {
 	h.Run = run
 }
 
-// envelopeSetter is what emit needs from an event; every event satisfies
-// it through the embedded header.
 type envelopeSetter interface {
 	setEnvelope(v int, ts, run string)
 }
 
-// serverEvent carries no payload beyond the envelope; enabled services
-// and provenance live in run.json, not here.
-type serverEvent struct {
-	header
-}
-
-// ServerStart records that the server bound its listeners and began
-// serving.
+// ServerStart records that the server bound its listeners and began serving.
 func (r *Recorder) ServerStart() {
-	e := &serverEvent{}
-	e.Event = "server_start"
-	r.emit(e)
+	r.emit(&header{Event: "server_start"})
 }
 
-// ServerStop records a clean shutdown. reason is the stop cause (today
-// always "clean"); it rides in Result so the summary can tell a graceful
-// stop from a future abnormal one.
+// ServerStop records a clean shutdown; reason rides in Result so the
+// summary can tell a graceful stop from a future abnormal one.
 func (r *Recorder) ServerStop(reason string) {
-	e := &serverEvent{}
-	e.Event = "server_stop"
-	e.Result = reason
-	r.emit(e)
+	r.emit(&header{Event: "server_stop", Result: reason})
 }
 
 type listenerExit struct {
@@ -73,10 +57,9 @@ type bootpReply struct {
 	OfferedIP string `json:"offered_ip,omitempty"`
 }
 
-// BootpReply records the outcome of a BOOTP request: answered (a
-// configured client was sent its reply), or ignored (a well-formed request
-// from a MAC that is not configured). alias is the client's configured
-// name, empty when unknown.
+// BootpReply records a BOOTP request's outcome: "answered" (a configured
+// client got its reply) or "ignored" (an unconfigured MAC). alias is the
+// client's configured name, empty when unknown.
 func (r *Recorder) BootpReply(alias, mac, file, offeredIP, result string) {
 	e := &bootpReply{MAC: mac, File: file, OfferedIP: offeredIP}
 	e.Event = "bootp_reply"
@@ -124,9 +107,8 @@ type tftpTransferEnd struct {
 	DurationMS  int64  `json:"duration_ms"`
 }
 
-// TFTPTransferEnd records a completed (or abandoned) TFTP transfer. There
-// is no start event: a boot transfer is short, and a missing end for an
-// interrupted one is not worth a second line here.
+// TFTPTransferEnd records a completed (or abandoned) TFTP transfer; there
+// is no start event, since a boot transfer is short.
 func (r *Recorder) TFTPTransferEnd(rec TransferRecord) {
 	e := &tftpTransferEnd{
 		Name:        rec.Name,

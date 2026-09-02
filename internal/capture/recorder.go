@@ -1,20 +1,10 @@
 // Package capture is instigator's opt-in install recorder. Enabled with
 // serve --capture-dir, it writes a per-run bundle - run.json (provenance
-// and media manifest), events.jsonl (the source of truth: one JSON object
-// per BOOTP/TFTP/rsh/inst lifecycle event), and a derived summary.json -
-// that becomes debugging data, performance numbers, and the command
-// corpus for later CI replay.
-//
-// The package is a standard-library-only leaf: it never imports config,
-// vfs, or any protocol package, so bootp/tftp/instcmd/serve can all
-// import it without a cycle. Provenance and event fields arrive as plain
-// primitives assembled by the caller.
-//
-// A *Recorder is nil-safe: every method is a no-op on a nil receiver,
-// exactly like logging.Logger. That is the whole "disabled" path - when
-// --capture-dir is unset the recorder is nil, no files are opened, and
-// callers install none of the counting wrappers, so capture costs
-// nothing.
+// and media manifest), events.jsonl (one JSON object per BOOTP/TFTP/rsh/
+// inst lifecycle event), and a derived summary.json. It is a standard-
+// library-only leaf so bootp/tftp/instcmd/serve can all import it without
+// a cycle; provenance and event fields arrive as plain primitives
+// assembled by the caller.
 package capture
 
 import (

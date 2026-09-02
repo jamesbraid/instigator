@@ -31,8 +31,8 @@ type Services struct {
 	TFTPPortRange [2]int `json:"tftp_port_range"`
 }
 
-// ConfigInfo is the redacted effective config: enough to reproduce the
-// serving layout, none of it secret (the config carries no credentials).
+// ConfigInfo is the non-secret subset of the effective configuration
+// stored in run.json: enough to reproduce the serving layout.
 type ConfigInfo struct {
 	ServerIP string         `json:"server_ip"`
 	Netmask  string         `json:"netmask"`
@@ -48,10 +48,7 @@ type Client struct {
 	IP    string `json:"ip"`
 }
 
-// Media is one backing image in the served tree. Image is a basename, and
-// there is deliberately no digest: hashing multi-GB ISOs at startup is out
-// of scope (a separate manifest step can add hashes later). Size and Mtime
-// are cheap identity that a later run can compare.
+// Media records cheap source identity without hashing the entire image.
 type Media struct {
 	Media string `json:"media"`
 	Disc  string `json:"disc"`
