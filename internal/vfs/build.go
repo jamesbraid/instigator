@@ -134,7 +134,7 @@ func (t *Tree) addLayer(set SetSpec, layer LayerSpec, r Resolver, resolved map[s
 		}
 	}
 
-	dist, err := cleanDir(layer.Dist)
+	dist, err := cleanRel(layer.Dist, distDir)
 	if err != nil {
 		return fmt.Errorf("distribution directory: %w", err)
 	}
@@ -148,7 +148,7 @@ func (t *Tree) addLayer(set SetSpec, layer LayerSpec, r Resolver, resolved map[s
 	if !layer.Boot {
 		return nil
 	}
-	stand, err := standOr(layer.Stand)
+	stand, err := cleanRel(layer.Stand, standDir)
 	if err != nil {
 		return fmt.Errorf("stand directory: %w", err)
 	}
@@ -174,18 +174,6 @@ func underBase(base, dir string) (string, error) {
 		return "", fmt.Errorf("%q is not a relative path within its source", joined)
 	}
 	return joined, nil
-}
-
-// cleanDir normalizes a configured Dist to an io/fs name; empty means the
-// ordinary "dist", which is what all but the version-stub media use.
-func cleanDir(dir string) (string, error) {
-	return cleanRel(dir, distDir)
-}
-
-// standOr normalizes a configured Stand to an io/fs name; empty means the
-// ordinary "stand", the boot directory every bootable medium ships.
-func standOr(dir string) (string, error) {
-	return cleanRel(dir, standDir)
 }
 
 // cleanRel normalizes a configured relative directory to an io/fs name,
@@ -287,23 +275,10 @@ func (t *Tree) walkFS(set SetSpec, layer LayerSpec, fsys fs.FS, kind OriginKind,
 // resolveLink follows a symlink within its own source, up to maxSymlinks
 // hops, and returns the resolved file's info and path. A relative target
 // resolves against the link's directory and an absolute one against the
-// source root, so no target can name anything outside the source. A target
-// that does not resolve is an error, because serving the set without it
-// would quietly misreport what the media holds. Errors name the link the
-// walk started from, not the intermediate path that following mutated it to.
-//
-// A relative target that climbs strictly above the source root and back
-// down onto a real file (dist/link -> ../../foo, with an in-image /foo) is
-// one such error here: path.Join leaves a leading ".." that fs.ValidPath
-// refuses, so the next fs.Stat fails before it ever reaches the file. The
-// old EFS walker resolved names in an absolute image namespace, where
-// path.Clean simply clamps a "/.." at the root, and would have served it.
-// That divergence is deliberate, not a regression: refusing the escape
-// instead of silently clamping it matches this package's fail-rather-
-// than-guess stance, and no real IRIX install media links above its own
-// dist, so it is unobservable in practice. A directory layer never sees
-// this either way - os.Root already refuses any target that would leave
-// the layer, before resolveLink runs.
+// source root, so no target can name anything outside the source. An
+// unresolvable target is an error - serving the set without it would
+// quietly misreport what the media holds - and errors name the original
+// link, not the intermediate path following it mutated to.
 func resolveLink(fsys fs.FS, name string) (fs.FileInfo, string, error) {
 	orig := name
 	for hops := 0; ; hops++ {
@@ -345,15 +320,11 @@ func statFollow(fsys fs.FS, name string) (fs.FileInfo, string, error) {
 	return resolveLink(fsys, name)
 }
 
-// ownerOf reads the metadata an EFS source reports through Sys(): the
-// owner, link count, and full permission bits. The mode is taken from
-// Sys() rather than info.Mode() because io/fs.FileInfo.Mode() masks the
-// setuid, setgid, and sticky bits an EFS regular file may carry, and the
-// tree serves those bits as the media holds them. A directory layer
-// reports no Sys() owner, so its files stay unowned with a single link,
-// but its mode can carry the same three bits - os reports them as the
-// symbolic ModeSetuid, ModeSetgid, and ModeSticky, which Perm() drops -
-// so they are mapped back onto the numeric form the tree serves.
+// ownerOf recovers the owner, link count, and full permission bits -
+// including setuid/setgid/sticky, which fs.FileMode.Perm masks - from an
+// EFS source's Sys(). A directory layer reports no Sys() owner, so its
+// files stay unowned with a single link, with those same three bits
+// reconstructed from Go's symbolic ModeSetuid/ModeSetgid/ModeSticky.
 func ownerOf(info fs.FileInfo) (uid, gid uint32, nlink int, perm fs.FileMode) {
 	if st, ok := info.Sys().(*efs.Stat); ok {
 		return uint32(st.UID), uint32(st.GID), int(st.Nlink), fs.FileMode(st.Mode & 0o7777)
