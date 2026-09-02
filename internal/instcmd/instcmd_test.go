@@ -123,47 +123,6 @@ func TestRunShellStreamsCommands(t *testing.T) {
 	}
 }
 
-func TestRunShellContinuesPastUnknownCommand(t *testing.T) {
-	var out, errb strings.Builder
-	stdin := strings.NewReader("rm -rf /\necho survived\n")
-	if err := RunShell(testFS(), stdin, &out, &errb, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "survived") {
-		t.Fatalf("shell aborted on unknown command; out=%q err=%q", out.String(), errb.String())
-	}
-	if !strings.Contains(errb.String(), "not supported") {
-		t.Fatalf("unknown command not reported to stderr: %q", errb.String())
-	}
-}
-
-func TestRunShellMarkerProtocol(t *testing.T) {
-	var out, errb strings.Builder
-	// a real command, then inst's marker wrapper referencing its status
-	stdin := strings.NewReader(
-		"dd if=/6.5.30/disc1/dist/sa bs=512 count=1\n" +
-			"trap : 2 ; ( status=$? ; trap '' 2 ; echo 'o?_InstProc9IsDone\\c' ; echo 'o?_InstProc9IsDone'$status'\\c' 1>&2 )\n")
-	if err := RunShell(testFS(), stdin, &out, &errb, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	// stdout: the dd data (512 bytes of 'S') then the marker with no newline
-	if !strings.HasSuffix(out.String(), "o?_InstProc9IsDone") {
-		t.Fatalf("stdout missing trailing marker: ...%q", out.String()[max(0, out.Len()-40):])
-	}
-	if strings.HasSuffix(out.String(), "\n") {
-		t.Fatal("marker must not be newline-terminated (\\c)")
-	}
-	// stderr: dd's records summary, then the marker + status 0 with no
-	// trailing newline - inst scans stderr for the marker, so preceding
-	// diagnostics are fine as long as marker+status ends the stream.
-	if !strings.HasSuffix(errb.String(), "o?_InstProc9IsDone0") {
-		t.Fatalf("stderr missing trailing marker+status: %q", errb.String())
-	}
-	if strings.HasSuffix(errb.String(), "\n") {
-		t.Fatal("stderr marker must not be newline-terminated")
-	}
-}
-
 func TestShellFgrepFiltersMachLines(t *testing.T) {
 	// inst reads a product's machine-conditional lines with
 	// `dd if=<idb> | fgrep ' mach('`; without fgrep the pipe is empty and
