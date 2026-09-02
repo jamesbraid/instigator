@@ -36,12 +36,7 @@ func primaryImage(t *testing.T, dir, name string, withStand bool) string {
 	return writeImage(t, dir, name, img)
 }
 
-// startupCapture separates Start's two output audiences: log is the
-// leveled server log (the install-set inventory, client config - what
-// this server is doing), instructions is the operator's PROM/Inst>
-// commands (what a human does next). They used to be the same stream;
-// James's directive was that they never should have been - see
-// logStartup's own comment.
+// startupCapture keeps server logs and operator instructions separate.
 type startupCapture struct {
 	log          []string
 	instructions []string
@@ -54,7 +49,7 @@ func captureStart(t *testing.T, cfg *config.Config) (*Servers, startupCapture) {
 	t.Helper()
 	var logbuf, instrbuf syncBuffer
 	logger := logging.New(&logbuf, logging.LevelDebug)
-	s, err := Start(cfg, logger, WithRSHHighPorts(), WithInstructions(&instrbuf))
+	s, err := Start(cfg, logger, withRSHHighPorts(), withInstructions(&instrbuf))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,10 +269,6 @@ install_sets:
 	}
 }
 
-// TestStartupLogRedactsURLSourceCredentials covers finding 1: a URL layer
-// source with embedded userinfo and a query-string secret must never reach
-// the leveled server log verbatim - the same redaction the source package
-// applies to its own errors has to hold for the inventory line too.
 func TestStartupLogRedactsURLSourceCredentials(t *testing.T) {
 	img := efstest.New()
 	sa := img.AddFile(0o644, []byte("SA"))
