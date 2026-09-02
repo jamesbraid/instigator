@@ -62,15 +62,9 @@ type Resolver struct {
 
 var _ vfs.Resolver = (*Resolver)(nil)
 
-// New returns a Resolver configured by opts. A nil opts.Client defaults to
-// http.DefaultClient.
-//
-// Both the range reader and grab share one derived *http.Client. It is built
-// fresh rather than mutating opts.Client (often the shared http.DefaultClient),
-// keeping the caller's transport and cookie jar but adding two safeguards: a
-// CheckRedirect that never forwards credentials across a host boundary, and,
-// when the caller supplied no transport, a response-header timeout so a hung
-// server fails fast instead of blocking Resolve forever.
+// New returns a Resolver. The range reader and grab share one derived client
+// that adds a CheckRedirect stripping credentials on unsafe redirects and,
+// when the caller gave no transport, a response-header timeout.
 func New(opts Options) *Resolver {
 	base := opts.Client
 	if base == nil {
@@ -78,11 +72,8 @@ func New(opts Options) *Resolver {
 	}
 	transport := base.Transport
 	if transport == nil {
-		// Clone the standard transport (which already carries a dial timeout)
-		// and add a response-header timeout, so a server that accepts the
-		// connection but never answers is abandoned. A total client.Timeout is
-		// deliberately not set: it would also kill a legitimately slow but
-		// still-progressing large download.
+		// Response-header timeout so a hung server fails fast. No total
+		// client.Timeout: it would also kill a slow but progressing download.
 		t := http.DefaultTransport.(*http.Transport).Clone()
 		t.ResponseHeaderTimeout = 30 * time.Second
 		transport = t
@@ -101,16 +92,10 @@ func New(opts Options) *Resolver {
 	}
 }
 
-// stripAuthOnCrossHostRedirect is the CheckRedirect for the fetch and range
-// client. The Authorization token survives a redirect only to the exact same
-// host:port with no scheme downgrade. net/http compares hostnames alone, so on
-// its own it would carry the token across a port change or, worse, an
-// https->http downgrade that puts Basic credentials on the wire in cleartext
-// (credentials are only ever attached to an https request, so any http target
-// of an originally-https request is a downgrade). This deletes Authorization
-// on a host change or a downgrade, and still enforces net/http's usual
-// ten-redirect ceiling (a custom CheckRedirect replaces the default limit, so
-// it must impose its own).
+// stripAuthOnCrossHostRedirect deletes Authorization when a redirect changes
+// host:port or downgrades https->http (net/http would keep it, leaking Basic
+// credentials in cleartext). It also re-imposes net/http's ten-redirect limit,
+// which a custom CheckRedirect replaces.
 func stripAuthOnCrossHostRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) == 0 {
 		return nil
@@ -146,14 +131,12 @@ func (r *Resolver) Resolve(ref string, sha256hex string) (vfs.Resolved, error) {
 	return r.resolveRaw(ctx, ref, u, sha256hex)
 }
 
-// isURL reports whether ref carries an http(s) scheme; anything else is a
-// local filesystem path.
 func isURL(ref string) bool {
 	return strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://")
 }
 
-// isTreePath reports whether p's lowercased extension marks a tar archive
-// that extracts to a directory tree.
+// isTreePath reports whether p is a tar archive (extracts to a directory tree)
+// rather than a bare .gz (a single image).
 func isTreePath(p string) bool {
 	lp := strings.ToLower(p)
 	return strings.HasSuffix(lp, ".tar.gz") ||
@@ -161,14 +144,12 @@ func isTreePath(p string) bool {
 		strings.HasSuffix(lp, ".tar")
 }
 
-// isArchivePath reports whether p is any archive this resolver unpacks: a
-// tar tree, or a bare .gz wrapping a single image.
 func isArchivePath(p string) bool {
 	return isTreePath(p) || strings.HasSuffix(strings.ToLower(p), ".gz")
 }
 
-// resolveLocal opens a local path: a directory as an os.Root read-only view,
-// a file as an EFS image. sha256 is not applied to a local source.
+// resolveLocal opens a directory as a read-only view or a file as an EFS image;
+// sha256 is not applied to a local source.
 func (r *Resolver) resolveLocal(ref string) (vfs.Resolved, error) {
 	info, err := os.Stat(ref)
 	if err != nil {
@@ -298,25 +279,14 @@ func (r *Resolver) resolveRaw(ctx context.Context, ref string, u *url.URL, sha25
 	}
 	r.creds.apply(req)
 
-	// The store spills the fallback whole download (only when the server
-	// ignores Range) to a temporary file under cacheDir, so a large non-range
-	// image cannot exhaust memory - and, unlike httpreaderat's own StoreFile,
-	// it does not depend on an OS temp dir, which the scratch image does not
-	// have. On the range path the store stays empty and its Close is a no-op;
-	// either way Close is the closer that frees the reader.
+	// The store buffers a non-range whole-file fallback under cacheDir; its
+	// Close is the closer that frees the reader.
 	store := newCacheStore(r.cacheDir)
 	hra, err := httpreaderat.New(r.client, req, store)
 	if err != nil {
 		store.Close()
 		return vfs.Resolved{}, fmt.Errorf("source: fetch %s: %w", SafeURL(ref), unwrapURLErr(err))
 	}
-	// Coalesce efs's small scattered reads into aligned chunks, cached under a
-	// memory budget so serving a large image never grows without limit.
-	// httpreaderat owns the range GETs and is itself concurrency-safe;
-	// cachingReaderAt adds the bounded chunk cache and is thread-safe by
-	// construction, which this reader must be - it backs a single Resolved.FS
-	// read concurrently at serve time, TFTP, NFS and rsh each reading it from
-	// their own goroutines.
 	reader := newCachingReaderAt(hra, chunkCacheChunk, chunkCacheBudget)
 	disc, err := vfs.OpenImageReader(reader, store, SafeURL(ref))
 	if err != nil {
