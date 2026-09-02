@@ -113,9 +113,8 @@ func TestDumpSymlink(t *testing.T) {
 	}
 }
 
-// TestDumpSymlinkFailureContinues checks that a symlink instigator cannot
-// recreate - here because something already occupies its path - logs a
-// warning and lets the rest of the extraction finish, rather than aborting.
+// TestDumpSymlinkFailureContinues: a symlink that can't be recreated logs a
+// warning and the extraction continues instead of aborting.
 func TestDumpSymlinkFailureContinues(t *testing.T) {
 	img := efstest.New()
 	link := img.AddSymlink("somewhere")
