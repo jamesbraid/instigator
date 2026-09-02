@@ -28,9 +28,6 @@ jobs:
       - name: go build
         run: go build ./...
       - name: cross-compile build + vet (darwin, windows)
-        # This step also runs on the Forgejo mirror's Linux runners, so a
-        # macOS/Windows compile or vet break is caught at PR time - the native
-        # jobs below only run post-merge on github.com.
         run: |
           for t in darwin/amd64 darwin/arm64 windows/amd64; do
             echo "== $t =="
@@ -40,11 +37,8 @@ jobs:
       - name: go test -race
         run: go test -race ./...
 
-  # Native macOS and Windows execution. GitHub's hosted runners exist only on
-  # github.com; the canonical Forgejo mirror has Linux runners only, where a job
-  # asking for macos/windows would hang "waiting" forever - so skip it there,
-  # same guard as release.yml. -race stays on the Linux job (Windows -race needs
-  # a C toolchain and is flaky), so these run a plain go test.
+  # Hosted macOS/Windows runners exist only on github.com. -race stays on the
+  # Linux job (Windows -race needs a C toolchain and is flaky).
   test-native:
     if: ${{ github.server_url == 'https://github.com' }}
     strategy:

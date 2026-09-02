@@ -9,9 +9,7 @@ permissions:
 
 jobs:
   goreleaser:
-    # This file lives in .github/workflows, which Forgejo also runs. Only the
-    # public GitHub forge can publish these releases, so skip everywhere else
-    # rather than fail trying to reach github.com from another forge.
+    # Only github.com can publish these releases; the guard skips other forges.
     if: ${{ github.server_url == 'https://github.com' }}
     runs-on: ubuntu-latest
     steps:
