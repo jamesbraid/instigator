@@ -11,13 +11,14 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net"
 	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -46,9 +47,7 @@ const defaultRSHIdleTimeout = 30 * time.Minute
 // and record their end events before the capture is finalized.
 const drainTimeout = 5 * time.Second
 
-// bindErr wraps a listener bind failure. The SGI PROM demands BOOTP on UDP 67
-// and TFTP on UDP 69, so those ports cannot be relocated; when the OS refuses a
-// privileged port the operator needs elevation, so say how per platform.
+// bindErr adds an elevation hint to permission-denied listener errors.
 func bindErr(service string, port int, err error) error {
 	if isBindPermission(err) {
 		hint := "re-run with sudo"
@@ -88,9 +87,6 @@ type Servers struct {
 // looking for a path that is right there; it just isn't a byte stream.
 var errNotRegular = errors.New("not a regular file")
 
-// fsName converts a protocol path to an io/fs name: no leading slash,
-// and "." for the tree root, which is what "/" becomes once the slash
-// comes off.
 func fsName(p string) string {
 	p = strings.TrimPrefix(p, "/")
 	if p == "" {
@@ -99,10 +95,6 @@ func fsName(p string) string {
 	return p
 }
 
-// notFound translates a tree error into the sentinel a protocol server
-// tests for. Anything else - a directory, an unreadable image - passes
-// through as itself, so a real failure is never reported as a missing
-// file.
 func notFound(path string, err, sentinel error) error {
 	if errors.Is(err, vfs.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("%s: %w", path, sentinel)
@@ -234,23 +226,22 @@ type options struct {
 	rshIdleTimeout time.Duration
 }
 
-// WithBootpReplyAddr redirects bootp replies away from the broadcast
+// withBootpReplyAddr redirects bootp replies away from the broadcast
 // address, for tests that cannot receive broadcasts.
-func WithBootpReplyAddr(a net.Addr) Option {
+func withBootpReplyAddr(a net.Addr) Option {
 	return func(o *options) { o.bootpReplyAddr = a }
 }
 
-// WithRSHHighPorts disables the rsh reserved-source-port check, for
+// withRSHHighPorts disables the rsh reserved-source-port check, for
 // tests that cannot bind reserved ports.
-func WithRSHHighPorts() Option {
+func withRSHHighPorts() Option {
 	return func(o *options) { o.rshHighPorts = true }
 }
 
-// WithInstructions directs the operator's PROM/inst commands - "type
-// this to boot" - to w instead of discarding them. These are console
-// UX for a human at the PROM, never part of the leveled server log: no
-// timestamp, no level, and never written unless a caller asks for them.
-func WithInstructions(w io.Writer) Option {
+// withInstructions directs the operator's PROM/inst commands to w instead
+// of discarding them. These are console UX for a human at the PROM, never
+// part of the leveled server log.
+func withInstructions(w io.Writer) Option {
 	return func(o *options) { o.instructions = w }
 }
 
@@ -267,9 +258,9 @@ func withRecorder(r *capture.Recorder) Option {
 	return func(o *options) { o.recorder = r }
 }
 
-// WithRSHIdleTimeout overrides how long a silent rsh session is tolerated
+// withRSHIdleTimeout overrides how long a silent rsh session is tolerated
 // before it is closed and recorded as idle. Zero keeps defaultRSHIdleTimeout.
-func WithRSHIdleTimeout(d time.Duration) Option {
+func withRSHIdleTimeout(d time.Duration) Option {
 	return func(o *options) { o.rshIdleTimeout = d }
 }
 
@@ -581,12 +572,7 @@ func generate(cfg *config.Config, tree *vfs.Tree) (profile, error) {
 	return p, nil
 }
 
-// sanitizeSource returns a layer's Source safe to log or record. A source
-// that parses as an http(s) URL has its userinfo and query/fragment
-// stripped by source.SafeURL - a bare "user:pass@host" or a "?token=..."
-// would otherwise bypass the redaction the source package applies
-// everywhere else it handles a URL. A local path never carries credentials
-// and is returned verbatim.
+// sanitizeSource redacts URL secrets while leaving local paths unchanged.
 func sanitizeSource(src string) string {
 	if u, err := url.Parse(src); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
 		return source.SafeURL(src)
@@ -594,15 +580,7 @@ func sanitizeSource(src string) string {
 	return src
 }
 
-// logStartup logs the install-set inventory at INFO - what each set was
-// assembled from, in layer order, which collisions configuration
-// settled, and where a representative file's bytes actually came from -
-// and separately writes the operator's commands (what to type at the
-// PROM and at the Inst> prompt) to instructions. The two are different
-// audiences: the inventory is what this server is doing, the PROM/Inst>
-// lines are what a human does next, and the latter were never server log
-// content - they went to the logger only because nothing else was wired
-// up to carry them.
+// logStartup logs the served inventory and writes operator commands separately.
 func logStartup(cfg *config.Config, tree *vfs.Tree, p profile, logger *logging.Logger, instructions io.Writer) {
 	for _, set := range cfg.InstallSets {
 		state := "enabled"
@@ -618,7 +596,7 @@ func logStartup(cfg *config.Config, tree *vfs.Tree, p profile, logger *logging.L
 			logger.Infof("set %s: layer %s  <-  source %q  dist %s%s",
 				set.Name, l.Name, sanitizeSource(l.Source), l.Dist, role)
 		}
-		for _, path := range sortedKeys(set.Collisions) {
+		for _, path := range slices.Sorted(maps.Keys(set.Collisions)) {
 			logger.Infof("set %s: collision %s  <-  layer %s", set.Name, path, set.Collisions[path])
 		}
 	}
@@ -672,15 +650,6 @@ func plural(n int, noun string) string {
 		return fmt.Sprintf("%d %s", n, noun)
 	}
 	return fmt.Sprintf("%d %ss", n, noun)
-}
-
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 // BOOTPAddr returns the bootp socket address.

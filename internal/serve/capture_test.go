@@ -92,8 +92,8 @@ func TestCaptureRecordsFullInstall(t *testing.T) {
 
 	cfg := testConfig(t)
 	s, err := Start(cfg, testLogger(t),
-		WithRSHHighPorts(),
-		WithBootpReplyAddr(bootpC.LocalAddr()),
+		withRSHHighPorts(),
+		withBootpReplyAddr(bootpC.LocalAddr()),
 		withRecorder(rec),
 	)
 	if err != nil {
@@ -236,8 +236,8 @@ func TestCaptureRecordsIdleSession(t *testing.T) {
 	}
 	cfg := testConfig(t)
 	s, err := Start(cfg, testLogger(t),
-		WithRSHHighPorts(),
-		WithRSHIdleTimeout(100*time.Millisecond),
+		withRSHHighPorts(),
+		withRSHIdleTimeout(100*time.Millisecond),
 		withRecorder(rec),
 	)
 	if err != nil {
@@ -273,7 +273,7 @@ func TestCloseCancelsSlowTransfer(t *testing.T) {
 		t.Fatalf("capture.New: %v", err)
 	}
 	cfg := testConfig(t)
-	s, err := Start(cfg, testLogger(t), WithRSHHighPorts(), withRecorder(rec))
+	s, err := Start(cfg, testLogger(t), withRSHHighPorts(), withRecorder(rec))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,8 +308,6 @@ func TestCloseCancelsSlowTransfer(t *testing.T) {
 	}
 }
 
-// TestFailedRunJSONAbortsStart covers finding 2: a recorder that cannot
-// write its provenance must fail Start, not serve an unrecorded run.
 func TestFailedRunJSONAbortsStart(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "cap")
 	rec, err := capture.New(dir)
@@ -321,13 +319,11 @@ func TestFailedRunJSONAbortsStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := testConfig(t)
-	if _, err := Start(cfg, testLogger(t), WithRSHHighPorts(), withRecorder(rec)); err == nil {
+	if _, err := Start(cfg, testLogger(t), withRSHHighPorts(), withRecorder(rec)); err == nil {
 		t.Fatal("Start succeeded despite run.json being unwritable")
 	}
 }
 
-// TestCloseReturnsRecorderError covers finding 2: a finalize failure must
-// propagate out of Close, not be logged and swallowed.
 func TestCloseReturnsRecorderError(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "cap")
 	rec, err := capture.New(dir)
@@ -335,7 +331,7 @@ func TestCloseReturnsRecorderError(t *testing.T) {
 		t.Fatalf("capture.New: %v", err)
 	}
 	cfg := testConfig(t)
-	s, err := Start(cfg, testLogger(t), WithRSHHighPorts(), withRecorder(rec))
+	s, err := Start(cfg, testLogger(t), withRSHHighPorts(), withRecorder(rec))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +373,7 @@ func TestCaptureDrainsActiveSessionOnClose(t *testing.T) {
 		t.Fatalf("capture.New: %v", err)
 	}
 	cfg := testConfig(t)
-	s, err := Start(cfg, testLogger(t), WithRSHHighPorts(), withRecorder(rec))
+	s, err := Start(cfg, testLogger(t), withRSHHighPorts(), withRecorder(rec))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +414,7 @@ func TestCaptureRecordsRejectedRSHConnection(t *testing.T) {
 		t.Fatalf("capture.New: %v", err)
 	}
 	cfg := testConfig(t)
-	// No WithRSHHighPorts: the test's ephemeral (high) source port is refused.
+	// No withRSHHighPorts: the test's ephemeral (high) source port is refused.
 	s, err := Start(cfg, testLogger(t), withRecorder(rec))
 	if err != nil {
 		t.Fatal(err)
@@ -462,7 +458,7 @@ func TestFailedStartDoesNotClaimACleanRun(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Ports.RSH = occupied.Addr().(*net.TCPAddr).Port // force the rsh bind to fail
 
-	if _, err := Start(cfg, testLogger(t), WithRSHHighPorts(), withRecorder(rec)); err == nil {
+	if _, err := Start(cfg, testLogger(t), withRSHHighPorts(), withRecorder(rec)); err == nil {
 		t.Fatal("expected Start to fail on the occupied rsh port")
 	}
 

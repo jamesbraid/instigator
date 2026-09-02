@@ -127,7 +127,7 @@ func startAll(t *testing.T) (*Servers, *config.Config) {
 	t.Helper()
 	cfg := testConfig(t)
 	// tests cannot bind reserved client ports
-	s, err := Start(cfg, testLogger(t), WithRSHHighPorts())
+	s, err := Start(cfg, testLogger(t), withRSHHighPorts())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestBOOTPAnswersConfiguredMAC(t *testing.T) {
 
 	// tests cannot receive broadcasts: redirect replies at Start
 	cfg := testConfig(t)
-	s, err := Start(cfg, testLogger(t), WithBootpReplyAddr(c.LocalAddr()))
+	s, err := Start(cfg, testLogger(t), withBootpReplyAddr(c.LocalAddr()))
 	if err != nil {
 		t.Fatal(err)
 	}
