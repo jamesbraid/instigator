@@ -9,9 +9,6 @@ import (
 	"github.com/jamesbraid/instigator/efs/efstest"
 )
 
-// TestBuildRootListsOnlySetNames is Global Constraint 3: a set's contents
-// are its merged layers, so nothing disc-named exists in the served
-// namespace and a pristine tree's root is exactly the configured names.
 func TestBuildRootListsOnlySetNames(t *testing.T) {
 	dir := t.TempDir()
 	img := makeImage(t, dir, "media.iso", map[string]string{"dist/prod.sw": "P"})
@@ -118,10 +115,10 @@ func TestBuildIdenticalDuplicateKeepsEarliestLayer(t *testing.T) {
 	}
 }
 
-// TestBuildDifferingCollisionFails is the fail-closed half of Global
-// Constraint 4: two layers disagreeing about a file's bytes with no
-// configured winner must stop the build, naming the path and both layers,
-// rather than serving whichever the merge happened to reach first.
+// TestBuildDifferingCollisionFails: two layers disagreeing about a file's
+// bytes with no configured winner must stop the build, naming the path
+// and both layers, rather than serving whichever the merge happened to
+// reach first.
 func TestBuildDifferingCollisionFails(t *testing.T) {
 	dir := t.TempDir()
 	first := makeImage(t, dir, "a.iso", map[string]string{"dist/inst.README": "old text"})
@@ -295,13 +292,11 @@ func TestBuildRejectsABootLayerWithNoStand(t *testing.T) {
 	}
 }
 
-// TestBuildRebasesDist65WithoutLeakingRedirect is the redirect-loop
-// regression. A version-stub disc (the onc3/nfs shape) carries a
-// root-level .redirect stub beside the real catalog in dist6.5. inst reads
-// dist/.redirect first when it opens a distribution, so a stub leaking
-// into the set's dist sends it chasing a redirect it cannot resolve and it
-// reopens forever. Mapping only the dist6.5 subtree onto the logical dist
-// excludes the stub structurally - there is no filtering to get wrong.
+// TestBuildRebasesDist65WithoutLeakingRedirect: inst reads dist/.redirect
+// first when it opens a distribution, so a version-stub disc's root-level
+// .redirect stub leaking into the set's dist would send inst into an
+// unresolvable reopen loop. Mapping only the dist6.5 subtree onto dist
+// excludes the stub structurally.
 func TestBuildRebasesDist65WithoutLeakingRedirect(t *testing.T) {
 	dir := t.TempDir()
 	primary := makeImage(t, dir, "tools.image", map[string]string{"dist/sa": "SA"})
@@ -528,16 +523,11 @@ func TestBuildFollowsLinksWithinDirectoryLayers(t *testing.T) {
 }
 
 // TestBuildDirectoryLayerSymlinkOriginIsTheLink guards a subtle invariant:
-// for a directory layer, a symlinked file's origin path is the link's own
-// path, not the target it resolves to. That holds only because
-// os.Root.FS().Stat follows a trailing symlink itself, so resolveLink's
-// first fs.Stat already returns the target's info without the loop ever
-// renaming the path being resolved - unlike an EFS image, whose fs view
-// leaves symlinks unfollowed, so its loop does rename the path as it
-// walks. A change that stopped relying on that Stat-follows-links
-// behavior and walked the link explicitly, the way an image source does,
-// would silently flip Path to the target with the rest of the suite still
-// green.
+// a directory layer's symlinked file keeps the link's own path as its
+// origin, not the target's, because os.Root.FS().Stat follows a trailing
+// symlink itself - resolveLink's first fs.Stat already returns the
+// target's info without renaming the path being resolved. An EFS image's
+// fs view leaves symlinks unfollowed, so its loop does rename the path.
 func TestBuildDirectoryLayerSymlinkOriginIsTheLink(t *testing.T) {
 	dir := t.TempDir()
 	layer := makeDir(t, filepath.Join(dir, "found"), map[string]string{"dist/foundation.sw": "F"})

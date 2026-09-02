@@ -8,30 +8,18 @@ import (
 	"time"
 )
 
-// realMediaDir holds the real IRIX 6.5.30 CD images used to build the
-// applications install set for this audit: Applications.image and
-// Complementary_Applications.image, August 2006. The tests below are
-// skipped when it is absent, so CI (which has no SGI media) stays green
-// while a developer with the media gets a check against the reviewed
-// report in tmp/research/install-set-collision-audit-2026-08-16.md.
+// Tests skip when the local IRIX media is unavailable.
 const realMediaDir = "/storage/software/os/irix/Irix 6.5.30_cdimages"
 
-// The two paths the reviewed audit found differing between the
-// Applications and Complementary Applications distributions. The audit
-// also lists a third shared path, .iscd, as byte-identical (true of
-// Foundation 1/2 in the same report) - but neither local image actually
-// carries a .iscd anywhere, checked exhaustively with `instigator dump`
-// over both discs' full trees. That claim does not hold for this local
-// media, so this audit does not assert a merged .iscd; it only tests the
-// two collisions that are actually present.
+// These are the two differing paths present on the local applications media.
 const (
 	realAppsInstREADME = "applications/dist/inst.README"
 	realAppsSwmgr      = "applications/dist/swmgr.README.html"
 )
 
-// applicationsSpec builds the SetSpec for the reviewed two-image
-// applications profile: both discs contribute their ordinary dist, and
-// neither boots - nothing netboots the applications set.
+// applicationsSpec builds the SetSpec for the two-image applications
+// profile: both discs contribute their ordinary dist, and neither boots -
+// nothing netboots the applications set.
 func applicationsSpec(dir string, collisions map[string]string) SetSpec {
 	return SetSpec{
 		Name: "applications",
@@ -43,11 +31,10 @@ func applicationsSpec(dir string, collisions map[string]string) SetSpec {
 	}
 }
 
-// TestRealMediaApplicationsCollisionFailsWithoutOverride is the
-// fail-closed half of the reviewed applications audit: Applications and
-// Complementary Applications August 2006 both carry inst.README and
-// swmgr.README.html, with different bytes, so Build must refuse to guess
-// a winner rather than silently pick one.
+// TestRealMediaApplicationsCollisionFailsWithoutOverride: Applications and
+// Complementary Applications both carry inst.README and swmgr.README.html
+// with different bytes, so Build must refuse to guess a winner rather than
+// silently pick one.
 func TestRealMediaApplicationsCollisionFailsWithoutOverride(t *testing.T) {
 	if _, err := os.Stat(realMediaDir); err != nil {
 		t.Skip("real IRIX 6.5.30 media not present")
@@ -62,14 +49,11 @@ func TestRealMediaApplicationsCollisionFailsWithoutOverride(t *testing.T) {
 	t.Logf("Build correctly refused: %v", err)
 }
 
-// TestRealMediaApplicationsCollisionOverrideResolves is the override
-// half: with the reviewed winner - the primary Applications layer - named
-// for both differing paths, Build succeeds and both resolve to it. It
-// also times the successful Build over the two real images, which do
-// byte-for-byte comparison on every colliding regular file (here, just
-// the two overridden ones - an override suppresses the compare at its
-// own path), so a slow byte-compare on real overlapping media would show
-// up here rather than as a surprise startup delay in the field.
+// TestRealMediaApplicationsCollisionOverrideResolves: with the
+// Applications layer named as the winner for both differing paths, Build
+// succeeds and both resolve to it. It also times the Build, so a slow
+// byte-compare on real overlapping media shows up here rather than as a
+// surprise startup delay in the field.
 func TestRealMediaApplicationsCollisionOverrideResolves(t *testing.T) {
 	if _, err := os.Stat(realMediaDir); err != nil {
 		t.Skip("real IRIX 6.5.30 media not present")
@@ -105,24 +89,6 @@ func TestRealMediaApplicationsCollisionOverrideResolves(t *testing.T) {
 // present on a developer's machine with the media.
 const realBaseMediaDir = "/storage/software/os/irix/irix_6.5base_iso"
 
-// fullProfileSets is the whole four-set profile a Fuel install actually
-// browses: the 6.5.30 overlays, the 6.5 foundations with ONC3/NFS folded
-// in, the applications pair, and the development discs. Ten real images
-// across two pressings, which is the scale the collision and merge policy
-// has to hold at - the applications-only audit above exercises two.
-//
-// Three layer shapes repeat. Every layer contributes its dist directory
-// to the set's dist; a boot layer additionally serves its stand/, where
-// the PROM fetches fx.64 - only the 6.5.30 set names one. The third shape
-// is the dist6.5 rebase, for a disc whose 6.5 products sit in dist6.5
-// behind a dist/.redirect that would send inst chasing the subdirectory:
-// the layer names dist6.5 as its dist and lands on the set's dist, so the
-// products merge with the rest and the .redirect stub never reaches the
-// set. Both the ONC3/NFS disc and the development foundation disc have
-// that shape.
-//
-// The development set names no boot layer - neither dev disc carries a
-// stand/, and inst boots from the 6.5.30 set.
 func fullProfileSets() []SetSpec {
 	return []SetSpec{
 		{Name: "6.5.30", Layers: []LayerSpec{
@@ -146,22 +112,8 @@ func fullProfileSets() []SetSpec {
 	}
 }
 
-// TestRealMediaFullProfileBuild asks the question the applications audit
-// could not: does the policy hold across the whole profile, or only over
-// the one pair of discs it was written from? It builds all four sets from
-// both pressings at once and checks a file from each layer shape resolves
-// to the layer that really delivered it.
-//
-// Two results are worth the run on their own. The only override the whole
-// profile needs is the reviewed applications pair - the other eight images
-// merge with no configured winner, so every path two of them share is
-// byte-identical. And no symlink anywhere on the ten discs fails the
-// fail-closed rule vfs now enforces, so the media carry no directory link
-// and no link out of their own image.
-//
-// The logged time is the server's cold-start cost: Build walks every
-// directory on all ten images before it serves anything, which on cold
-// media here is over twenty seconds and on warm media a few milliseconds.
+// TestRealMediaFullProfileBuild builds the ten-image profile and checks
+// representative origins.
 func TestRealMediaFullProfileBuild(t *testing.T) {
 	for _, dir := range []string{realMediaDir, realBaseMediaDir} {
 		if _, err := os.Stat(dir); err != nil {
