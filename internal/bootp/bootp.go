@@ -54,16 +54,10 @@ type Server struct {
 	Recorder *capture.Recorder
 }
 
-// Serve answers requests arriving on pc (conventionally bound to :67)
-// until pc is closed. The socket needs SO_BROADCAST when replies go to
-// the default broadcast address; ListenBroadcast provides that.
-//
-// The reply goes to the broadcast address at the request's own source
-// port, not the standard 68. SGI ARCS PROMs send their BOOTREQUEST from
-// an ephemeral port and listen for the reply there; a reply hardwired to
-// port 68 never reaches them and the PROM retries forever. Broadcasting
-// to the source port serves both the RFC client (source 68) and the SGI
-// PROM (ephemeral source).
+// Serve answers requests on pc (conventionally bound to :67) until pc is
+// closed. It replies to the request's source port, not the standard 68,
+// because SGI PROMs send BOOTP from ephemeral ports and listen there; a
+// reply hardwired to 68 never reaches them.
 func (s *Server) Serve(pc net.PacketConn) error {
 	buf := make([]byte, 1500)
 	for {
@@ -85,13 +79,10 @@ func (s *Server) Serve(pc net.PacketConn) error {
 		}
 		mac, file, ok := parseRequest(buf[:n])
 		if !ok {
-			// a non-request datagram is just noise
 			continue
 		}
 		client := s.lookupClient(mac)
 		if client == nil {
-			// a well-formed request from a MAC we don't serve is a
-			// meaningful "ignored"
 			s.Logger.Infof("bootp: ignoring request from %s (not configured)", mac)
 			if s.Recorder != nil {
 				s.Recorder.BootpReply("", mac.String(), file, "", "ignored")
