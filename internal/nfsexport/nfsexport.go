@@ -1,16 +1,7 @@
-// Package nfsexport adapts a standard io/fs filesystem to nfs.FS. It
-// exists to keep the nfs package's protocol implementation directly
-// testable against a real tree without pulling nfs into cmd/instigator's
-// dependency graph: this package is never imported from serve or cmd, only
-// from tests that want to exercise nfs over a real vfs.Tree.
-//
-// Export walks the given fs.FS once and builds a static index from path to
-// a small record (id, type, size, mtime, and - when available - a
-// manifest-line description). Filehandles are the tree's own inode numbers
-// when the fs exposes them (vfs.Tree does, via Stat's *vfs.Metadata), and a
-// sequential per-path assignment otherwise (fstest.MapFS, or any other
-// fs.FS that doesn't carry inode metadata). Either way, ids are stable and
-// unique for the life of the returned nfs.FS.
+// Package nfsexport adapts a standard io/fs filesystem to nfs.FS. It exists
+// to keep the nfs package's protocol implementation testable against a real
+// tree without pulling nfs into cmd/instigator's dependency graph: this
+// package is imported only by tests, not by serve or cmd.
 package nfsexport
 
 import (
@@ -74,9 +65,7 @@ func Export(fsys fs.FS) nfs.FS {
 }
 
 // index walks fsys once and populates byPath/byID. A walk error stops
-// indexing early with whatever was found up to that point - this is an
-// experimental, unwired package, so there is no error path for Export to
-// report through and best-effort indexing is an acceptable trade.
+// indexing early with whatever was found up to that point.
 func (e *export) index() {
 	statter, hasStat := e.fsys.(fs.StatFS)
 	res, hasResolve := e.fsys.(resolver)
@@ -172,11 +161,8 @@ func (n nfsNode) Mtime() uint32 { return n.rec.mtime }
 // whichever of the two node types below they were handed.
 func (n nfsNode) record() *record { return n.rec }
 
-// describableNode additionally implements nfs.Describer. Export only ever
-// constructs this type when fsys has a resolver; nfs.go itself only calls
-// Describe() for a regular file (see nfs/procs.go's nfsLookup), so a
-// directory node never actually gets described even though it carries the
-// same method.
+// describableNode additionally implements nfs.Describer; Export constructs
+// it only when fsys has a resolver.
 type describableNode struct{ nfsNode }
 
 func (n describableNode) Describe() string { return n.rec.describe }
