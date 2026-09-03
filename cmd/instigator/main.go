@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,9 +19,10 @@ import (
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  instigator serve [-v] [--capture-dir <dir>] <config.yaml>
+  instigator serve [-v] [--daemon] [--capture-dir <dir>] <config.yaml>
                                           serve the configured IRIX install sets
-                                          (-v: decode every packet; --capture-dir: record the run)
+                                          (-v: decode every packet; --capture-dir: record the run;
+                                          --daemon: exit 0 once serving, leaving the server running)
   instigator trace summary <capture-dir>  summarize a recorded run (regenerates summary.json)
   instigator ls <image> [path]            list an SGI CD image (volume header + EFS)
   instigator dump <image> <src> <outdir>  extract an EFS subtree to a host directory`)
@@ -35,11 +37,15 @@ func main() {
 	case "serve":
 		args := os.Args[2:]
 		verbose := false
+		daemon := false
 		captureDir := ""
 		for len(args) > 0 && strings.HasPrefix(args[0], "-") {
 			switch {
 			case args[0] == "-v" || args[0] == "--verbose":
 				verbose = true
+				args = args[1:]
+			case args[0] == "--daemon":
+				daemon = true
 				args = args[1:]
 			case args[0] == "--capture-dir":
 				if len(args) < 2 {
@@ -56,6 +62,31 @@ func main() {
 		}
 		if len(args) != 1 {
 			usage()
+		}
+		if daemon {
+			// Re-execute the ordinary serve path as a detached child and
+			// exit 0 once it reports ready. A child that dies first has
+			// already put its error on stderr; exit 1 without repeating it.
+			exe, err := os.Executable()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "instigator:", err)
+				os.Exit(1)
+			}
+			childArgs := []string{"serve"}
+			if verbose {
+				childArgs = append(childArgs, "-v")
+			}
+			if captureDir != "" {
+				childArgs = append(childArgs, "--capture-dir="+captureDir)
+			}
+			childArgs = append(childArgs, args[0])
+			if _, err := daemonize(exe, childArgs, nil); err != nil {
+				if !errors.Is(err, errDaemonChildFailed) {
+					fmt.Fprintln(os.Stderr, "instigator:", err)
+				}
+				os.Exit(1)
+			}
+			return
 		}
 		if err := runServe(args[0], verbose, captureDir); err != nil {
 			fmt.Fprintln(os.Stderr, "instigator:", err)
@@ -135,6 +166,10 @@ func serveUntilSignal(
 	}
 
 	logger.Infof("serving; stop with SIGINT/SIGTERM")
+	// The tree is built and every enabled listener is bound: if a
+	// serve --daemon parent is waiting, this is the moment its exit
+	// code stands for.
+	notifyDaemonReady(logger)
 	<-stop
 	logger.Infof("shutting down")
 	// Close drains, finalizes the capture, and returns a non-nil error if
