@@ -101,11 +101,10 @@ func makeDir(t *testing.T, dir string, files map[string]string) string {
 // localResolver opens a local source the way internal/source does for a
 // local path, without importing that package - it imports this one, so a
 // test that imported it back would be an import cycle. A directory becomes an
-// os.OpenRoot read-only view; a file becomes an EFS image. sha256 is ignored:
-// local sources are not verified.
+// os.OpenRoot read-only view; a file becomes an EFS image.
 type localResolver struct{}
 
-func (localResolver) Resolve(ref, sha256 string) (Resolved, error) {
+func (localResolver) Resolve(ref string) (Resolved, error) {
 	info, err := os.Stat(ref)
 	if err != nil {
 		return Resolved{}, err

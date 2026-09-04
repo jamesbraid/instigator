@@ -105,11 +105,8 @@ path. Identical duplicates are accepted.
 archive is downloaded and unpacked; a raw `.image` on a range-capable server
 is read lazily, pulling only the bytes an install touches. `credentials:`
 supply host-matched HTTP Basic auth over HTTPS, with a `${VAR}` password read
-from the environment. A `sha256:` digest is verified against a full download,
-so a digested raw image is fetched whole rather than ranged (archives are
-always downloaded whole and verified). Downloads are cached under `cache_dir:`
-(default: the user cache dir) and reused across runs; each run re-extracts an
-archive fresh.
+from the environment. Downloads are cached under `cache_dir:` (default: the
+user cache dir) and reused across runs; each run re-extracts an archive fresh.
 
 The complete example also shows client filtering, service toggles, and the
 low TFTP transfer-port range required by SGI PROMs.

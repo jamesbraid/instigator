@@ -3,8 +3,6 @@ package source
 import (
 	"archive/tar"
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -20,28 +18,6 @@ import (
 	"github.com/jamesbraid/instigator/efs/efstest"
 	"github.com/jamesbraid/instigator/internal/vfs"
 )
-
-// cacheHasFile reports whether dir holds any regular file. Only the
-// cache-backed branches (whole-file fetch, archive extraction) write under a
-// Resolver's CacheDir; the range branch never touches it, so a non-empty
-// CacheDir proves a whole-file fetch ran.
-func cacheHasFile(t *testing.T, dir string) bool {
-	t.Helper()
-	found := false
-	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() {
-			found = true
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk cache dir: %v", err)
-	}
-	return found
-}
 
 // efsImage builds a minimal SGI CD image whose EFS root holds one file, the
 // same shape vfs's makeImage produces, so a resolved image has a known path
@@ -77,7 +53,7 @@ func TestResolveRemoteTarGzTree(t *testing.T) {
 	defer srv.Close()
 
 	r := New(Options{CacheDir: t.TempDir(), Client: srv.Client()})
-	res, err := r.Resolve(srv.URL+"/foundations.tar.gz", "")
+	res, err := r.Resolve(srv.URL + "/foundations.tar.gz")
 	if err != nil || res.Kind != vfs.OriginDirectory {
 		t.Fatalf("kind=%v err=%v", res.Kind, err)
 	}
@@ -103,7 +79,7 @@ func TestResolveRemoteRangeImage(t *testing.T) {
 	defer srv.Close()
 
 	r := New(Options{CacheDir: t.TempDir(), Client: srv.Client()})
-	res, err := r.Resolve(srv.URL+"/tools.image", "")
+	res, err := r.Resolve(srv.URL + "/tools.image")
 	if err != nil || res.Kind != vfs.OriginImage {
 		t.Fatalf("kind=%v err=%v", res.Kind, err)
 	}
@@ -135,7 +111,7 @@ func TestResolveRawNonRangeServer(t *testing.T) {
 	url := srv.URL + "/tools.image"
 
 	for _, pass := range []string{"first", "second"} {
-		res, err := r.Resolve(url, "")
+		res, err := r.Resolve(url)
 		if err != nil || res.Kind != vfs.OriginImage {
 			t.Fatalf("%s resolve: kind=%v err=%v", pass, res.Kind, err)
 		}
@@ -168,75 +144,13 @@ func TestResolveMaliciousArchiveContained(t *testing.T) {
 	defer srv.Close()
 
 	r := New(Options{CacheDir: cacheDir, Client: srv.Client()})
-	res, err := r.Resolve(srv.URL+"/evil.tar.gz", "")
+	res, err := r.Resolve(srv.URL + "/evil.tar.gz")
 	if err == nil {
 		res.Closer.Close()
 		t.Fatal("Resolve accepted a traversing archive; want rejection")
 	}
 	if _, statErr := os.Stat(filepath.Join(cacheDir, "ESCAPED")); !os.IsNotExist(statErr) {
 		t.Fatalf("archive escaped the extraction dir: CacheDir/ESCAPED exists (stat err=%v)", statErr)
-	}
-}
-
-// TestResolveRawImageWithChecksumFetchesWhole: a raw image given an expected
-// sha256 is fetched whole and opened from the cache as an OriginImage, never
-// taking the range branch - verifying a digest means reading every byte, so
-// there is nothing to gain by ranging. The server honours Range, so absent the
-// digest the resolver would read it by Range-bearing chunk GETs and never issue
-// a Range-less fetch. Kind and content alone cannot tell the branches apart
-// (both yield an OriginImage serving the same bytes), so this asserts the two
-// side effects only the whole-file branch produces: exactly one GET with no
-// Range header, and a populated CacheDir.
-func TestResolveRawImageWithChecksumFetchesWhole(t *testing.T) {
-	raw := efsImageDistSA(t)
-	sum := sha256.Sum256(raw)
-	digest := hex.EncodeToString(sum[:])
-
-	var noRangeFetches atomic.Int64
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Range") == "" {
-			noRangeFetches.Add(1)
-		}
-		http.ServeContent(w, r, "tools.image", time.Time{}, bytes.NewReader(raw))
-	}))
-	defer srv.Close()
-
-	cacheDir := t.TempDir()
-	r := New(Options{CacheDir: cacheDir, Client: srv.Client()})
-	res, err := r.Resolve(srv.URL+"/tools.image", digest)
-	if err != nil || res.Kind != vfs.OriginImage {
-		t.Fatalf("kind=%v err=%v", res.Kind, err)
-	}
-	defer res.Closer.Close()
-
-	if b, err := fs.ReadFile(res.FS, "dist/sa"); err != nil || string(b) != "SA" {
-		t.Fatalf("dist/sa=%q err=%v", b, err)
-	}
-
-	if got := noRangeFetches.Load(); got != 1 {
-		t.Errorf("no-Range full fetches=%d, want 1 (a digest must fetch whole, not by range)", got)
-	}
-	if !cacheHasFile(t, cacheDir) {
-		t.Errorf("CacheDir %s is empty; the digested fetch did not cache a whole-file download", cacheDir)
-	}
-}
-
-// TestResolveRawImageChecksumMismatch: a raw image whose bytes do not match the
-// given sha256 is rejected - Resolve errors and nothing is served - proving the
-// digest is actually verified, not merely a signal to fetch whole.
-func TestResolveRawImageChecksumMismatch(t *testing.T) {
-	raw := efsImageDistSA(t)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.ServeContent(w, r, "tools.image", time.Time{}, bytes.NewReader(raw))
-	}))
-	defer srv.Close()
-
-	wrong := hex.EncodeToString(bytes.Repeat([]byte{0xab}, sha256.Size))
-	r := New(Options{CacheDir: t.TempDir(), Client: srv.Client()})
-	res, err := r.Resolve(srv.URL+"/tools.image", wrong)
-	if err == nil {
-		res.Closer.Close()
-		t.Fatal("Resolve accepted an image whose sha256 did not match; want rejection")
 	}
 }
 
@@ -291,7 +205,7 @@ func TestResolveRangeImageConcurrentReadsRace(t *testing.T) {
 	defer srv.Close()
 
 	r := New(Options{CacheDir: t.TempDir(), Client: srv.Client()})
-	res, err := r.Resolve(srv.URL+"/tools.image", "")
+	res, err := r.Resolve(srv.URL + "/tools.image")
 	if err != nil || res.Kind != vfs.OriginImage {
 		t.Fatalf("kind=%v err=%v", res.Kind, err)
 	}
@@ -357,12 +271,12 @@ func TestFetchCacheKeyedOnFullURL(t *testing.T) {
 		t.Fatalf("cacheDest collides for distinct URLs sharing a basename: both %s", d30)
 	}
 
-	res30, err := r.Resolve(url30, "")
+	res30, err := r.Resolve(url30)
 	if err != nil {
 		t.Fatalf("resolve 6.5.30: %v", err)
 	}
 	defer res30.Closer.Close()
-	res22, err := r.Resolve(url22, "")
+	res22, err := r.Resolve(url22)
 	if err != nil {
 		t.Fatalf("resolve 6.5.22: %v", err)
 	}

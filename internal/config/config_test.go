@@ -204,13 +204,12 @@ install_sets:
       - name: disc1
         source: https://forge.example/x/disc1.tar.gz
         base: disc1
-        sha256: abc123
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
 	l := cfg.InstallSets[0].Layers[0]
-	if l.Source == "" || l.Base != "disc1" || l.Sha256 != "abc123" {
+	if l.Source == "" || l.Base != "disc1" {
 		t.Fatalf("layer = %+v", l)
 	}
 	if len(cfg.Credentials) != 1 || cfg.Credentials[0].Password != "tok" {

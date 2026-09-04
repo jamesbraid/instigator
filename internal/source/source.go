@@ -111,12 +111,10 @@ func stripAuthOnCrossHostRedirect(req *http.Request, via []*http.Request) error 
 	return nil
 }
 
-// Resolve turns ref into a read-only filesystem. sha256hex, when non-empty, is
-// the layer's expected digest. Verifying it requires reading the whole object,
-// so an archive or a raw image with a digest is fetched whole and hashed before
-// use. It is ignored for a local source; a raw image with no digest is read
-// lazily by byte-range, where a partial read cannot be hashed.
-func (r *Resolver) Resolve(ref string, sha256hex string) (vfs.Resolved, error) {
+// Resolve turns ref - a local path or an http(s) URL - into a read-only
+// filesystem. An archive is fetched whole and extracted; a raw image is read
+// lazily by byte-range, buffered whole only if the server ignores ranges.
+func (r *Resolver) Resolve(ref string) (vfs.Resolved, error) {
 	if !isURL(ref) {
 		return r.resolveLocal(ref)
 	}
@@ -126,9 +124,9 @@ func (r *Resolver) Resolve(ref string, sha256hex string) (vfs.Resolved, error) {
 	}
 	ctx := context.Background()
 	if isArchivePath(u.Path) {
-		return r.resolveArchive(ctx, ref, u, sha256hex)
+		return r.resolveArchive(ctx, ref, u)
 	}
-	return r.resolveRaw(ctx, ref, u, sha256hex)
+	return r.resolveRaw(ctx, ref)
 }
 
 func isURL(ref string) bool {
@@ -148,8 +146,7 @@ func isArchivePath(p string) bool {
 	return isTreePath(p) || strings.HasSuffix(strings.ToLower(p), ".gz")
 }
 
-// resolveLocal opens a directory as a read-only view or a file as an EFS image;
-// sha256 is not applied to a local source.
+// resolveLocal opens a directory as a read-only view or a file as an EFS image.
 func (r *Resolver) resolveLocal(ref string) (vfs.Resolved, error) {
 	info, err := os.Stat(ref)
 	if err != nil {
@@ -170,14 +167,13 @@ func (r *Resolver) resolveLocal(ref string) (vfs.Resolved, error) {
 }
 
 // resolveArchive fetches an archive into the cache (skipping the download when
-// a complete copy is already there, verifying sha256 when given) and extracts
-// it fresh into a temporary directory that is discarded when the result is
-// closed. A tar archive yields a directory; a bare .gz yields the single
-// image it wraps.
-func (r *Resolver) resolveArchive(ctx context.Context, ref string, u *url.URL, sha256hex string) (vfs.Resolved, error) {
+// a complete copy is already there) and extracts it fresh into a temporary
+// directory that is discarded when the result is closed. A tar archive yields
+// a directory; a bare .gz yields the single image it wraps.
+func (r *Resolver) resolveArchive(ctx context.Context, ref string, u *url.URL) (vfs.Resolved, error) {
 	base := path.Base(u.Path)
 	archive := r.cacheDest(ref, base)
-	if err := r.download(ctx, ref, sha256hex, archive); err != nil {
+	if err := r.download(ctx, ref, archive); err != nil {
 		return vfs.Resolved{}, err
 	}
 
@@ -250,29 +246,10 @@ func (r *Resolver) extract(ctx context.Context, archive, outName string) (string
 	return tmp, nil
 }
 
-// resolveRaw opens a URL with no archive extension as a single EFS image. With
-// no expected digest the image is read lazily by byte-range - nothing hitting
-// disk on a range-capable server, and buffered whole into a temporary file
-// only if the server ignores ranges. When sha256hex is given the whole image
-// must be read to verify it, so it is fetched whole into the cache, checked,
-// and opened from there.
-func (r *Resolver) resolveRaw(ctx context.Context, ref string, u *url.URL, sha256hex string) (vfs.Resolved, error) {
-	if sha256hex != "" {
-		name := path.Base(u.Path)
-		if name == "." || name == "/" || name == "" {
-			name = "image"
-		}
-		dst := r.cacheDest(ref, name)
-		if err := r.download(ctx, ref, sha256hex, dst); err != nil {
-			return vfs.Resolved{}, err
-		}
-		disc, err := vfs.OpenImage(dst)
-		if err != nil {
-			return vfs.Resolved{}, fmt.Errorf("source: %w", err)
-		}
-		return vfs.Resolved{FS: disc.FSys(), Kind: vfs.OriginImage, Closer: disc}, nil
-	}
-
+// resolveRaw opens a URL with no archive extension as a single EFS image, read
+// lazily by byte-range - nothing hitting disk on a range-capable server, and
+// buffered whole into a temporary file only if the server ignores ranges.
+func (r *Resolver) resolveRaw(ctx context.Context, ref string) (vfs.Resolved, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ref, nil)
 	if err != nil {
 		return vfs.Resolved{}, fmt.Errorf("source: fetch %s: build request: %w", SafeURL(ref), unwrapURLErr(err))
@@ -309,11 +286,10 @@ func (r *Resolver) cacheDest(rawURL, base string) string {
 }
 
 // download fetches ref into dst via grab: a complete dst already on disk is
-// reused rather than re-fetched (grab's skip/resume is the fetch cache), and
-// sha256hex, when given, is validated against the downloaded bytes with the
-// file deleted on mismatch. Credentials are attached to the request out of
-// band; the URL is never echoed into an error with its userinfo intact.
-func (r *Resolver) download(ctx context.Context, ref, sha256hex, dst string) error {
+// reused rather than re-fetched (grab's skip/resume is the fetch cache).
+// Credentials are attached to the request out of band; the URL is never echoed
+// into an error with its userinfo intact.
+func (r *Resolver) download(ctx context.Context, ref, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return fmt.Errorf("source: create cache dir: %w", err)
 	}
@@ -323,13 +299,6 @@ func (r *Resolver) download(ctx context.Context, ref, sha256hex, dst string) err
 	}
 	req = req.WithContext(ctx)
 	r.creds.apply(req.HTTPRequest)
-	if sha256hex != "" {
-		sum, err := hex.DecodeString(sha256hex)
-		if err != nil {
-			return fmt.Errorf("source: fetch %s: invalid sha256 %q: %w", SafeURL(ref), sha256hex, err)
-		}
-		req.SetChecksum(sha256.New(), sum, true)
-	}
 	if err := r.grab.Do(req).Err(); err != nil {
 		return fmt.Errorf("source: fetch %s: %w", SafeURL(ref), unwrapURLErr(err))
 	}

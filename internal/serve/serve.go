@@ -484,7 +484,6 @@ func setSpecs(cfg *config.Config) []vfs.SetSpec {
 				Base:   l.Base,
 				Dist:   l.Dist,
 				Stand:  l.Stand,
-				Sha256: l.Sha256,
 				Boot:   l.Boot,
 			})
 		}

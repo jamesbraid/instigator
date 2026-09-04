@@ -7,9 +7,7 @@ package vfs
 // image, or a pre-extracted read-only directory) or an http(s) URL - which
 // the Resolver turns into a read-only filesystem. An image is opened once
 // and shared across every view of it; a directory is opened with os.OpenRoot
-// so served paths cannot escape it through a symlink. Sha256, when set, is
-// the expected digest of a fetched source, verified against a whole-file
-// download and ignored for a local source.
+// so served paths cannot escape it through a symlink.
 //
 // Base rebases the layer within that source: Dist and Stand are joined under
 // it, so a source whose tree sits below a subdirectory - an extracted
@@ -36,7 +34,6 @@ type LayerSpec struct {
 	Base   string
 	Dist   string
 	Stand  string
-	Sha256 string
 	Boot   bool
 }
 

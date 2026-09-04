@@ -107,8 +107,7 @@ install_sets:
 
   # Optional freeware media are opened last in the proven base profile.
   # This one is fetched over HTTPS instead of read from local disk: the
-  # tarball unpacks to disc1/dist/..., so base points at disc1. sha256
-  # is checked against the downloaded file before it's unpacked, and the
+  # tarball unpacks to disc1/dist/..., so base points at disc1. The
   # downloaded archive is kept under cache_dir so a repeat run skips the
   # fetch (the tree is re-extracted fresh each run).
   - name: freeware
@@ -116,7 +115,6 @@ install_sets:
       - name: freeware
         source: https://media.example.com/irix/freeware-february-2003.tar.gz
         base: disc1
-        sha256: ce4145e1e72c42b371e030480f7e2a15fd6355db2ab642e523741e8deaedcfc0
 
 services:
   bootp: true
