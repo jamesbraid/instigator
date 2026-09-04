@@ -16,6 +16,8 @@ import (
 	"net/netip"
 	"syscall"
 
+	"golang.org/x/net/ipv4"
+
 	"github.com/jamesbraid/instigator/internal/capture"
 	"github.com/jamesbraid/instigator/internal/logging"
 )
@@ -60,8 +62,15 @@ type Server struct {
 // reply hardwired to 68 never reaches them.
 func (s *Server) Serve(pc net.PacketConn) error {
 	buf := make([]byte, 1500)
+	// A broadcast reply otherwise follows the routing table, which on a
+	// multi-homed host is the wrong interface.
+	p := ipv4.NewPacketConn(pc)
+	if err := p.SetControlMessage(ipv4.FlagInterface, true); err != nil {
+		s.Logger.Debugf("bootp: no ingress interface available, replies follow the routing table: %v", err)
+	}
+
 	for {
-		n, src, err := pc.ReadFrom(buf)
+		n, cm, src, err := p.ReadFrom(buf)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return nil
@@ -113,7 +122,7 @@ func (s *Server) Serve(pc net.PacketConn) error {
 			s.Logger.Debugf("bootp: send %d bytes to %s (%s)\n%s", len(reply), dst, how, decodeReq(reply))
 		}
 		result := "answered"
-		if _, err := pc.WriteTo(reply, dst); err != nil {
+		if _, err := p.WriteTo(reply, replyVia(cm), dst); err != nil {
 			s.Logger.Errorf("bootp: reply to %s: %v", dst, err)
 			result = "error"
 		}
@@ -183,6 +192,15 @@ func (s *Server) buildReply(req []byte, client *Client) []byte {
 	}
 	vend[w] = 255
 	return rep
+}
+
+// replyVia sends a reply back out the interface its request arrived on.
+// Nil leaves the choice to the routing table.
+func replyVia(cm *ipv4.ControlMessage) *ipv4.ControlMessage {
+	if cm == nil || cm.IfIndex <= 0 {
+		return nil
+	}
+	return &ipv4.ControlMessage{IfIndex: cm.IfIndex}
 }
 
 // ListenBroadcast opens the server socket on addr (":67" in production)
