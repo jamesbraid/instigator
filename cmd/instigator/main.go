@@ -4,93 +4,87 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
+
+	"github.com/urfave/cli/v3"
 
 	"github.com/jamesbraid/instigator/internal/config"
 	"github.com/jamesbraid/instigator/internal/logging"
 	"github.com/jamesbraid/instigator/internal/serve"
 )
 
-func usage() {
-	fmt.Fprintln(os.Stderr, `usage:
-  instigator serve [-v] [--capture-dir <dir>] <config.yaml>
-                                          serve the configured IRIX install sets
-                                          (-v: decode every packet; --capture-dir: record the run)
-  instigator trace summary <capture-dir>  summarize a recorded run (regenerates summary.json)
-  instigator ls <image> [path]            list an SGI CD image (volume header + EFS)
-  instigator dump <image> <src> <outdir>  extract an EFS subtree to a host directory`)
-	os.Exit(2)
-}
-
 func main() {
-	if len(os.Args) < 2 {
-		usage()
+	root := &cli.Command{
+		Name:  "instigator",
+		Usage: "network install server for SGI IRIX systems",
+		Commands: []*cli.Command{
+			{
+				Name:      "serve",
+				Usage:     "serve the configured IRIX install sets",
+				Arguments: []cli.Argument{&cli.StringArgs{Name: "config", UsageText: "<config.yaml>", Min: 1, Max: 1}},
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "decode every packet"},
+					&cli.StringFlag{Name: "capture-dir", Usage: "record the run to `DIR`"},
+				},
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					return runServe(cmd.StringArgs("config")[0], cmd.Bool("verbose"), cmd.String("capture-dir"))
+				},
+			},
+			{
+				Name:  "trace",
+				Usage: "inspect a recorded run",
+				Commands: []*cli.Command{
+					{
+						Name:      "summary",
+						Usage:     "summarize a recorded run, regenerating summary.json",
+						Arguments: []cli.Argument{&cli.StringArgs{Name: "capture-dir", Min: 1, Max: 1}},
+						Action: func(_ context.Context, cmd *cli.Command) error {
+							return runTraceSummary(cmd.Root().Writer, cmd.StringArgs("capture-dir")[0])
+						},
+					},
+				},
+			},
+			{
+				Name:  "ls",
+				Usage: "list an SGI CD image (volume header + EFS)",
+				Arguments: []cli.Argument{
+					&cli.StringArgs{Name: "image", Min: 1, Max: 1},
+					&cli.StringArgs{Name: "path", Min: 0, Max: 1},
+				},
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					// The path is optional and defaults to the image root.
+					path := "/"
+					if given := cmd.StringArgs("path"); len(given) > 0 {
+						path = given[0]
+					}
+					return runLs(cmd.Root().Writer, cmd.StringArgs("image")[0], path)
+				},
+			},
+			{
+				Name:  "dump",
+				Usage: "extract an EFS subtree to a host directory",
+				Arguments: []cli.Argument{
+					&cli.StringArgs{Name: "image", Min: 1, Max: 1},
+					&cli.StringArgs{Name: "src", Min: 1, Max: 1},
+					&cli.StringArgs{Name: "outdir", Min: 1, Max: 1},
+				},
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					return runDump(cmd.Root().Writer, cmd.StringArgs("image")[0], cmd.StringArgs("src")[0], cmd.StringArgs("outdir")[0])
+				},
+			},
+		},
+		Writer:    os.Stdout,
+		ErrWriter: os.Stderr,
 	}
-	switch os.Args[1] {
-	case "serve":
-		args := os.Args[2:]
-		verbose := false
-		captureDir := ""
-		for len(args) > 0 && strings.HasPrefix(args[0], "-") {
-			switch {
-			case args[0] == "-v" || args[0] == "--verbose":
-				verbose = true
-				args = args[1:]
-			case args[0] == "--capture-dir":
-				if len(args) < 2 {
-					usage()
-				}
-				captureDir = args[1]
-				args = args[2:]
-			case strings.HasPrefix(args[0], "--capture-dir="):
-				captureDir = strings.TrimPrefix(args[0], "--capture-dir=")
-				args = args[1:]
-			default:
-				usage()
-			}
-		}
-		if len(args) != 1 {
-			usage()
-		}
-		if err := runServe(args[0], verbose, captureDir); err != nil {
-			fmt.Fprintln(os.Stderr, "instigator:", err)
-			os.Exit(1)
-		}
-	case "trace":
-		if len(os.Args) != 4 || os.Args[2] != "summary" {
-			usage()
-		}
-		if err := runTraceSummary(os.Stdout, os.Args[3]); err != nil {
-			fmt.Fprintln(os.Stderr, "instigator:", err)
-			os.Exit(1)
-		}
-	case "ls":
-		if len(os.Args) < 3 || len(os.Args) > 4 {
-			usage()
-		}
-		path := "/"
-		if len(os.Args) == 4 {
-			path = os.Args[3]
-		}
-		if err := runLs(os.Stdout, os.Args[2], path); err != nil {
-			fmt.Fprintln(os.Stderr, "instigator:", err)
-			os.Exit(1)
-		}
-	case "dump":
-		if len(os.Args) != 5 {
-			usage()
-		}
-		if err := runDump(os.Stdout, os.Args[2], os.Args[3], os.Args[4]); err != nil {
-			fmt.Fprintln(os.Stderr, "instigator:", err)
-			os.Exit(1)
-		}
-	default:
-		usage()
+
+	if err := root.Run(context.Background(), os.Args); err != nil {
+		fmt.Fprintln(os.Stderr, "instigator:", err)
+		os.Exit(1)
 	}
 }
 
