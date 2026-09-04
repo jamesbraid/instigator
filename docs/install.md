@@ -109,6 +109,15 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
+To start the server from a script and wait until it is serving:
+
+```sh
+systemd-notify --fork -- instigator serve /etc/instigator.yaml
+```
+
+It returns 0 once the server is serving and leaves it running, or non-zero
+with the server's own error.
+
 On macOS the same shape as a launchd plist, with `ProgramArguments` set to
 the binary, `serve`, and the configuration path. launchd has no readiness
 protocol, so `launchctl` reports the job started once the process runs,

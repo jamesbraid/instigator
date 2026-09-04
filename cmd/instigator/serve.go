@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"os/signal"
@@ -13,15 +14,14 @@ import (
 	"github.com/jamesbraid/instigator/internal/serve"
 )
 
-// run serves until a signal stops it, reporting readiness once the sets
-// are built and the listeners are live. Under a systemd Type=notify unit
-// that report is what releases systemctl start, so a caller learns the
-// server is serving without watching the log for it.
+// run serves until a signal stops it. The log goes to stderr because a
+// caller waiting on readiness may have closed stdout, as
+// systemd-notify --fork does.
 func run(configPath string, verbose bool, captureDir string) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
-	return runUntilSignal(configPath, verbose, captureDir, os.Stdout, sig)
+	return runUntilSignal(configPath, verbose, captureDir, os.Stderr, sig)
 }
 
 func runUntilSignal(configPath string, verbose bool, captureDir string, output io.Writer, stop <-chan os.Signal) error {
@@ -53,10 +53,10 @@ func runUntilSignal(configPath string, verbose bool, captureDir string, output i
 	}
 
 	logger.Infof("serving; stop with SIGINT/SIGTERM")
-	// A failure to report leaves a Type=notify unit waiting for its own
-	// timeout, so it is an error rather than a warning.
+	// Whoever set NOTIFY_SOCKET waits forever if this never arrives.
 	if _, err := sdnotify.SdNotify(false, sdnotify.SdNotifyReady); err != nil {
-		logger.Errorf("reporting readiness to the service manager: %v", err)
+		s.Close()
+		return fmt.Errorf("reporting readiness: %w", err)
 	}
 	<-stop
 	logger.Infof("shutting down")

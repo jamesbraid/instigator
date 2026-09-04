@@ -131,11 +131,12 @@ func TestServeReportsReadyThenStopsOnSIGTERM(t *testing.T) {
 
 	cmd := exec.Command(instigator(t), "serve", serveConfig(t, 0))
 	cmd.Env = append(os.Environ(), "NOTIFY_SOCKET="+sock)
-	log, err := cmd.StdoutPipe()
+	// The log goes to stderr: a supervisor waiting on readiness may have
+	// closed stdout, as systemd-notify --fork does.
+	log, err := cmd.StderrPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd.Stderr = cmd.Stdout
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -161,5 +162,26 @@ func TestServeReportsReadyThenStopsOnSIGTERM(t *testing.T) {
 	// Readiness must mean serving, not merely started.
 	if !strings.Contains(string(out), "serving") {
 		t.Errorf("server never logged serving:\n%s", out)
+	}
+}
+
+// A caller that set NOTIFY_SOCKET is waiting to be told the server is
+// serving. If that report cannot be delivered the server must not carry
+// on serving unannounced: the waiter would hang until its own timeout,
+// and the operator would be left guessing.
+func TestServeExitsWhenReadinessCannotBeReported(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, instigator(t), "serve", serveConfig(t, 0))
+	cmd.Env = append(os.Environ(), "NOTIFY_SOCKET=/nonexistent/notify.sock")
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("serve kept serving with nobody able to hear it:\n%s", out)
+	}
+	if err == nil {
+		t.Fatalf("serve exited zero after failing to report readiness:\n%s", out)
+	}
+	if !strings.Contains(string(out), "readiness") {
+		t.Errorf("error does not name the failure: %s", out)
 	}
 }
