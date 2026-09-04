@@ -4,7 +4,9 @@ go 1.26
 
 require (
 	github.com/cavaliergopher/grab/v3 v3.0.1
+	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/hashicorp/go-extract v1.1.5
+	github.com/kardianos/service v1.3.0
 	github.com/snabb/httpreaderat v1.0.4
 	github.com/urfave/cli/v3 v3.11.0
 	gopkg.in/yaml.v3 v3.0.1

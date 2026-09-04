@@ -81,3 +81,51 @@ dvhtool -v list /dev/rdsk/dks0d1vh
 The volume header should contain `sash`, `ide`, and the machine PROM. The
 installed root should contain `/unix`. The PROM normally loads `sash` from the
 volume header, not from `/stand` in the root filesystem.
+
+## Running it as a service
+
+`instigator serve` is the same command in a terminal and under a service
+manager: it notices when a manager started it and lets the manager drive
+start and stop instead of waiting on signals. Once the install sets are
+built and the listeners are bound, it reports ready over `sd_notify`, so a
+`Type=notify` unit's `systemctl start` returns when the server is actually
+serving rather than when the process spawned.
+
+On systemd, install this unit as `/etc/systemd/system/instigator.service`:
+
+```ini
+[Unit]
+Description=instigator IRIX install server
+After=network-online.target
+
+[Service]
+Type=notify
+# Readiness waits for the install sets, which fetch their media; that is
+# minutes for a full release, well past systemd's default start timeout.
+TimeoutStartSec=1800
+ExecStart=/usr/local/bin/instigator serve /etc/instigator.yaml
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+On macOS, the same shape as a launchd plist in
+`/Library/LaunchDaemons/dev.octanix.instigator.plist`, with
+`ProgramArguments` set to the binary, `serve`, and the configuration path.
+launchd has no readiness protocol, so `launchctl` reports the job started
+once the process is running, not once it is serving.
+
+On Windows there is no equivalent file to write: a background service has
+to be registered with the Service Control Manager, so the binary does it
+itself.
+
+```console
+> instigator install C:\instigator\instigator.yaml
+> sc start instigator
+> instigator uninstall
+```
+
+The service manager's running state means a serving server on Windows too:
+the whole startup - configuration, media, listeners - finishes before the
+service reports as started, and a failure to start is reported as one.

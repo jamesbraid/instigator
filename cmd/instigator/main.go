@@ -6,16 +6,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/urfave/cli/v3"
-
-	"github.com/jamesbraid/instigator/internal/config"
-	"github.com/jamesbraid/instigator/internal/logging"
-	"github.com/jamesbraid/instigator/internal/serve"
 )
 
 func main() {
@@ -32,7 +25,7 @@ func main() {
 					&cli.StringFlag{Name: "capture-dir", Usage: "record the run to `DIR`"},
 				},
 				Action: func(_ context.Context, cmd *cli.Command) error {
-					return runServe(cmd.StringArgs("config")[0], cmd.Bool("verbose"), cmd.String("capture-dir"))
+					return run(cmd.StringArgs("config")[0], cmd.Bool("verbose"), cmd.String("capture-dir"))
 				},
 			},
 			{
@@ -81,58 +74,10 @@ func main() {
 		Writer:    os.Stdout,
 		ErrWriter: os.Stderr,
 	}
+	root.Commands = append(root.Commands, installCommands()...)
 
 	if err := root.Run(context.Background(), os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, "instigator:", err)
 		os.Exit(1)
 	}
-}
-
-func runServe(configPath string, verbose bool, captureDir string) error {
-	b, err := os.ReadFile(configPath)
-	if err != nil {
-		return err
-	}
-	cfg, err := config.Parse(b)
-	if err != nil {
-		return err
-	}
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(sig)
-	return serveUntilSignal(cfg, verbose, captureDir, os.Stdout, sig)
-}
-
-func serveUntilSignal(
-	cfg *config.Config,
-	verbose bool,
-	captureDir string,
-	output io.Writer,
-	stop <-chan os.Signal,
-) error {
-	// -v means decode every packet, at DEBUG; the default level is
-	// INFO, which still always shows WARN/ERROR - a refused command or
-	// a real failure is never hidden behind -v.
-	level := logging.LevelInfo
-	if verbose {
-		level = logging.LevelDebug
-	}
-	logger := logging.New(output, level)
-	opts := []serve.Option{}
-	if captureDir != "" {
-		opts = append(opts, serve.WithCapture(captureDir))
-		logger.Infof("recording this run to %s", captureDir)
-	}
-	s, err := serve.Start(cfg, logger, opts...)
-	if err != nil {
-		return err
-	}
-
-	logger.Infof("serving; stop with SIGINT/SIGTERM")
-	<-stop
-	logger.Infof("shutting down")
-	// Close drains, finalizes the capture, and returns a non-nil error if
-	// the capture came out incomplete or a recorder write failed - surface
-	// it so the run exits non-zero and the operator knows not to trust it.
-	return s.Close()
 }
