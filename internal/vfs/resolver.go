@@ -15,8 +15,7 @@ type Resolved struct {
 
 // Resolver turns a layer's source reference - a local path or a URL - into
 // a read-only filesystem, the kind of payload it is, and the closer that
-// frees it. sha256 is the layer's expected digest, verified against a
-// whole-file fetch.
+// frees it.
 type Resolver interface {
-	Resolve(ref string, sha256 string) (Resolved, error)
+	Resolve(ref string) (Resolved, error)
 }

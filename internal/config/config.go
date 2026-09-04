@@ -33,7 +33,6 @@ type Layer struct {
 	Base   string
 	Dist   string
 	Stand  string
-	Sha256 string
 	Boot   bool
 }
 
@@ -115,7 +114,6 @@ type raw struct {
 			Base   string `yaml:"base"`
 			Dist   string `yaml:"dist"`
 			Stand  string `yaml:"stand"`
-			Sha256 string `yaml:"sha256"`
 			Boot   bool   `yaml:"boot"`
 		} `yaml:"layers"`
 		Collisions map[string]string `yaml:"collisions"`
@@ -249,7 +247,6 @@ func Parse(b []byte) (*Config, error) {
 				Base:   rl.Base,
 				Dist:   dist,
 				Stand:  rl.Stand,
-				Sha256: rl.Sha256,
 				Boot:   rl.Boot,
 			})
 		}
