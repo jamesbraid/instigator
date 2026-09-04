@@ -9,13 +9,12 @@ import (
 	"testing"
 
 	"github.com/jamesbraid/instigator/efs/efstest"
-	"github.com/jamesbraid/instigator/internal/config"
 )
 
 // The serve command's stdout is the operational server log. PROM and Inst
 // commands remain available in the static guide instead of being mixed into
 // that log.
-func TestServeUntilSignalDoesNotPrintOperatorCommands(t *testing.T) {
+func TestRunDoesNotPrintOperatorCommands(t *testing.T) {
 	dir := t.TempDir()
 	imagePath := filepath.Join(dir, "dist.image")
 	image := efstest.New()
@@ -41,22 +40,22 @@ services:
   tftp: {enabled: false}
   rsh: false
 `, imagePath, imagePath)
-	cfg, err := config.Parse([]byte(yaml))
-	if err != nil {
+	configPath := filepath.Join(dir, "instigator.yaml")
+	if err := os.WriteFile(configPath, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	stop := make(chan os.Signal, 1)
 	stop <- os.Interrupt
 	var output bytes.Buffer
-	if err := serveUntilSignal(cfg, false, "", &output, stop); err != nil {
+	if err := runUntilSignal(&server{configPath: configPath, output: &output}, stop); err != nil {
 		t.Fatal(err)
 	}
 	got := output.String()
 	if !strings.Contains(got, "set 6.5.30: enabled") {
-		t.Fatalf("serveUntilSignal output = %q, want server startup log", got)
+		t.Fatalf("server log = %q, want server startup log", got)
 	}
 	if strings.Contains(got, "PROM:") || strings.Contains(got, "Inst>:") {
-		t.Errorf("serveUntilSignal output includes operator commands:\n%s", got)
+		t.Errorf("server log includes operator commands:\n%s", got)
 	}
 }
