@@ -48,7 +48,7 @@ services:
 	stop := make(chan os.Signal, 1)
 	stop <- os.Interrupt
 	var output bytes.Buffer
-	if err := runUntilSignal(&server{configPath: configPath, output: &output}, stop); err != nil {
+	if err := runUntilSignal(configPath, false, "", &output, stop); err != nil {
 		t.Fatal(err)
 	}
 	got := output.String()

@@ -84,14 +84,13 @@ volume header, not from `/stand` in the root filesystem.
 
 ## Running it as a service
 
-`instigator serve` is the same command in a terminal and under a service
-manager: it notices when a manager started it and lets the manager drive
-start and stop instead of waiting on signals. Once the install sets are
-built and the listeners are bound, it reports ready over `sd_notify`, so a
-`Type=notify` unit's `systemctl start` returns when the server is actually
-serving rather than when the process spawned.
+Once the install sets are assembled and the listeners are bound,
+`instigator serve` reports itself ready over `sd_notify`. A `Type=notify`
+unit's `systemctl start` therefore returns when the server is serving
+rather than when the process spawned, which is what a caller wants when it
+is about to boot a machine at it.
 
-On systemd, install this unit as `/etc/systemd/system/instigator.service`:
+Install this unit as `/etc/systemd/system/instigator.service`:
 
 ```ini
 [Unit]
@@ -100,9 +99,9 @@ After=network-online.target
 
 [Service]
 Type=notify
-# Readiness waits for the install sets, which fetch their media; that is
-# minutes for a full release, well past systemd's default start timeout.
-TimeoutStartSec=1800
+# Assembling the sets reads each image over the network; allow for a slow
+# store rather than systemd's default start timeout.
+TimeoutStartSec=600
 ExecStart=/usr/local/bin/instigator serve /etc/instigator.yaml
 Restart=on-failure
 
@@ -110,22 +109,7 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
-On macOS, the same shape as a launchd plist in
-`/Library/LaunchDaemons/dev.octanix.instigator.plist`, with
-`ProgramArguments` set to the binary, `serve`, and the configuration path.
-launchd has no readiness protocol, so `launchctl` reports the job started
-once the process is running, not once it is serving.
-
-On Windows there is no equivalent file to write: a background service has
-to be registered with the Service Control Manager, so the binary does it
-itself.
-
-```console
-> instigator install C:\instigator\instigator.yaml
-> sc start instigator
-> instigator uninstall
-```
-
-The service manager's running state means a serving server on Windows too:
-the whole startup - configuration, media, listeners - finishes before the
-service reports as started, and a failure to start is reported as one.
+On macOS the same shape as a launchd plist, with `ProgramArguments` set to
+the binary, `serve`, and the configuration path. launchd has no readiness
+protocol, so `launchctl` reports the job started once the process runs,
+not once it is serving.

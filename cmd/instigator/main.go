@@ -74,7 +74,6 @@ func main() {
 		Writer:    os.Stdout,
 		ErrWriter: os.Stderr,
 	}
-	root.Commands = append(root.Commands, installCommands()...)
 
 	if err := root.Run(context.Background(), os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, "instigator:", err)
