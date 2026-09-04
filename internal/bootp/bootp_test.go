@@ -7,6 +7,8 @@ import (
 	"net/netip"
 	"testing"
 	"time"
+
+	"golang.org/x/net/ipv4"
 )
 
 var (
@@ -165,5 +167,22 @@ func TestServeIgnoresUnknownWithoutRecorder(t *testing.T) {
 	c.Close()
 	if err := <-done; err != nil {
 		t.Fatalf("Serve: %v", err)
+	}
+}
+
+// A limited broadcast follows the routing table, which on a multi-homed
+// host picks the default interface rather than the one the request came
+// from. Replies therefore name the ingress interface, so they go back to
+// the network the client is actually on.
+func TestReplyGoesBackOutTheIngressInterface(t *testing.T) {
+	if got := replyVia(&ipv4.ControlMessage{IfIndex: 7}); got == nil || got.IfIndex != 7 {
+		t.Errorf("replyVia(ifindex 7) = %v, want a control message naming 7", got)
+	}
+	// A platform that does not report the interface leaves the reply to
+	// the routing table rather than naming interface zero.
+	for _, cm := range []*ipv4.ControlMessage{nil, {IfIndex: 0}} {
+		if got := replyVia(cm); got != nil {
+			t.Errorf("replyVia(%v) = %v, want nil", cm, got)
+		}
 	}
 }
