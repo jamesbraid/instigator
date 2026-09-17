@@ -160,7 +160,41 @@ func parseRequest(req []byte) (mac net.HardwareAddr, file string, ok bool) {
 	if len(req) < packetLen || req[0] != 1 || req[1] != 1 || req[2] != 6 {
 		return nil, "", false
 	}
+	// A request carrying a DHCP message-type option is DHCP, not the legacy
+	// BOOTP SGI PROMs speak. Instigator serves only legacy BOOTP so an
+	// uplink's DHCP service can own UDP 67; leave a DHCP message for it.
+	if isDHCP(req) {
+		return nil, "", false
+	}
 	return net.HardwareAddr(req[28:34]), string(bytes.TrimRight(req[108:236], "\x00")), true
+}
+
+// isDHCP reports whether a BOOTREQUEST carries DHCP message-type option 53
+// (RFC 2132). The options area follows the 236-byte fixed header and begins
+// with the RFC 1048 magic cookie; without the cookie there are no options.
+func isDHCP(req []byte) bool {
+	opts := req[236:]
+	if len(opts) < 4 || !bytes.Equal(opts[:4], []byte{99, 130, 83, 99}) {
+		return false
+	}
+	opts = opts[4:]
+	for len(opts) > 0 {
+		switch opts[0] {
+		case 0: // pad
+			opts = opts[1:]
+			continue
+		case 255: // end
+			return false
+		}
+		if len(opts) < 2 || len(opts) < 2+int(opts[1]) {
+			return false // truncated option: not a well-formed DHCP message
+		}
+		if opts[0] == 53 { // DHCP message type
+			return true
+		}
+		opts = opts[2+int(opts[1]):]
+	}
+	return false
 }
 
 // lookupClient returns the configured client with the given MAC, or nil.

@@ -93,6 +93,23 @@ func TestIgnoresBootReply(t *testing.T) {
 	}
 }
 
+func TestIgnoresDHCPMessage(t *testing.T) {
+	s := testServer()
+	// A DHCP DISCOVER from a configured MAC: same fixed header as legacy
+	// BOOTP, but the options carry the DHCP message-type tag (option 53).
+	// Instigator serves only legacy BOOTP so an uplink's DHCP service can own
+	// UDP 67; a DHCP message must be left for it.
+	req := request(octaneMAC, 1, "")
+	copy(req[236:240], []byte{99, 130, 83, 99}) // RFC 1048 magic cookie
+	req[240] = 53                               // DHCP message type
+	req[241] = 1
+	req[242] = 1 // DHCPDISCOVER
+	req[243] = 255
+	if reply := handle(s, req); reply != nil {
+		t.Fatal("answered a DHCP message; must ignore so an uplink can own DHCP")
+	}
+}
+
 func TestVendorAreaCarriesNetmask(t *testing.T) {
 	s := testServer()
 	reply := handle(s, request(octaneMAC, 1, ""))
