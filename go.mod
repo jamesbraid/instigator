@@ -1,6 +1,6 @@
 module github.com/jamesbraid/instigator
 
-go 1.26
+go 1.26.3
 
 require (
 	github.com/cavaliergopher/grab/v3 v3.0.1
@@ -10,6 +10,7 @@ require (
 	github.com/urfave/cli/v3 v3.11.0
 	golang.org/x/net v0.58.0
 	gopkg.in/yaml.v3 v3.0.1
+	gvisor.dev/gvisor v0.0.0-20260916072518-be2bc9cda014
 	mvdan.cc/sh/v3 v3.13.1
 )
 
@@ -18,6 +19,7 @@ require (
 	github.com/bodgit/plumbing v1.3.0 // indirect
 	github.com/bodgit/sevenzip v1.6.1 // indirect
 	github.com/bodgit/windows v1.0.1 // indirect
+	github.com/google/btree v1.1.3 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/klauspost/compress v1.18.4 // indirect
 	github.com/nwaples/rardecode/v2 v2.2.2 // indirect
@@ -25,7 +27,9 @@ require (
 	github.com/spf13/afero v1.11.0 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	go4.org v0.0.0-20200411211856-f5505b9728dd // indirect
+	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/time v0.16.0 // indirect
 )
