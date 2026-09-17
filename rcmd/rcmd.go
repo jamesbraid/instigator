@@ -86,6 +86,12 @@ type Server struct {
 	// record a refusal the Handler never sees.
 	RejectHook func(addr netip.Addr, reason string)
 
+	// DialStderr, when set, opens the rsh stderr callback connection to the
+	// client's address and port. It lets the server run on an injected
+	// network - the QEMU private segment's user-space stack. Nil dials the
+	// host stack from a reserved source port, today's behavior.
+	DialStderr func(ip net.IP, port int) (net.Conn, error)
+
 	mu     sync.Mutex
 	conns  map[net.Conn]struct{} // active connections, for Shutdown to close
 	closed bool                  // set by Shutdown; refuse to track new work after
@@ -224,7 +230,11 @@ func (s *Server) handle(c net.Conn) {
 	// as rshd's dup2 onto the socket does.
 	req := &Request{Addr: ip, Stdout: c, Stderr: c}
 	if errPort != 0 {
-		ec, err := s.dialStderr(tcp.IP, errPort)
+		dial := s.DialStderr
+		if dial == nil {
+			dial = s.dialStderr
+		}
+		ec, err := dial(tcp.IP, errPort)
 		if err != nil {
 			s.Logger.Errorf("rcmd: %s: stderr dial-back to %d: %v", tcp, errPort, err)
 			refuse(c, "cannot connect stderr")
