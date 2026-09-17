@@ -86,6 +86,12 @@ type Server struct {
 	// Zero means ephemeral.
 	PortMin, PortMax int
 
+	// ListenPacket, when set, opens each per-transfer UDP socket on the port
+	// it is given (0 = ephemeral). It lets the server run on an injected
+	// network - the QEMU private segment's user-space stack - instead of the
+	// host. Nil uses the host UDP stack, today's behavior.
+	ListenPacket func(port int) (net.PacketConn, error)
+
 	// RetryInterval is the DATA retransmit interval (default 1s).
 	RetryInterval time.Duration
 
@@ -353,21 +359,29 @@ func (s *Server) sendError(pc net.PacketConn, addr net.Addr, code uint16, msg st
 	pc.WriteTo(b, addr)
 }
 
-// listenTransfer binds the per-transfer socket inside the configured
-// port range. It returns a concrete *net.UDPConn, not net.PacketConn, so
-// the transfer loop can use the AddrPort-based read/write calls: the
-// net.Addr-returning ones allocate a new *net.UDPAddr on every packet.
-func (s *Server) listenTransfer() (*net.UDPConn, error) {
+// listenTransfer binds the per-transfer socket inside the configured port
+// range, through the injected ListenPacket when set (the QEMU private
+// segment's user-space stack) and the host UDP stack otherwise.
+func (s *Server) listenTransfer() (net.PacketConn, error) {
+	lp := s.ListenPacket
+	if lp == nil {
+		lp = hostListenPacket
+	}
 	if s.PortMin == 0 && s.PortMax == 0 {
-		return net.ListenUDP("udp", nil)
+		return lp(0)
 	}
 	for p := s.PortMin; p <= s.PortMax; p++ {
-		pc, err := net.ListenUDP("udp", &net.UDPAddr{Port: p})
-		if err == nil {
+		if pc, err := lp(p); err == nil {
 			return pc, nil
 		}
 	}
 	return nil, fmt.Errorf("no free port in [%d,%d]", s.PortMin, s.PortMax)
+}
+
+// hostListenPacket opens a per-transfer UDP socket on the host stack, the
+// default when no network is injected.
+func hostListenPacket(port int) (net.PacketConn, error) {
+	return net.ListenPacket("udp", fmt.Sprintf(":%d", port))
 }
 
 // sendAndWaitAck sends pkt up to retries+1 times, spaced by timeout, until
@@ -377,9 +391,9 @@ func (s *Server) listenTransfer() (*net.UDPConn, error) {
 // resends is how many retransmits it took (0 if the first send was acked).
 // ackbuf is caller-owned and reused across calls so a transfer allocates it
 // once, not per block.
-func (s *Server) sendAndWaitAck(pc *net.UDPConn, clientAP netip.AddrPort, ackbuf, pkt []byte, wantBlock uint16, timeout time.Duration, retries int) (acked, aborted bool, resends int) {
+func (s *Server) sendAndWaitAck(pc net.PacketConn, dst net.Addr, clientAP netip.AddrPort, ackbuf, pkt []byte, wantBlock uint16, timeout time.Duration, retries int) (acked, aborted bool, resends int) {
 	for attempt := 0; attempt <= retries; attempt++ {
-		if _, err := pc.WriteToUDPAddrPort(pkt, clientAP); err != nil {
+		if _, err := pc.WriteTo(pkt, dst); err != nil {
 			s.Logger.Errorf("tftp: %s: send: %v", clientAP, err)
 			return false, true, attempt
 		}
@@ -388,11 +402,16 @@ func (s *Server) sendAndWaitAck(pc *net.UDPConn, clientAP netip.AddrPort, ackbuf
 		}
 		pc.SetReadDeadline(time.Now().Add(timeout))
 		for {
-			n, from, err := pc.ReadFromUDPAddrPort(ackbuf)
+			n, from, err := pc.ReadFrom(ackbuf)
 			if err != nil {
 				break // timeout: resend
 			}
-			if from.Addr().Unmap() != clientAP.Addr() || from.Port() != clientAP.Port() {
+			fu, ok := from.(*net.UDPAddr)
+			if !ok {
+				continue
+			}
+			fromAP := fu.AddrPort()
+			if fromAP.Addr().Unmap() != clientAP.Addr() || fromAP.Port() != clientAP.Port() {
 				if s.Logger.Enabled(logging.LevelDebug) {
 					s.Logger.Debugf("tftp: %s: stray packet from %s, ignoring", clientAP, from)
 				}
@@ -560,7 +579,7 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 		if s.Logger.Enabled(logging.LevelDebug) {
 			s.Logger.Debugf("tftp: %s: OACK %v", client, opts)
 		}
-		acked, aborted, resends := s.sendAndWaitAck(pc, clientAP, ack, oack, 0, retry, retries)
+		acked, aborted, resends := s.sendAndWaitAck(pc, client, clientAP, ack, oack, 0, retry, retries)
 		resendTotal += resends
 		if aborted {
 			result = "aborted"
@@ -608,7 +627,7 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 		// transmitted before we know whether it was acked.
 		blocksSent++
 		bytesSent += want
-		acked, aborted, resends := s.sendAndWaitAck(pc, clientAP, ack, pkt, block, blockTimeout, blockRetries)
+		acked, aborted, resends := s.sendAndWaitAck(pc, client, clientAP, ack, pkt, block, blockTimeout, blockRetries)
 		resendTotal += resends
 		if acked {
 			bytesAcked += want
