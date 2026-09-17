@@ -214,6 +214,21 @@ func (f cmdFS) ResolveImage(path string) (instcmd.Resolved, error) {
 	}
 }
 
+// Network supplies the sockets the services run on, so the same services
+// serve the host network or an injected private segment. When one is set with
+// WithNetwork, Start binds bootp, tftp, and rsh through it instead of the host
+// stack; the QEMU private network (internal/qemunet) is one implementation.
+type Network interface {
+	// ListenPacket binds a UDP packet conn to port (bootp 67, tftp 69, and
+	// each tftp data transfer). It is broadcast-capable so a BOOTP reply can
+	// reach a client that owns no address yet.
+	ListenPacket(port int) (net.PacketConn, error)
+	// Listen binds a TCP listener to port (rsh 514).
+	Listen(port int) (net.Listener, error)
+	// DialStderr opens the rsh stderr callback to the client.
+	DialStderr(ip net.IP, port int) (net.Conn, error)
+}
+
 // Option adjusts Start for tests.
 type Option func(*options)
 
@@ -224,6 +239,14 @@ type options struct {
 	captureDir     string
 	recorder       *capture.Recorder // injected pre-built recorder, for tests
 	rshIdleTimeout time.Duration
+	network        Network // nil means the host stack, today's behavior
+}
+
+// WithNetwork serves bootp, tftp, and rsh on n instead of the host stack. It
+// is how the QEMU private network attaches the services to a machine's
+// virtual Ethernet segment without host privileges.
+func WithNetwork(n Network) Option {
+	return func(o *options) { o.network = n }
 }
 
 // withBootpReplyAddr redirects bootp replies away from the broadcast
@@ -342,7 +365,12 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 			Logger:    logger,
 			Recorder:  s.rec,
 		}
-		pc, err := bootp.ListenBroadcast(fmt.Sprintf(":%d", cfg.Ports.BOOTP))
+		var pc net.PacketConn
+		if o.network != nil {
+			pc, err = o.network.ListenPacket(cfg.Ports.BOOTP)
+		} else {
+			pc, err = bootp.ListenBroadcast(fmt.Sprintf(":%d", cfg.Ports.BOOTP))
+		}
 		if err != nil {
 			s.Close()
 			return nil, bindErr("bootp", cfg.Ports.BOOTP, err)
@@ -361,7 +389,14 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 			Recorder:   s.rec,
 			ClientName: func(a netip.Addr) string { return aliasByIP[a] },
 		}
-		pc, err := net.ListenPacket("udp4", fmt.Sprintf(":%d", cfg.Ports.TFTP))
+		var pc net.PacketConn
+		if o.network != nil {
+			// Transfer sockets bind on the same segment as the control port.
+			srv.ListenPacket = o.network.ListenPacket
+			pc, err = o.network.ListenPacket(cfg.Ports.TFTP)
+		} else {
+			pc, err = net.ListenPacket("udp4", fmt.Sprintf(":%d", cfg.Ports.TFTP))
+		}
 		if err != nil {
 			s.Close()
 			return nil, bindErr("tftp", cfg.Ports.TFTP, err)
@@ -398,7 +433,13 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 				return err
 			},
 		}
-		ln, err := net.Listen("tcp4", fmt.Sprintf(":%d", cfg.Ports.RSH))
+		var ln net.Listener
+		if o.network != nil {
+			srv.DialStderr = o.network.DialStderr
+			ln, err = o.network.Listen(cfg.Ports.RSH)
+		} else {
+			ln, err = net.Listen("tcp4", fmt.Sprintf(":%d", cfg.Ports.RSH))
+		}
 		if err != nil {
 			s.Close()
 			return nil, bindErr("rsh", cfg.Ports.RSH, err)
