@@ -346,9 +346,16 @@ func TestGeneratedAdminCommandsMatchScript(t *testing.T) {
 // plus its own selections, while install.cmds stays the untouched baseline.
 func TestGeneratedNamedScriptServed(t *testing.T) {
 	cfg := fourSetConfig(t, true)
-	cfg.InstallScripts = []config.InstallScript{
-		{Name: "debug", Install: []string{"dev.sw.dbx"}},
+	// Exercise every selection field so a mis-wired config->instscript mapping
+	// in generate() (a swapped keep/remove, a dropped stream) shows up here.
+	sel := config.InstallScript{
+		Name:    "debug",
+		Stream:  "maintenance",
+		Install: []string{"dev.sw.dbx"},
+		Keep:    []string{"java_dev.sw.base"},
+		Remove:  []string{"old.sw.thing"},
 	}
+	cfg.InstallScripts = []config.InstallScript{sel}
 	s, _ := captureStart(t, cfg)
 
 	wantBaseline := instscript.Commands(instscript.Params{ServerIP: "192.0.2.10", Sets: fourSetDists})
@@ -356,9 +363,14 @@ func TestGeneratedNamedScriptServed(t *testing.T) {
 		t.Errorf("install.cmds changed by a named script:\n%q\nwant\n%q", got, wantBaseline)
 	}
 	wantDebug := instscript.Commands(instscript.Params{
-		ServerIP:  "192.0.2.10",
-		Sets:      fourSetDists,
-		Selection: instscript.Selection{Install: []string{"dev.sw.dbx"}},
+		ServerIP: "192.0.2.10",
+		Sets:     fourSetDists,
+		Selection: instscript.Selection{
+			Stream:  sel.Stream,
+			Install: sel.Install,
+			Keep:    sel.Keep,
+			Remove:  sel.Remove,
+		},
 	})
 	if got := served(t, s, "debug.cmds"); got != wantDebug {
 		t.Errorf("debug.cmds =\n%q\nwant\n%q", got, wantDebug)
