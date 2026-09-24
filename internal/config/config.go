@@ -49,6 +49,21 @@ type InstallSet struct {
 	Collisions map[string]string
 }
 
+// InstallScript is one named inst command file generated in addition to the
+// baseline install.cmds. Its selections extend the proven baseline (keep *,
+// install standard, the Java conflict keep) rather than replace it: Install,
+// Keep, and Remove add inst install/keep/remove lines. Stream selects the IRIX
+// release stream - "" or "feature" is the default feature stream and emits no
+// extra directive, "maintenance" emits "install maint". The script is served at
+// /<Name>.cmds.
+type InstallScript struct {
+	Name    string
+	Install []string
+	Keep    []string
+	Remove  []string
+	Stream  string
+}
+
 // TFTPService holds the tftp toggle and its transfer port range.
 type TFTPService struct {
 	Enabled   bool
@@ -78,13 +93,14 @@ type Credential struct {
 
 // Config is a validated instigator configuration.
 type Config struct {
-	ServerIP    netip.Addr
-	Netmask     netip.Prefix
-	Clients     []Client
-	InstallSets []InstallSet
-	Services    Services
-	Ports       Ports
-	Credentials []Credential
+	ServerIP       netip.Addr
+	Netmask        netip.Prefix
+	Clients        []Client
+	InstallSets    []InstallSet
+	InstallScripts []InstallScript
+	Services       Services
+	Ports          Ports
+	Credentials    []Credential
 	// CacheDir is where a fetched or extracted remote source is cached;
 	// empty means the caller (serve) supplies its own default.
 	CacheDir string
@@ -118,6 +134,13 @@ type raw struct {
 		} `yaml:"layers"`
 		Collisions map[string]string `yaml:"collisions"`
 	} `yaml:"install_sets"`
+	InstallScripts []struct {
+		Name    string   `yaml:"name"`
+		Install []string `yaml:"install"`
+		Keep    []string `yaml:"keep"`
+		Remove  []string `yaml:"remove"`
+		Stream  string   `yaml:"stream"`
+	} `yaml:"install_scripts"`
 	Services *struct {
 		BOOTP *bool `yaml:"bootp"`
 		TFTP  *struct {
@@ -255,6 +278,51 @@ func Parse(b []byte) (*Config, error) {
 			Enabled:    enabled,
 			Layers:     layers,
 			Collisions: rs.Collisions,
+		})
+	}
+
+	scriptNames := make(map[string]bool, len(r.InstallScripts))
+	for i, rsc := range r.InstallScripts {
+		if rsc.Name == "" {
+			return nil, fmt.Errorf("config: install_scripts[%d]: name is required", i)
+		}
+		// A script is served as one file directly under the tree root, so its
+		// name has the same single-path-element rule as a set name.
+		if !fs.ValidPath(rsc.Name) || rsc.Name == "." || strings.Contains(rsc.Name, "/") {
+			return nil, fmt.Errorf("config: install_scripts[%d] (%s): name must be a single directory name", i, rsc.Name)
+		}
+		// install.cmds is always generated for the baseline selection, so no
+		// configured script may claim that name.
+		if rsc.Name == "install" {
+			return nil, fmt.Errorf("config: install_scripts[%d]: name %q is reserved for the baseline install.cmds", i, rsc.Name)
+		}
+		if scriptNames[rsc.Name] {
+			return nil, fmt.Errorf("config: install_scripts[%d]: duplicate install script name %q", i, rsc.Name)
+		}
+		scriptNames[rsc.Name] = true
+		switch rsc.Stream {
+		case "", "feature", "maintenance":
+		default:
+			return nil, fmt.Errorf("config: install_scripts[%d] (%s): stream %q must be \"feature\" or \"maintenance\"", i, rsc.Name, rsc.Stream)
+		}
+		// Each selection entry becomes one inst command line, so an empty or
+		// multi-line token would corrupt the generated command file.
+		for _, g := range []struct {
+			field   string
+			entries []string
+		}{{"install", rsc.Install}, {"keep", rsc.Keep}, {"remove", rsc.Remove}} {
+			for _, e := range g.entries {
+				if e == "" || strings.ContainsAny(e, "\n\r") {
+					return nil, fmt.Errorf("config: install_scripts[%d] (%s): %s entry %q must be a single non-empty token", i, rsc.Name, g.field, e)
+				}
+			}
+		}
+		c.InstallScripts = append(c.InstallScripts, InstallScript{
+			Name:    rsc.Name,
+			Install: rsc.Install,
+			Keep:    rsc.Keep,
+			Remove:  rsc.Remove,
+			Stream:  rsc.Stream,
 		})
 	}
 

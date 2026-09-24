@@ -181,6 +181,32 @@ func TestRejects(t *testing.T) {
 			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
 			"install_sets: [{name: m, layers: [{name: a, source: /media/m/a.iso}]}, " +
 			"{name: m, layers: [{name: b, source: /media/m/b.iso}]}]",
+		// install.cmds is always generated for the baseline, so no configured
+		// script may claim the "install" name.
+		"script named install (reserved)": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]\n" +
+			"install_scripts: [{name: install, install: [dev.sw.dbx]}]",
+		"duplicate script names": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]\n" +
+			"install_scripts: [{name: dbg, install: [a]}, {name: dbg, install: [b]}]",
+		// A script name is one file directly under the served root, same rule
+		// as a set name.
+		"script name with a slash": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]\n" +
+			"install_scripts: [{name: a/b, install: [dev.sw.dbx]}]",
+		"script with unknown stream": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]\n" +
+			"install_scripts: [{name: dbg, stream: nightly}]",
+		// A newline in a selection entry would break inst's one-command-per-line
+		// command file.
+		"script entry with a newline": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]\n" +
+			"install_scripts: [{name: dbg, install: [\"a\\nb\"]}]",
 	}
 	for name, y := range cases {
 		if _, err := Parse([]byte(y)); err == nil {
@@ -242,6 +268,66 @@ install_sets:
 	// An unset env var expands to "", same as os.Getenv would report.
 	if cfg.Credentials[1].Password != "" {
 		t.Fatalf("unset-var password = %q, want empty", cfg.Credentials[1].Password)
+	}
+}
+
+func TestParseInstallScripts(t *testing.T) {
+	cfg, err := Parse([]byte(`
+server_ip: 10.0.0.1
+clients: [{name: a, mac: "02:00:00:00:00:01", ip: 10.0.0.2}]
+install_sets:
+  - name: m
+    layers: [{name: base, source: /media/m/base.iso}]
+install_scripts:
+  - name: debug
+    install: [dev.sw.dbx, dev.sw.gdb]
+    keep: [java_dev.sw.base]
+  - name: maint
+    stream: maintenance
+    remove: [old.sw.thing]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.InstallScripts) != 2 {
+		t.Fatalf("install_scripts = %+v", cfg.InstallScripts)
+	}
+	d := cfg.InstallScripts[0]
+	if d.Name != "debug" {
+		t.Fatalf("script 0 name = %q", d.Name)
+	}
+	if len(d.Install) != 2 || d.Install[0] != "dev.sw.dbx" || d.Install[1] != "dev.sw.gdb" {
+		t.Fatalf("script 0 install = %+v", d.Install)
+	}
+	if len(d.Keep) != 1 || d.Keep[0] != "java_dev.sw.base" {
+		t.Fatalf("script 0 keep = %+v", d.Keep)
+	}
+	// stream omitted: the feature stream inst runs by default.
+	if d.Stream != "" {
+		t.Fatalf("script 0 stream default = %q, want empty", d.Stream)
+	}
+	m := cfg.InstallScripts[1]
+	if m.Name != "maint" || m.Stream != "maintenance" {
+		t.Fatalf("script 1 = %+v", m)
+	}
+	if len(m.Remove) != 1 || m.Remove[0] != "old.sw.thing" {
+		t.Fatalf("script 1 remove = %+v", m.Remove)
+	}
+}
+
+func TestInstallScriptsDefaultEmpty(t *testing.T) {
+	cfg, err := Parse([]byte(`
+server_ip: 10.0.0.1
+clients: [{name: a, mac: "02:00:00:00:00:01", ip: 10.0.0.2}]
+install_sets:
+  - name: m
+    layers: [{name: base, source: /media/m/base.iso}]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.InstallScripts) != 0 {
+		t.Fatalf("install_scripts default = %+v, want empty", cfg.InstallScripts)
 	}
 }
 

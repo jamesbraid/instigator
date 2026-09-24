@@ -111,6 +111,38 @@ user cache dir) and reused across runs; each run re-extracts an archive fresh.
 The complete example also shows client filtering, service toggles, and the
 low TFTP transfer-port range required by SGI PROMs.
 
+### Install scripts
+
+By default `instigator` serves one command file, `/install.cmds`, that selects
+the standard product set. `install_scripts` add named variants that select more
+on top of that baseline — for example a `debug` script that also installs the
+`dbx` debugger:
+
+```yaml
+install_scripts:
+  - name: debug
+    install: [dbx.sw.dbx]
+  - name: maintenance
+    stream: maintenance
+```
+
+Each entry is served next to the default at `/<name>.cmds`, so the one above
+gives `/debug.cmds` and `/maintenance.cmds`. `/install.cmds` is always
+generated and unchanged. At the `Inst>` prompt, load the one you want instead
+of the default:
+
+```text
+admin source <server-ip>:/debug.cmds
+```
+
+`install`, `keep`, and `remove` add those `inst` selection lines after the
+standard set. `instigator` passes the names straight through to `inst`, which
+resolves them against the open media — so a name must exist on some enabled set,
+and you can confirm its exact spelling with `inst`'s `list`. `stream` picks the
+IRIX release stream: the default feature stream, or `maintenance` for the
+fixes-only maintenance overlays. `install` is reserved for the baseline, so no
+script may take that name.
+
 ## Development
 
 Run the test suite with:

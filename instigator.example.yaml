@@ -116,6 +116,24 @@ install_sets:
         source: https://media.example.com/irix/freeware-february-2003.tar.gz
         base: disc1
 
+# Named install scripts add selections on top of the standard install. The
+# default /install.cmds is always generated and stays exactly as it is; each
+# script here is served next to it at /<name>.cmds. At the Inst> prompt, load
+# the one you want instead of the default:
+#   admin source <server-ip>:/debug.cmds
+# instigator passes these product names straight through to inst, which
+# resolves them against the open media - so a name must exist on some enabled
+# set, and you can confirm its exact spelling with inst's "list". "install",
+# "keep", and "remove" add those inst lines after the standard selection.
+# "stream" picks the IRIX release stream: the default feature stream, or
+# "maintenance" to follow the fixes-only maintenance overlays instead.
+# install_scripts:
+#   - name: debug
+#     install:
+#       - dbx.sw.dbx        # the dbx debugger; confirm the name with `list`
+#   - name: maintenance
+#     stream: maintenance
+
 services:
   bootp: true
   tftp:

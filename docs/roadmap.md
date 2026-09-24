@@ -8,8 +8,11 @@ install or a focused test, not by speculative infrastructure.
 - Repeat the proven 6.5.30 install from a fresh capture and keep the trace and
   serial log with the test result.
 - Turn the captured install facts into a small synthetic regression fixture.
-- Add explicit package-selection data only when a second install demonstrates a
-  different selection.
+- Named install scripts now carry explicit package selection (extra
+  `install`/`keep`/`remove` lines) and a feature/maintenance stream choice. The
+  emitted commands are unit-tested; the next step is to prove a non-standard
+  selection end to end on real hardware — an added product such as `dbx`, and a
+  maintenance-stream install — and keep the trace with the test result.
 
 ## Possible future configurations
 

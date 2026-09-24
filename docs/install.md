@@ -50,6 +50,21 @@ choice for this install, and starts the install. It does not use positional
 
 For a dry run, type the commands from the file manually and omit the final `go`.
 
+### Named install scripts
+
+If the configuration defines `install_scripts`, each one is served next to the
+default at `/<name>.cmds`. Load a named script instead of the default to get its
+extra selections — for example a `debug` script that also installs `dbx`:
+
+```text
+admin source <server-ip>:/debug.cmds
+```
+
+`/install.cmds` is unchanged and always available, so choosing a script is just
+a matter of which path you source. The named script opens the same sets in the
+same order, then applies the standard selection plus that script's own
+`install`/`keep`/`remove` lines and release stream.
+
 ## Tested 6.5.30 install-set ordering
 
 For the tested `6.5.30` installation, keep the enabled sets in this order:
