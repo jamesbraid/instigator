@@ -342,6 +342,44 @@ func TestGeneratedAdminCommandsMatchScript(t *testing.T) {
 	}
 }
 
+// A configured install script is served at /<name>.cmds carrying the baseline
+// plus its own selections, while install.cmds stays the untouched baseline.
+func TestGeneratedNamedScriptServed(t *testing.T) {
+	cfg := fourSetConfig(t, true)
+	cfg.InstallScripts = []config.InstallScript{
+		{Name: "debug", Install: []string{"dev.sw.dbx"}},
+	}
+	s, _ := captureStart(t, cfg)
+
+	wantBaseline := instscript.Commands(instscript.Params{ServerIP: "192.0.2.10", Sets: fourSetDists})
+	if got := served(t, s, "install.cmds"); got != wantBaseline {
+		t.Errorf("install.cmds changed by a named script:\n%q\nwant\n%q", got, wantBaseline)
+	}
+	wantDebug := instscript.Commands(instscript.Params{
+		ServerIP:  "192.0.2.10",
+		Sets:      fourSetDists,
+		Selection: instscript.Selection{Install: []string{"dev.sw.dbx"}},
+	})
+	if got := served(t, s, "debug.cmds"); got != wantDebug {
+		t.Errorf("debug.cmds =\n%q\nwant\n%q", got, wantDebug)
+	}
+}
+
+// The operator instructions offer every named script alongside install.cmds.
+func TestNamedScriptOfferedToOperator(t *testing.T) {
+	cfg := fourSetConfig(t, true)
+	cfg.InstallScripts = []config.InstallScript{{Name: "debug", Install: []string{"dev.sw.dbx"}}}
+	_, c := captureStart(t, cfg)
+	for _, want := range []string{
+		"  Inst>: admin source 192.0.2.10:/install.cmds",
+		"  Inst>: admin source 192.0.2.10:/debug.cmds",
+	} {
+		if !hasLine(c.instructions, want) {
+			t.Errorf("operator instructions missing %q, got:\n%s", want, strings.Join(c.instructions, "\n"))
+		}
+	}
+}
+
 // The primary layer's media ships its own .related_dists naming the
 // discs of a CD set; ours has to win, or the Inst "Open Dist" menu
 // offers paths this server does not serve.
@@ -382,9 +420,10 @@ func TestNoEnabledSetsGeneratesNothing(t *testing.T) {
 	for i := range cfg.InstallSets {
 		cfg.InstallSets[i].Enabled = false
 	}
+	cfg.InstallScripts = []config.InstallScript{{Name: "debug", Install: []string{"dev.sw.dbx"}}}
 	s, c := captureStart(t, cfg)
 
-	for _, name := range []string{"install.cmds"} {
+	for _, name := range []string{"install.cmds", "debug.cmds"} {
 		if _, err := s.tree.Open(name); err == nil {
 			t.Errorf("%s generated with no enabled set", name)
 		}

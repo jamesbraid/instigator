@@ -563,6 +563,26 @@ func generate(cfg *config.Config, tree *vfs.Tree) (profile, error) {
 			content:   []byte(instscript.RelatedDists(p.dists)),
 		},
 	}
+	// Each configured install script is a second admin-source file: the same
+	// baseline over the same enabled sets, plus that script's selections,
+	// served at /<name>.cmds for the operator to pick instead of install.cmds.
+	for _, sc := range cfg.InstallScripts {
+		body := instscript.Commands(instscript.Params{
+			ServerIP: cfg.ServerIP.String(),
+			Sets:     p.dists,
+			Selection: instscript.Selection{
+				Stream:  sc.Stream,
+				Install: sc.Install,
+				Keep:    sc.Keep,
+				Remove:  sc.Remove,
+			},
+		})
+		p.generated = append(p.generated, generatedFile{
+			path:      sc.Name + ".cmds",
+			generator: "admin-source",
+			content:   []byte(body),
+		})
+	}
 	for _, f := range p.generated {
 		if err := tree.AddGenerated(f.path, f.generator, f.content); err != nil {
 			return profile{}, err
@@ -630,6 +650,11 @@ func logStartup(cfg *config.Config, tree *vfs.Tree, p profile, logger *logging.L
 			continue
 		}
 		fmt.Fprintf(instructions, "  Inst>: admin source %s:/install.cmds\n", cfg.ServerIP)
+		// Offer each named script as an alternative to the baseline; the
+		// operator loads one instead of install.cmds.
+		for _, sc := range cfg.InstallScripts {
+			fmt.Fprintf(instructions, "  Inst>: admin source %s:/%s.cmds\n", cfg.ServerIP, sc.Name)
+		}
 	}
 }
 

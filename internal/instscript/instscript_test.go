@@ -127,9 +127,11 @@ func TestCommandsKeepsInstalledSoftwareBeforeStandard(t *testing.T) {
 	}
 }
 
-// TestCommandsNeverEmitsRetiredDirectives guards against regressing to
-// the old release-stream vocabulary: no install feature/maint/prereqs,
-// positional conflicts, or quit.
+// TestCommandsNeverEmitsRetiredDirectives guards the baseline (a zero
+// Selection) against the old release-stream vocabulary: no install
+// feature/maint/prereqs, positional conflicts, or quit. A configured script
+// may re-enable install maint/remove by intent; this pins that the default
+// install.cmds does not.
 func TestCommandsNeverEmitsRetiredDirectives(t *testing.T) {
 	p := testParams()
 	got := Commands(p)
@@ -147,6 +149,61 @@ func TestCommandsNeverEmitsRetiredDirectives(t *testing.T) {
 	} {
 		if strings.Contains(got, retired) {
 			t.Errorf("Commands output must not contain retired directive %q, got:\n%s", retired, got)
+		}
+	}
+}
+
+// TestCommandsInstallSelectionAppendsAfterBaseline checks a configured
+// selection adds its install lines after the proven baseline and before go.
+func TestCommandsInstallSelectionAppendsAfterBaseline(t *testing.T) {
+	p := testParams()
+	p.Selection = Selection{Install: []string{"dev.sw.dbx"}}
+	got := Commands(p)
+	if !strings.Contains(got, "install standard\nkeep java_dev.sw.base\ninstall dev.sw.dbx\ngo\n") {
+		t.Fatalf("install selection not appended after baseline:\n%s", got)
+	}
+}
+
+// TestCommandsMaintenanceStreamSwitchesFirst checks the maintenance stream
+// emits "install maint" right after done, before the standard selection, so
+// the standard set resolves to maintenance versions.
+func TestCommandsMaintenanceStreamSwitchesFirst(t *testing.T) {
+	p := testParams()
+	p.Selection = Selection{Stream: "maintenance"}
+	got := Commands(p)
+	if !strings.Contains(got, "done\ninstall maint\nkeep *\n") {
+		t.Fatalf("maintenance stream not switched before selection:\n%s", got)
+	}
+}
+
+// TestCommandsFeatureStreamEmitsNoDirective checks the default feature stream
+// adds nothing, keeping the baseline output.
+func TestCommandsFeatureStreamEmitsNoDirective(t *testing.T) {
+	p := testParams()
+	p.Selection = Selection{Stream: "feature"}
+	if got := Commands(p); strings.Contains(got, "install maint") || strings.Contains(got, "install feature") {
+		t.Fatalf("feature stream must emit no stream directive:\n%s", got)
+	}
+}
+
+// TestCommandsKeepAndRemoveSelections checks extra keep and remove entries are
+// emitted in install/keep/remove order before go.
+func TestCommandsKeepAndRemoveSelections(t *testing.T) {
+	p := testParams()
+	p.Selection = Selection{Install: []string{"a"}, Keep: []string{"b"}, Remove: []string{"c"}}
+	got := Commands(p)
+	inOrder(t, got, "install a\n", "keep b\n", "remove c\n", "go\n")
+}
+
+// TestCommandsSelectionOneCommandPerLine keeps the one-bare-command-per-line
+// invariant with a configured selection.
+func TestCommandsSelectionOneCommandPerLine(t *testing.T) {
+	p := testParams()
+	p.Selection = Selection{Stream: "maintenance", Install: []string{"dev.sw.dbx"}, Remove: []string{"old.sw.thing"}}
+	got := Commands(p)
+	for _, line := range strings.Split(strings.TrimRight(got, "\n"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			t.Fatalf("selection produced a blank line:\n%s", got)
 		}
 	}
 }
