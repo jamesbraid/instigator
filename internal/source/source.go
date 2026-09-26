@@ -290,6 +290,9 @@ func unpackUnrecognizedTar(ctx context.Context, dir string, opts []extract.Confi
 	if err := extract.Unpack(ctx, dir, f, extract.NewConfig(forced...)); err != nil {
 		return err
 	}
+	if err := f.Close(); err != nil {
+		return err
+	}
 	return os.Remove(name)
 }
 
