@@ -1,6 +1,7 @@
 package source
 
 import (
+	"archive/tar"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -253,7 +254,43 @@ func (r *Resolver) extract(ctx context.Context, archive, outName string) (string
 		os.RemoveAll(tmp)
 		return "", fmt.Errorf("source: extract %s: %w", filepath.Base(archive), err)
 	}
+	if outName == "" {
+		if err := unpackUnrecognizedTar(ctx, tmp, opts); err != nil {
+			os.RemoveAll(tmp)
+			return "", fmt.Errorf("source: extract %s: %w", filepath.Base(archive), err)
+		}
+	}
 	return tmp, nil
+}
+
+// go-extract identifies tar archives by ustar magic. Older V7 tar files have
+// no magic, so a .tar.gz is otherwise left as one decompressed .tar file.
+func unpackUnrecognizedTar(ctx context.Context, dir string, opts []extract.ConfigOption) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	if len(entries) != 1 || !entries[0].Type().IsRegular() ||
+		!strings.HasSuffix(strings.ToLower(entries[0].Name()), ".tar") {
+		return nil
+	}
+	name := filepath.Join(dir, entries[0].Name())
+	f, err := os.Open(name)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := tar.NewReader(f).Next(); err != nil {
+		return fmt.Errorf("decompressed tar %s: %w", entries[0].Name(), err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	forced := append(append([]extract.ConfigOption{}, opts...), extract.WithExtractType("tar"))
+	if err := extract.Unpack(ctx, dir, f, extract.NewConfig(forced...)); err != nil {
+		return err
+	}
+	return os.Remove(name)
 }
 
 // resolveRaw opens a URL with no archive extension as a single EFS image, read

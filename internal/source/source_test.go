@@ -3,6 +3,7 @@ package source
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -62,6 +63,59 @@ func TestResolveRemoteTarGzTree(t *testing.T) {
 	b, err := fs.ReadFile(res.FS, "foundations/dist/pkg")
 	if err != nil || string(b) != "P" {
 		t.Fatalf("pkg=%q err=%v", b, err)
+	}
+}
+
+func TestResolveLocalV7TarGz(t *testing.T) {
+	var raw bytes.Buffer
+	tw := tar.NewWriter(&raw)
+	body := []byte("RAD4 fixture")
+	if err := tw.WriteHeader(&tar.Header{Name: "dist_6.5/rad4x", Mode: 0o644, Size: int64(len(body))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Remove ustar magic and recalculate the header checksum to make a V7 tar.
+	data := raw.Bytes()
+	for i := 257; i < 265; i++ {
+		data[i] = 0
+	}
+	for i := 148; i < 156; i++ {
+		data[i] = ' '
+	}
+	var sum int64
+	for _, b := range data[:512] {
+		sum += int64(b)
+	}
+	copy(data[148:156], fmt.Sprintf("%06o\x00 ", sum))
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cache := t.TempDir()
+	archive := filepath.Join(cache, "rad4x.tar.gz")
+	if err := os.WriteFile(archive, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := New(Options{CacheDir: cache}).Resolve(archive)
+	if err != nil || res.Kind != vfs.OriginDirectory {
+		t.Fatalf("kind=%v err=%v", res.Kind, err)
+	}
+	defer res.Closer.Close()
+	got, err := fs.ReadFile(res.FS, "dist_6.5/rad4x")
+	if err != nil || string(got) != string(body) {
+		t.Fatalf("rad4x=%q err=%v", got, err)
+	}
+	if _, err := fs.Stat(res.FS, "rad4x.tar"); !os.IsNotExist(err) {
+		t.Fatalf("decompressed tar remains: %v", err)
 	}
 }
 
