@@ -99,3 +99,13 @@ func TestUnixListenerCanReopenAfterClose(t *testing.T) {
 	}
 	defer second.Close()
 }
+
+func TestListenTCPRejectsNonLoopback(t *testing.T) {
+	cfg := Config{ServerIP: netip.AddrFrom4(testSrvIP), PrefixLen: 24, MAC: net.HardwareAddr([]byte(testSrvMAC))}
+	for _, address := range []string{"0.0.0.0:12345", "192.0.2.1:12345", "localhost:12345", "127.0.0.1:0"} {
+		if l, err := ListenTCP(address, cfg); err == nil {
+			l.Close()
+			t.Errorf("ListenTCP(%q) accepted a non-loopback or unusable address", address)
+		}
+	}
+}

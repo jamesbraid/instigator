@@ -1,13 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
-	"io"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,19 +16,55 @@ import (
 	"github.com/jamesbraid/instigator/internal/qemunet"
 )
 
-// TestServeNetworkSocketAnswersBootp runs the whole serve command in
-// private-network mode: it listens on a Unix socket, a machine stand-in
-// connects and boots a BOOTP request over the QEMU stream, and the server
-// answers with the configured address - end to end, unprivileged.
+type lockedBuffer struct {
+	mu sync.Mutex
+	bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.Buffer.String()
+}
+
+// TestServeNetworkSocketAnswersBootp runs the whole serve command over a
+// Unix socket. A machine stand-in sends a BOOTP request over the QEMU stream
+// and the server answers with its configured address.
 func TestServeNetworkSocketAnswersBootp(t *testing.T) {
-	testServeNetworkSocket(t, false)
+	servePrivateNetworkAnswersBootp(t, "unix", filepath.Join(t.TempDir(), "irix-install.sock"), false)
 }
 
 func TestServeNetworkSocketExitsOnDisconnect(t *testing.T) {
-	testServeNetworkSocket(t, true)
+	servePrivateNetworkAnswersBootp(t, "unix", filepath.Join(t.TempDir(), "irix-install.sock"), true)
 }
 
-func testServeNetworkSocket(t *testing.T, disconnect bool) {
+func TestServeNetworkTCPAnswersBootp(t *testing.T) {
+	servePrivateNetworkAnswersBootp(t, "tcp", loopbackEndpoint(t), false)
+}
+
+func TestServeNetworkTCPExitsOnDisconnect(t *testing.T) {
+	servePrivateNetworkAnswersBootp(t, "tcp", loopbackEndpoint(t), true)
+}
+
+func loopbackEndpoint(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := l.Addr().String()
+	l.Close()
+	return address
+}
+
+func servePrivateNetworkAnswersBootp(t *testing.T, network, endpoint string, disconnect bool) {
+	t.Helper()
 	dir := t.TempDir()
 	imagePath := filepath.Join(dir, "dist.image")
 	image := efstest.New()
@@ -55,18 +92,25 @@ services:
 	if err := os.WriteFile(configPath, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sockPath := filepath.Join(dir, "irix-install.sock")
-
 	stop := make(chan os.Signal, 1)
 	errCh := make(chan error, 1)
 	captureDir := ""
 	if disconnect {
 		captureDir = filepath.Join(dir, "capture")
 	}
-	go func() { errCh <- runUntilSignal(configPath, false, captureDir, sockPath, io.Discard, stop) }()
+	var output lockedBuffer
+	networkSocket, networkTCP := "", ""
+	if network == "tcp" {
+		networkTCP = endpoint
+	} else {
+		networkSocket = endpoint
+	}
+	go func() {
+		errCh <- runUntilSignal(configPath, false, captureDir, networkSocket, networkTCP, &output, stop)
+	}()
 
 	// Act as the machine: connect once the socket is up, attach a guest stack.
-	conn := dialWhenReady(t, sockPath, time.Now().Add(5*time.Second))
+	conn := dialWhenReady(t, network, endpoint, time.Now().Add(5*time.Second))
 	guestMAC := net.HardwareAddr{0x08, 0x00, 0x69, 0x12, 0x34, 0x56}
 	gst, err := qemunet.New(conn, qemunet.Config{
 		ServerIP:  netip.AddrFrom4([4]byte{10, 98, 0, 65}),
@@ -103,7 +147,12 @@ services:
 		}
 	}
 	if !received {
-		t.Fatal("no BOOTREPLY over the network socket within 5 seconds")
+		select {
+		case serveErr := <-errCh:
+			t.Fatalf("no BOOTREPLY within 5 seconds; serve returned %v; log: %s", serveErr, output.String())
+		default:
+			t.Fatalf("no BOOTREPLY within 5 seconds; log: %s", output.String())
+		}
 	}
 	if reply[0] != 2 {
 		t.Fatalf("op = %d, want BOOTREPLY", reply[0])
@@ -147,14 +196,14 @@ services:
 	}
 }
 
-func dialWhenReady(t *testing.T, path string, deadline time.Time) net.Conn {
+func dialWhenReady(t *testing.T, network, endpoint string, deadline time.Time) net.Conn {
 	t.Helper()
 	for time.Now().Before(deadline) {
-		if c, err := net.Dial("unix", path); err == nil {
+		if c, err := net.Dial(network, endpoint); err == nil {
 			return c
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("socket %s never became connectable", path)
+	t.Fatalf("%s %s never became connectable", network, endpoint)
 	return nil
 }

@@ -24,9 +24,10 @@ func main() {
 					&cli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "decode every packet"},
 					&cli.StringFlag{Name: "capture-dir", Usage: "record the run to `DIR`"},
 					&cli.StringFlag{Name: "network-socket", Usage: "serve a machine's private Ethernet segment over the QEMU stream socket at `PATH` instead of the host network"},
+					&cli.StringFlag{Name: "network-tcp", Usage: "serve a machine's private Ethernet segment over a loopback TCP stream at `IP:PORT`"},
 				},
 				Action: func(_ context.Context, cmd *cli.Command) error {
-					return run(cmd.StringArgs("config")[0], cmd.Bool("verbose"), cmd.String("capture-dir"), cmd.String("network-socket"))
+					return run(cmd.StringArgs("config")[0], cmd.Bool("verbose"), cmd.String("capture-dir"), cmd.String("network-socket"), cmd.String("network-tcp"))
 				},
 			},
 			{

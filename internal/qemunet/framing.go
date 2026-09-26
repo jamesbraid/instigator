@@ -1,7 +1,7 @@
 // Package qemunet gives Instigator's services an unprivileged private
 // Ethernet segment. It embeds a user-space IPv4 stack (gVisor netstack) and
 // attaches it to a QEMU machine over QEMU's stream network backend: each
-// Ethernet frame is exchanged over a byte stream (a Unix socket) framed by a
+// Ethernet frame is exchanged over a byte stream framed by a
 // four-byte big-endian length prefix. The same services that serve the host
 // network - bootp, tftp, rsh - serve this segment through the sockets the
 // Network hands them, so installation is not a different machine mode.

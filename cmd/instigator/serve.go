@@ -19,14 +19,17 @@ import (
 // run serves until a signal stops it. The log goes to stderr because a
 // caller waiting on readiness may have closed stdout, as
 // systemd-notify --fork does.
-func run(configPath string, verbose bool, captureDir, networkSocket string) error {
+func run(configPath string, verbose bool, captureDir, networkSocket, networkTCP string) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
-	return runUntilSignal(configPath, verbose, captureDir, networkSocket, os.Stderr, sig)
+	return runUntilSignal(configPath, verbose, captureDir, networkSocket, networkTCP, os.Stderr, sig)
 }
 
-func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket string, output io.Writer, stop <-chan os.Signal) error {
+func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, networkTCP string, output io.Writer, stop <-chan os.Signal) error {
+	if networkSocket != "" && networkTCP != "" {
+		return fmt.Errorf("--network-socket and --network-tcp cannot be used together")
+	}
 	b, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
@@ -50,24 +53,30 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket s
 		logger.Infof("recording this run to %s", captureDir)
 	}
 
-	// In private-network mode Instigator owns a Unix socket the machine
+	// In private-network mode Instigator owns a stream endpoint the machine
 	// connects to, and serves the segment on that link rather than the host.
-	// The socket is created first and readiness is reported before accepting:
+	// The endpoint is created first and readiness is reported before accepting:
 	// a machine brought up once Instigator is ready then connects, and only
 	// then can serving begin.
 	readinessSent := false
 	var privateNet *qemunet.Network
-	if networkSocket != "" {
-		l, err := qemunet.Listen(networkSocket, qemunet.Config{
+	if networkSocket != "" || networkTCP != "" {
+		networkCfg := qemunet.Config{
 			ServerIP:  cfg.ServerIP,
 			PrefixLen: cfg.Netmask.Bits(),
 			MAC:       qemunet.DefaultServerMAC,
-		})
+		}
+		var l *qemunet.Listener
+		if networkTCP != "" {
+			l, err = qemunet.ListenTCP(networkTCP, networkCfg)
+		} else {
+			l, err = qemunet.Listen(networkSocket, networkCfg)
+		}
 		if err != nil {
 			return err
 		}
 		defer l.Close()
-		logger.Infof("private network %s: waiting for the machine to connect", networkSocket)
+		logger.Infof("private network %s: waiting for the machine to connect", l.Addr())
 		if _, err := sdnotify.SdNotify(false, sdnotify.SdNotifyReady); err != nil {
 			return fmt.Errorf("reporting readiness: %w", err)
 		}

@@ -3,6 +3,8 @@ package qemunet
 import (
 	"fmt"
 	"net"
+	"net/netip"
+	"strconv"
 )
 
 // DefaultServerMAC is Instigator's stable Ethernet address on a private
@@ -10,11 +12,11 @@ import (
 // configured guest.
 var DefaultServerMAC = net.HardwareAddr{0x08, 0x00, 0x69, 0x00, 0x00, 0x02}
 
-// Listener owns the Unix stream socket a QEMU machine connects to, attaching
-// its virtual Ethernet segment to Instigator. Instigator creates and owns
-// this socket. The serving command exits if the connected machine disconnects.
+// Listener owns the stream endpoint a QEMU machine connects to, attaching
+// its virtual Ethernet segment to Instigator. Instigator creates the endpoint
+// before the machine connects. The serving command exits if it disconnects.
 type Listener struct {
-	ln  *net.UnixListener
+	ln  net.Listener
 	cfg Config
 }
 
@@ -26,7 +28,30 @@ func Listen(path string, cfg Config) (*Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("qemunet: listen %s: %w", path, err)
 	}
-	return &Listener{ln: ln.(*net.UnixListener), cfg: cfg}, nil
+	return &Listener{ln: ln, cfg: cfg}, nil
+}
+
+// ListenTCP accepts one QEMU stream connection on a loopback address.
+// An explicit port keeps the address stable across separate installer and
+// machine commands. Remote interfaces and ephemeral ports are refused.
+func ListenTCP(address string, cfg Config) (*Listener, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, fmt.Errorf("qemunet: invalid TCP address %q: %w", address, err)
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil || !ip.IsLoopback() {
+		return nil, fmt.Errorf("qemunet: TCP address must use a loopback IP: %q", address)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return nil, fmt.Errorf("qemunet: TCP address needs a port from 1 to 65535: %q", address)
+	}
+	ln, err := net.Listen("tcp", address)
+	if err != nil {
+		return nil, fmt.Errorf("qemunet: listen %s: %w", address, err)
+	}
+	return &Listener{ln: ln, cfg: cfg}, nil
 }
 
 // Accept waits for one machine to connect and returns the private Network
@@ -48,5 +73,5 @@ func (l *Listener) Accept() (*Network, error) {
 // Addr returns the socket's address.
 func (l *Listener) Addr() net.Addr { return l.ln.Addr() }
 
-// Close stops listening and removes the socket file.
+// Close stops listening and removes a Unix socket file, if present.
 func (l *Listener) Close() error { return l.ln.Close() }
