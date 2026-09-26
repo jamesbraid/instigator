@@ -43,6 +43,9 @@ func TestStartBindsServicesThroughInjectedNetwork(t *testing.T) {
 	}
 	t.Cleanup(func() { s.Close() })
 
+	if s.rshSrv.IdleTimeout != 0 {
+		t.Errorf("private rsh idle timeout = %s, want disabled", s.rshSrv.IdleTimeout)
+	}
 	if !slices.Contains(f.packetPorts, 67) || !slices.Contains(f.packetPorts, 69) {
 		t.Errorf("packet ports bound through network = %v, want 67 and 69", f.packetPorts)
 	}

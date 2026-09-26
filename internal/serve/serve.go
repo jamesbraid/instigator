@@ -282,7 +282,7 @@ func withRecorder(r *capture.Recorder) Option {
 }
 
 // withRSHIdleTimeout overrides how long a silent rsh session is tolerated
-// before it is closed and recorded as idle. Zero keeps defaultRSHIdleTimeout.
+// before it is closed and recorded as idle. Zero uses the network default.
 func withRSHIdleTimeout(d time.Duration) Option {
 	return func(o *options) { o.rshIdleTimeout = d }
 }
@@ -426,7 +426,9 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 
 	if cfg.Services.RSH {
 		idle := o.rshIdleTimeout
-		if idle == 0 {
+		// IRIX can leave the rsh shell silent for more than 30 minutes while
+		// it copies media. Keep private install sessions open until shutdown.
+		if idle == 0 && o.network == nil {
 			idle = defaultRSHIdleTimeout
 		}
 		srv := &rcmd.Server{
