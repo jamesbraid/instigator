@@ -108,6 +108,25 @@ whose `stand/` files are served to the PROM. `collisions` records an
 explicit winner when two layers contain different bytes at the same logical
 path. Identical duplicates are accepted.
 
+When a later layer updates files from one earlier layer, list both in that
+order and name the pair under `replacements`:
+
+```yaml
+install_sets:
+  - name: development
+    layers:
+      - name: foundation
+        source: /media/foundation.image
+      - name: update
+        source: /media/update.tar.gz
+    replacements:
+      foundation: update
+```
+
+The later layer wins differing files shared by this pair. An exact
+`collisions` winner takes priority. Differing files from other layer pairs
+still stop the build.
+
 ### Remote sources
 
 `source:` also accepts an `http(s)://` URL. A `.tar.gz`/`.tgz`/`.tar`/`.gz`
