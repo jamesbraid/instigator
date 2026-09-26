@@ -65,6 +65,52 @@ func TestResolveRemoteTarGzTree(t *testing.T) {
 	}
 }
 
+func TestResolveLocalTardist(t *testing.T) {
+	var raw bytes.Buffer
+	tw := tar.NewWriter(&raw)
+	body := []byte("tablet helper")
+	if err := tw.WriteHeader(&tar.Header{Name: "dist/tablet.sw", Mode: 0o644, Size: int64(len(body))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name string
+		data []byte
+	}{
+		{"tablet.tardist", raw.Bytes()},
+		{"tablet.tardist.gz", tgz(t, map[string]string{"dist/tablet.sw": string(body)})},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := t.TempDir()
+			archive := filepath.Join(cache, tc.name)
+			if err := os.WriteFile(archive, tc.data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			res, err := New(Options{CacheDir: cache}).Resolve(archive)
+			if err != nil || res.Kind != vfs.OriginDirectory {
+				t.Fatalf("kind=%v err=%v", res.Kind, err)
+			}
+			got, err := fs.ReadFile(res.FS, "dist/tablet.sw")
+			if err != nil || string(got) != string(body) {
+				t.Fatalf("tablet.sw=%q err=%v", got, err)
+			}
+			if err := res.Closer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			remaining, err := filepath.Glob(filepath.Join(cache, "extract-*"))
+			if err != nil || len(remaining) != 0 {
+				t.Fatalf("extraction remains: %v, err=%v", remaining, err)
+			}
+		})
+	}
+}
+
 // TestResolveRemoteRangeImage: a range-served raw EFS image resolves to an
 // OriginImage read lazily by byte-range (no scheme extension is an archive),
 // and a known in-image file reads back through the returned fs.FS.

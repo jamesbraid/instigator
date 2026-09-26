@@ -138,6 +138,8 @@ func isURL(ref string) bool {
 func isTreePath(p string) bool {
 	lp := strings.ToLower(p)
 	return strings.HasSuffix(lp, ".tar.gz") ||
+		strings.HasSuffix(lp, ".tardist.gz") ||
+		strings.HasSuffix(lp, ".tardist") ||
 		strings.HasSuffix(lp, ".tgz") ||
 		strings.HasSuffix(lp, ".tar")
 }
@@ -146,7 +148,7 @@ func isArchivePath(p string) bool {
 	return isTreePath(p) || strings.HasSuffix(strings.ToLower(p), ".gz")
 }
 
-// resolveLocal opens a directory as a read-only view or a file as an EFS image.
+// resolveLocal opens a directory, extracts a local archive, or reads an EFS image.
 func (r *Resolver) resolveLocal(ref string) (vfs.Resolved, error) {
 	info, err := os.Stat(ref)
 	if err != nil {
@@ -158,6 +160,9 @@ func (r *Resolver) resolveLocal(ref string) (vfs.Resolved, error) {
 			return vfs.Resolved{}, fmt.Errorf("source: open %s: %w", ref, err)
 		}
 		return vfs.Resolved{FS: root.FS(), Kind: vfs.OriginDirectory, Closer: root}, nil
+	}
+	if isArchivePath(ref) {
+		return r.resolveExtractedArchive(context.Background(), ref, filepath.Base(ref))
 	}
 	disc, err := vfs.OpenImage(ref)
 	if err != nil {
@@ -176,8 +181,13 @@ func (r *Resolver) resolveArchive(ctx context.Context, ref string, u *url.URL) (
 	if err := r.download(ctx, ref, archive); err != nil {
 		return vfs.Resolved{}, err
 	}
+	return r.resolveExtractedArchive(ctx, archive, base)
+}
 
-	if isTreePath(u.Path) {
+// resolveExtractedArchive applies the same size and path checks to local and
+// downloaded archives, and removes the extraction when the source closes.
+func (r *Resolver) resolveExtractedArchive(ctx context.Context, archive, base string) (vfs.Resolved, error) {
+	if isTreePath(base) {
 		tmp, err := r.extract(ctx, archive, "")
 		if err != nil {
 			return vfs.Resolved{}, err

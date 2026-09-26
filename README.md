@@ -89,12 +89,13 @@ install_sets:
         source: /media/irix/overlays2.image
 ```
 
-`instigator` auto-detects whether a source is an SGI image or an extracted
-directory. `base:` names a subdirectory inside the source that holds the
-install tree, for archives that unpack with an extra path component (a
-tarball that unpacks to `disc1/dist/…` needs `base: disc1`). `dist:` and
-`stand:` resolve under `base` and default to `dist` and `stand`. Set `dist:`
-for a media directory such as `dist6.5`. `boot: true` marks the one layer
+`instigator` auto-detects whether a source is an SGI image, an extracted
+directory, or a local `.tar`, `.tar.gz`, `.tgz`, `.tardist`, or `.tardist.gz`
+archive. Local archives are extracted into `cache_dir` for the serve run and
+removed when the source closes. `base:` names the subtree holding the
+install files. For an archive containing `disc1/dist/`, use `base: disc1`.
+`dist:` and `stand:` resolve under `base` and default to `dist` and
+`stand`. Set `dist:` for a media directory such as `dist6.5`. `boot: true` marks the one layer
 whose `stand/` files are served to the PROM. `collisions` records an
 explicit winner when two layers contain different bytes at the same logical
 path. Identical duplicates are accepted.
