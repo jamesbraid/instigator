@@ -298,11 +298,59 @@ func buildTree(cfg *config.Config) (*vfs.Tree, profile, error) {
 		tree.Close()
 		return nil, profile{}, err
 	}
+	if err := checkInstallSelections(cfg, tree); err != nil {
+		tree.Close()
+		return nil, profile{}, err
+	}
 	return tree, prof, nil
 }
 
-// Check opens every source and assembles the same tree and generated files
-// that Start serves, then closes them without binding network ports.
+// A named script must only select products that the enabled distributions
+// serve. An archive left as a single tar file can otherwise pass the media
+// build while inst finds no products after opening its distribution.
+func checkInstallSelections(cfg *config.Config, tree *vfs.Tree) error {
+	var enabled []string
+	for _, set := range cfg.InstallSets {
+		if set.Enabled {
+			enabled = append(enabled, set.Name)
+		}
+	}
+	if len(enabled) == 0 {
+		return nil
+	}
+	for _, script := range cfg.InstallScripts {
+		for _, selection := range script.Install {
+			product := selection
+			for _, suffix := range []string{".sw", ".man"} {
+				if index := strings.Index(selection, suffix); index >= 0 &&
+					(index+len(suffix) == len(selection) || selection[index+len(suffix)] == '.') {
+					product = selection[:index]
+					break
+				}
+			}
+			found := false
+			for _, set := range enabled {
+				for _, suffix := range []string{".sw", ".man"} {
+					info, err := tree.Stat(set + "/dist/" + product + suffix)
+					if err == nil && info.Mode().IsRegular() {
+						found = true
+						break
+					}
+				}
+				if found {
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("install script %q selects %q, but no enabled distribution contains %s.sw or %s.man", script.Name, selection, product, product)
+			}
+		}
+	}
+	return nil
+}
+
+// Check opens every source, assembles the tree and generated files, and
+// verifies named script selections before closing without binding ports.
 func Check(cfg *config.Config) error {
 	tree, _, err := buildTree(cfg)
 	if err != nil {

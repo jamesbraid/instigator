@@ -377,6 +377,29 @@ func TestGeneratedNamedScriptServed(t *testing.T) {
 	}
 }
 
+func TestCheckRejectsArchiveWithoutSelectedProduct(t *testing.T) {
+	cfg := fourSetConfig(t, true)
+	dir := t.TempDir()
+	cfg.InstallSets = append(cfg.InstallSets, config.InstallSet{
+		Name:    "addon-rad4",
+		Enabled: true,
+		Layers: []config.Layer{{
+			Name:   "rad4",
+			Source: distImage(t, dir, "unpacked.image", "rad4x.tar"),
+		}},
+	})
+	cfg.InstallScripts = []config.InstallScript{{Name: "addon-rad4", Install: []string{"rad4x"}}}
+	if err := Check(cfg); err == nil || !strings.Contains(err.Error(), "rad4x") {
+		t.Fatalf("check accepted a distribution with no selected product: %v", err)
+	}
+
+	cfg.InstallSets[len(cfg.InstallSets)-1].Layers[0].Source = distImage(t, dir, "products.image", "rad4x.sw")
+	cfg.InstallScripts[0].Install = []string{"rad4x.sw.driver"}
+	if err := Check(cfg); err != nil {
+		t.Fatalf("check rejected the selected product: %v", err)
+	}
+}
+
 // The operator instructions offer every named script alongside install.cmds.
 func TestNamedScriptOfferedToOperator(t *testing.T) {
 	cfg := fourSetConfig(t, true)

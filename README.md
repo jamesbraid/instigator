@@ -39,8 +39,10 @@ including merged overlays, Foundations, Development Foundation/Libraries,
 Applications, Complementary Applications, and optional Freeware.
 
 Check the media tree before starting the server. This opens every source,
-checks merge collisions, and generates the installer files without binding
-network ports. Archive sources may be extracted into the configured cache.
+checks merge collisions and named script product selections, and generates
+the installer files without binding network ports. A selected product must
+have a `.sw` or `.man` file in an enabled distribution. Archive sources may
+be extracted into the configured cache.
 
 ```sh
 ./instigator check instigator.yaml
@@ -130,11 +132,11 @@ still stop the build.
 ### Remote sources
 
 `source:` also accepts an `http(s)://` URL. A `.tar.gz`/`.tgz`/`.tar`/`.gz`
-archive is downloaded and unpacked; a raw `.image` on a range-capable server
+archive is downloaded and unpacked. A raw `.image` on a range-capable server
 is read lazily, pulling only the bytes an install touches. `credentials:`
 supply host-matched HTTP Basic auth over HTTPS, with a `${VAR}` password read
 from the environment. Downloads are cached under `cache_dir:` (default: the
-user cache dir) and reused across runs; each run re-extracts an archive fresh.
+user cache dir) and reused across runs. Each run re-extracts an archive fresh.
 
 The complete example also shows client filtering, service toggles, and the
 low TFTP transfer-port range required by SGI PROMs.
