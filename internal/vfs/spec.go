@@ -47,8 +47,12 @@ type LayerSpec struct {
 // full logical tree path (for example "applications/dist/inst.README") to
 // the Name of the layer whose copy wins; a differing collision with no
 // matching entry fails Build, so the served bytes are never guessed.
+// Replacements maps an earlier layer to a later one. That later layer
+// replaces files claimed by the earlier layer anywhere in the set; an exact
+// Collisions entry takes precedence. Other differing pairs still fail.
 type SetSpec struct {
-	Name       string
-	Layers     []LayerSpec
-	Collisions map[string]string
+	Name         string
+	Layers       []LayerSpec
+	Collisions   map[string]string
+	Replacements map[string]string
 }

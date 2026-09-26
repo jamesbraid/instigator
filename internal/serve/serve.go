@@ -546,7 +546,7 @@ func setSpecs(cfg *config.Config) []vfs.SetSpec {
 				Boot:   l.Boot,
 			})
 		}
-		sets = append(sets, vfs.SetSpec{Name: set.Name, Layers: layers, Collisions: set.Collisions})
+		sets = append(sets, vfs.SetSpec{Name: set.Name, Layers: layers, Collisions: set.Collisions, Replacements: set.Replacements})
 	}
 	return sets
 }

@@ -18,6 +18,7 @@ install_sets:
       - {name: overlays2, source: /media/6.5.30/overlay2, dist: dist6.5}
     collisions:
       "applications/dist/inst.README": overlays1
+    replacements: {overlays1: overlays2}
   - name: "6.5.22"
     enabled: false
     layers:
@@ -79,6 +80,10 @@ func TestParseSample(t *testing.T) {
 	}
 	if len(first.Collisions) != 1 || first.Collisions["applications/dist/inst.README"] != "overlays1" {
 		t.Fatalf("install_sets[0].Collisions = %+v", first.Collisions)
+	}
+
+	if first.Replacements["overlays1"] != "overlays2" {
+		t.Fatalf("install_sets[0].Replacements = %+v", first.Replacements)
 	}
 
 	second := c.InstallSets[1]
@@ -360,5 +365,19 @@ install_sets:
 	}
 	if cfg2.CacheDir != "" {
 		t.Fatalf("cache_dir default = %q, want empty", cfg2.CacheDir)
+	}
+}
+
+func TestParseRejectsUnorderedReplacement(t *testing.T) {
+	for _, replacement := range []string{"{base: absent}", "{absent: update}", "{update: base}"} {
+		_, err := Parse([]byte(`server_ip: 192.0.2.10
+clients: [{name: o, mac: "08:00:69:00:00:01", ip: 192.0.2.30}]
+install_sets:
+  - name: dev
+    layers: [{name: base, source: /base}, {name: update, source: /update}]
+    replacements: ` + replacement))
+		if err == nil {
+			t.Fatalf("accepted %s", replacement)
+		}
 	}
 }

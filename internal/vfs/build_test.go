@@ -631,3 +631,56 @@ func TestBuildRejectsDuplicateAndMissingSources(t *testing.T) {
 		t.Error("Build accepted a layer whose image does not exist")
 	}
 }
+
+func TestBuildLayerReplacement(t *testing.T) {
+	dir := t.TempDir()
+	first := makeImage(t, dir, "first.iso", map[string]string{
+		"dist/a": "old a", "dist/b": "old b", "dist/c": "old c",
+	})
+	second := makeImage(t, dir, "second.iso", map[string]string{
+		"dist/a": "new a", "dist/b": "new b", "dist/c": "new c",
+	})
+	tree := build(t, []SetSpec{{
+		Name:         "development",
+		Layers:       []LayerSpec{distLayer("foundation", first), distLayer("update", second)},
+		Replacements: map[string]string{"foundation": "update"},
+		Collisions:   map[string]string{"development/dist/c": "foundation"},
+	}})
+	for name, want := range map[string]string{"a": "new a", "b": "new b", "c": "old c"} {
+		if got := readTree(t, tree, "development/dist/"+name); got != want {
+			t.Errorf("%s: got %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestBuildLayerReplacementDoesNotHideOtherConflict(t *testing.T) {
+	dir := t.TempDir()
+	first := makeImage(t, dir, "first.iso", map[string]string{"dist/a": "old"})
+	second := makeImage(t, dir, "second.iso", map[string]string{"dist/a": "new"})
+	third := makeImage(t, dir, "third.iso", map[string]string{"dist/a": "other"})
+	_, err := Build([]SetSpec{{
+		Name:         "development",
+		Layers:       []LayerSpec{distLayer("foundation", first), distLayer("update", second), distLayer("other", third)},
+		Replacements: map[string]string{"foundation": "update"},
+	}}, localResolver{})
+	if err == nil || !strings.Contains(err.Error(), "update") || !strings.Contains(err.Error(), "other") {
+		t.Fatalf("unrelated conflict error = %v", err)
+	}
+}
+
+func TestBuildLayerReplacementRequiresOrder(t *testing.T) {
+	dir := t.TempDir()
+	first := makeImage(t, dir, "first.iso", map[string]string{"dist/a": "old"})
+	for _, replacement := range []map[string]string{
+		{"absent": "update"}, {"update": "foundation"}, {"foundation": "absent"},
+	} {
+		_, err := Build([]SetSpec{{
+			Name:         "development",
+			Layers:       []LayerSpec{distLayer("foundation", first), distLayer("update", first)},
+			Replacements: replacement,
+		}}, localResolver{})
+		if err == nil || !strings.Contains(err.Error(), "replacement") {
+			t.Fatalf("invalid replacement %v: %v", replacement, err)
+		}
+	}
+}

@@ -58,6 +58,10 @@ func Build(sets []SetSpec, r Resolver) (*Tree, error) {
 			t.Close()
 			return nil, fmt.Errorf("install set %q defined twice", set.Name)
 		}
+		if err := checkReplacements(set); err != nil {
+			t.Close()
+			return nil, fmt.Errorf("install set %q: %w", set.Name, err)
+		}
 		t.root.children[set.Name] = newDir(set.Name, Origin{})
 		for _, layer := range set.Layers {
 			if err := t.addLayer(set, layer, r, resolved); err != nil {
@@ -209,7 +213,7 @@ func (t *Tree) walkFS(set SetSpec, layer LayerSpec, fsys fs.FS, kind OriginKind,
 		}
 		switch {
 		case info.IsDir():
-			sub, err := mergeChild(dir, newDir(e.Name(), originOf(kind, layer, childSrc)), childTarget, nil)
+			sub, err := mergeChild(dir, newDir(e.Name(), originOf(kind, layer, childSrc)), childTarget, nil, nil)
 			if err != nil {
 				return err
 			}
@@ -229,7 +233,7 @@ func (t *Tree) walkFS(set SetSpec, layer LayerSpec, fsys fs.FS, kind OriginKind,
 				nlink:  nlink,
 				fsys:   fsys,
 			}
-			if _, err := mergeChild(dir, f, childTarget, set.Collisions); err != nil {
+			if _, err := mergeChild(dir, f, childTarget, set.Collisions, set.Replacements); err != nil {
 				return err
 			}
 		}
@@ -324,7 +328,7 @@ func (t *Tree) ensureDir(logical string, origin Origin) (*node, error) {
 	seen := ""
 	for _, part := range strings.Split(logical, "/") {
 		seen = path.Join(seen, part)
-		child, err := mergeChild(n, newDir(part, origin), seen, nil)
+		child, err := mergeChild(n, newDir(part, origin), seen, nil, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -339,7 +343,7 @@ func (t *Tree) ensureDir(logical string, origin Origin) (*node, error) {
 // origin - unless collisions names the layer whose copy wins at this exact
 // logical path. A file landing where a directory is, or the reverse, is
 // structural and no winner can settle it.
-func mergeChild(parent, cand *node, logical string, collisions map[string]string) (*node, error) {
+func mergeChild(parent, cand *node, logical string, collisions map[string]string, replacements map[string]string) (*node, error) {
 	old, ok := parent.children[cand.name]
 	if !ok {
 		parent.children[cand.name] = cand
@@ -358,6 +362,10 @@ func mergeChild(parent, cand *node, logical string, collisions map[string]string
 			return cand, nil
 		}
 		return old, nil
+	}
+	if replacements[old.origin.Source] == cand.origin.Source {
+		parent.children[cand.name] = cand
+		return cand, nil
 	}
 	same, err := sameContent(old, cand)
 	if err != nil {
@@ -451,6 +459,25 @@ func (t *Tree) checkCollisions(set SetSpec) error {
 		}
 		if n.origin.Source != winner {
 			return fmt.Errorf("collision winner %q: %s comes from layer %q instead", winner, p, n.origin.Source)
+		}
+	}
+	return nil
+}
+
+// checkReplacements keeps a broad replacement limited to one ordered pair.
+func checkReplacements(set SetSpec) error {
+	positions := make(map[string]int, len(set.Layers))
+	for i, layer := range set.Layers {
+		if _, exists := positions[layer.Name]; exists {
+			return fmt.Errorf("duplicate layer %q", layer.Name)
+		}
+		positions[layer.Name] = i
+	}
+	for from, to := range set.Replacements {
+		fromIndex, hasFrom := positions[from]
+		toIndex, hasTo := positions[to]
+		if !hasFrom || !hasTo || toIndex <= fromIndex {
+			return fmt.Errorf("replacement %q -> %q must name layers in source-then-replacement order", from, to)
 		}
 	}
 	return nil

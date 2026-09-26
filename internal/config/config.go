@@ -41,12 +41,14 @@ type Layer struct {
 // (browsable); Enabled controls only whether the set is offered in the
 // generated command file and Inst> instructions. Collisions records, for a
 // full logical path written by more than one layer, which layer's copy
-// wins.
+// wins. Replacements names a later layer that replaces files from an
+// earlier layer across the set; an exact collision winner takes precedence.
 type InstallSet struct {
-	Name       string
-	Enabled    bool
-	Layers     []Layer
-	Collisions map[string]string
+	Name         string
+	Enabled      bool
+	Layers       []Layer
+	Collisions   map[string]string
+	Replacements map[string]string
 }
 
 // InstallScript is one named inst command file generated in addition to the
@@ -132,7 +134,8 @@ type raw struct {
 			Stand  string `yaml:"stand"`
 			Boot   bool   `yaml:"boot"`
 		} `yaml:"layers"`
-		Collisions map[string]string `yaml:"collisions"`
+		Collisions   map[string]string `yaml:"collisions"`
+		Replacements map[string]string `yaml:"replacements"`
 	} `yaml:"install_sets"`
 	InstallScripts []struct {
 		Name    string   `yaml:"name"`
@@ -273,11 +276,26 @@ func Parse(b []byte) (*Config, error) {
 				Boot:   rl.Boot,
 			})
 		}
+		for from, to := range rs.Replacements {
+			fromIndex, toIndex := -1, -1
+			for index, layer := range layers {
+				if layer.Name == from {
+					fromIndex = index
+				}
+				if layer.Name == to {
+					toIndex = index
+				}
+			}
+			if fromIndex < 0 || toIndex <= fromIndex {
+				return nil, fmt.Errorf("config: install_sets[%d] (%s): replacement %q -> %q must name layers in source-then-replacement order", i, rs.Name, from, to)
+			}
+		}
 		c.InstallSets = append(c.InstallSets, InstallSet{
-			Name:       rs.Name,
-			Enabled:    enabled,
-			Layers:     layers,
-			Collisions: rs.Collisions,
+			Name:         rs.Name,
+			Enabled:      enabled,
+			Layers:       layers,
+			Collisions:   rs.Collisions,
+			Replacements: rs.Replacements,
 		})
 	}
 
