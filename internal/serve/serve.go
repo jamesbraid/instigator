@@ -287,6 +287,30 @@ func withRSHIdleTimeout(d time.Duration) Option {
 	return func(o *options) { o.rshIdleTimeout = d }
 }
 
+func buildTree(cfg *config.Config) (*vfs.Tree, profile, error) {
+	res := source.New(source.Options{CacheDir: cacheDir(cfg), Credentials: toSourceCreds(cfg.Credentials)})
+	tree, err := vfs.Build(setSpecs(cfg), res)
+	if err != nil {
+		return nil, profile{}, err
+	}
+	prof, err := generate(cfg, tree)
+	if err != nil {
+		tree.Close()
+		return nil, profile{}, err
+	}
+	return tree, prof, nil
+}
+
+// Check opens every source and assembles the same tree and generated files
+// that Start serves, then closes them without binding network ports.
+func Check(cfg *config.Config) error {
+	tree, _, err := buildTree(cfg)
+	if err != nil {
+		return err
+	}
+	return tree.Close()
+}
+
 // Start assembles the configured install sets, generates the operator
 // files, binds the enabled services on the configured ports, and serves
 // until Close. logger receives leveled server output; nil is silent,
@@ -299,14 +323,8 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 	for _, opt := range opts {
 		opt(&o)
 	}
-	res := source.New(source.Options{CacheDir: cacheDir(cfg), Credentials: toSourceCreds(cfg.Credentials)})
-	tree, err := vfs.Build(setSpecs(cfg), res)
+	tree, prof, err := buildTree(cfg)
 	if err != nil {
-		return nil, err
-	}
-	prof, err := generate(cfg, tree)
-	if err != nil {
-		tree.Close()
 		return nil, err
 	}
 	s := &Servers{tree: tree, logger: logger}

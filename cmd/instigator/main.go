@@ -17,6 +17,14 @@ func main() {
 		Usage: "network install server for SGI IRIX systems",
 		Commands: []*cli.Command{
 			{
+				Name:      "check",
+				Usage:     "validate and assemble install media without serving it",
+				Arguments: []cli.Argument{&cli.StringArgs{Name: "config", UsageText: "<config.yaml|->", Min: 1, Max: 1}},
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					return runCheck(cmd.StringArgs("config")[0])
+				},
+			},
+			{
 				Name:      "serve",
 				Usage:     "serve the configured IRIX install sets",
 				Arguments: []cli.Argument{&cli.StringArgs{Name: "config", UsageText: "<config.yaml>", Min: 1, Max: 1}},

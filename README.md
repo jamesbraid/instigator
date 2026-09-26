@@ -38,6 +38,14 @@ layers in install order. The example shows the tested 6.5.30 profile,
 including merged overlays, Foundations, Development Foundation/Libraries,
 Applications, Complementary Applications, and optional Freeware.
 
+Check the media tree before starting the server. This opens every source,
+checks merge collisions, and generates the installer files without binding
+network ports. Archive sources may be extracted into the configured cache.
+
+```sh
+./instigator check instigator.yaml
+```
+
 Start the server on the install network:
 
 ```sh
