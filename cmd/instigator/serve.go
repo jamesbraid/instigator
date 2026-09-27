@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -55,6 +56,7 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket s
 	// a machine brought up once Instigator is ready then connects, and only
 	// then can serving begin.
 	readinessSent := false
+	var privateNet *qemunet.Network
 	if networkSocket != "" {
 		l, err := qemunet.Listen(networkSocket, qemunet.Config{
 			ServerIP:  cfg.ServerIP,
@@ -89,6 +91,7 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket s
 				return fmt.Errorf("accepting the machine: %w", a.err)
 			}
 			defer a.net.Close()
+			privateNet = a.net
 			opts = append(opts, serve.WithNetwork(a.net))
 		}
 	}
@@ -107,8 +110,17 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket s
 			return fmt.Errorf("reporting readiness: %w", err)
 		}
 	}
-	<-stop
-	logger.Infof("shutting down")
+	if privateNet != nil {
+		select {
+		case <-stop:
+			logger.Infof("shutting down")
+		case <-privateNet.Done():
+			return errors.Join(fmt.Errorf("private network disconnected: %w", privateNet.Err()), s.Close())
+		}
+	} else {
+		<-stop
+		logger.Infof("shutting down")
+	}
 	// Close drains and finalizes the capture, returning an error if the
 	// capture came out incomplete, so a run that cannot be trusted says so.
 	return s.Close()

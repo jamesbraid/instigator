@@ -58,9 +58,15 @@ type Network struct {
 	conn  io.ReadWriteCloser
 	ip    tcpip.Address
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	done      chan struct{}
+	stopOnce  sync.Once
+	closeOnce sync.Once
+	errMu     sync.Mutex
+	stopErr   error
+	closeErr  error
 }
 
 // New builds a private-network stack from cfg and attaches it to conn, which
@@ -105,11 +111,15 @@ func New(conn io.ReadWriteCloser, cfg Config) (*Network, error) {
 	// unicast) and the limited broadcast a BOOTP reply uses.
 	s.SetRouteTable([]tcpip.Route{{Destination: header.IPv4EmptySubnet, NIC: nicID}})
 
-	n := &Network{stack: s, ch: ch, conn: conn, ip: addr}
+	n := &Network{stack: s, ch: ch, conn: conn, ip: addr, done: make(chan struct{})}
 	n.ctx, n.cancel = context.WithCancel(context.Background())
 	n.wg.Add(2)
 	go n.readLoop()
 	go n.writeLoop()
+	go func() {
+		n.wg.Wait()
+		close(n.done)
+	}()
 	return n, nil
 }
 
@@ -120,7 +130,8 @@ func (n *Network) readLoop() {
 	for {
 		frame, err := readFrame(r, maxFrame)
 		if err != nil {
-			return // stream closed or corrupt: stop delivering
+			n.stop(fmt.Errorf("read frame: %w", err))
+			return
 		}
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
 			Payload: buffer.MakeWithData(frame),
@@ -148,9 +159,31 @@ func (n *Network) writeLoop() {
 		err := writeFrame(n.conn, frame.AsSlice())
 		frame.Release()
 		if err != nil {
-			return // stream closed: stop sending
+			n.stop(fmt.Errorf("write frame: %w", err))
+			return
 		}
 	}
+}
+
+func (n *Network) stop(err error) {
+	n.stopOnce.Do(func() {
+		n.errMu.Lock()
+		n.stopErr = err
+		n.errMu.Unlock()
+		n.cancel()
+		n.closeErr = n.conn.Close()
+	})
+}
+
+// Done closes when the frame pumps have stopped. A peer disconnect or a
+// malformed frame also closes the stream and stops the other pump.
+func (n *Network) Done() <-chan struct{} { return n.done }
+
+// Err reports why the pumps stopped. It is nil after an explicit Close.
+func (n *Network) Err() error {
+	n.errMu.Lock()
+	defer n.errMu.Unlock()
+	return n.stopErr
 }
 
 // ListenPacket binds a broadcast-capable UDP conn on the segment to port
@@ -208,10 +241,11 @@ func (n *Network) DialStderr(ip net.IP, port int) (net.Conn, error) {
 
 // Close stops the frame pumps, closes the stream, and tears down the stack.
 func (n *Network) Close() error {
-	n.cancel()            // unblock writeLoop
-	err := n.conn.Close() // unblock readLoop
-	n.wg.Wait()
-	n.stack.Close()
-	n.ch.Close()
-	return err
+	n.stop(nil)
+	<-n.done
+	n.closeOnce.Do(func() {
+		n.stack.Close()
+		n.ch.Close()
+	})
+	return n.closeErr
 }

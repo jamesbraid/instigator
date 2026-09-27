@@ -1,6 +1,8 @@
 package qemunet
 
 import (
+	"errors"
+	"io"
 	"net"
 	"net/netip"
 	"testing"
@@ -8,6 +10,78 @@ import (
 
 	"github.com/jamesbraid/instigator/internal/bootp"
 )
+
+func TestNetworkStopsOnPeerClose(t *testing.T) {
+	c, peer := net.Pipe()
+	n, err := New(c, Config{ServerIP: netip.AddrFrom4(testSrvIP), PrefixLen: 24, MAC: net.HardwareAddr([]byte(testSrvMAC))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+	peer.Close()
+	select {
+	case <-n.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("frame pumps remained active after peer close")
+	}
+	if !errors.Is(n.Err(), io.EOF) {
+		t.Fatalf("network error = %v, want EOF", n.Err())
+	}
+	if err := n.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNetworkStopsOnMalformedFrame(t *testing.T) {
+	c, peer := net.Pipe()
+	n, err := New(c, Config{ServerIP: netip.AddrFrom4(testSrvIP), PrefixLen: 24, MAC: net.HardwareAddr([]byte(testSrvMAC))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+	defer peer.Close()
+	if _, err := peer.Write([]byte{0, 1, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-n.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("frame pumps remained active after malformed frame")
+	}
+	if n.Err() == nil {
+		t.Fatal("malformed frame did not report an error")
+	}
+}
+
+type failingWriteConn struct{ net.Conn }
+
+func (failingWriteConn) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func TestNetworkStopsOnWriteFailure(t *testing.T) {
+	c, peer := net.Pipe()
+	n, err := New(failingWriteConn{c}, Config{ServerIP: netip.AddrFrom4(testSrvIP), PrefixLen: 24, MAC: net.HardwareAddr([]byte(testSrvMAC))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer n.Close()
+	defer peer.Close()
+	pc, err := n.ListenPacket(68)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	if _, err := pc.WriteTo([]byte("packet"), &net.UDPAddr{IP: net.IPv4bcast, Port: 67}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-n.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("frame pumps remained active after write failure")
+	}
+	if !errors.Is(n.Err(), io.ErrClosedPipe) {
+		t.Fatalf("network error = %v, want closed pipe", n.Err())
+	}
+}
 
 // TestNetworkBootpEndToEnd runs the real bootp.Server on a production Network
 // and drives a broadcast request from a second Network across the framed

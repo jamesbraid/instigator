@@ -11,9 +11,8 @@ import (
 var DefaultServerMAC = net.HardwareAddr{0x08, 0x00, 0x69, 0x00, 0x00, 0x02}
 
 // Listener owns the Unix stream socket a QEMU machine connects to, attaching
-// its virtual Ethernet segment to Instigator. Per the private-network
-// contract, Instigator creates and owns this socket; the machine connects to
-// it, and disconnecting or reconnecting the machine never changes it.
+// its virtual Ethernet segment to Instigator. Instigator creates and owns
+// this socket. The serving command exits if the connected machine disconnects.
 type Listener struct {
 	ln  *net.UnixListener
 	cfg Config

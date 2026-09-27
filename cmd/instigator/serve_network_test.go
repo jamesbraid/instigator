@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,14 @@ import (
 // connects and boots a BOOTP request over the QEMU stream, and the server
 // answers with the configured address - end to end, unprivileged.
 func TestServeNetworkSocketAnswersBootp(t *testing.T) {
+	testServeNetworkSocket(t, false)
+}
+
+func TestServeNetworkSocketExitsOnDisconnect(t *testing.T) {
+	testServeNetworkSocket(t, true)
+}
+
+func testServeNetworkSocket(t *testing.T, disconnect bool) {
 	dir := t.TempDir()
 	imagePath := filepath.Join(dir, "dist.image")
 	image := efstest.New()
@@ -99,10 +108,19 @@ services:
 		t.Fatalf("yiaddr = %s, want 10.98.0.65", got)
 	}
 
-	stop <- os.Interrupt
+	if disconnect {
+		if err := gst.Close(); err != nil {
+			t.Fatalf("close guest network: %v", err)
+		}
+	} else {
+		stop <- os.Interrupt
+	}
 	select {
 	case err := <-errCh:
-		if err != nil {
+		if disconnect && (err == nil || !strings.Contains(err.Error(), "private network disconnected")) {
+			t.Fatalf("runUntilSignal on disconnect = %v", err)
+		}
+		if !disconnect && err != nil {
 			t.Fatalf("runUntilSignal: %v", err)
 		}
 	case <-time.After(5 * time.Second):
