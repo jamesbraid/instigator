@@ -74,14 +74,23 @@ services:
 	req := make([]byte, 300)
 	req[0], req[1], req[2] = 1, 1, 6
 	copy(req[28:34], guestMAC)
-	if _, err := client.WriteTo(req, &net.UDPAddr{IP: net.IPv4bcast, Port: 67}); err != nil {
-		t.Fatalf("guest BOOTREQUEST: %v", err)
-	}
-
 	reply := make([]byte, 512)
-	client.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if _, _, err := client.ReadFrom(reply); err != nil {
-		t.Fatalf("no BOOTREPLY over the network socket: %v", err)
+	deadline := time.Now().Add(5 * time.Second)
+	received := false
+	for time.Now().Before(deadline) {
+		if _, err := client.WriteTo(req, &net.UDPAddr{IP: net.IPv4bcast, Port: 67}); err != nil {
+			t.Fatalf("guest BOOTREQUEST: %v", err)
+		}
+		client.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+		if _, _, err := client.ReadFrom(reply); err == nil {
+			received = true
+			break
+		} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+			t.Fatalf("read BOOTREPLY over the network socket: %v", err)
+		}
+	}
+	if !received {
+		t.Fatal("no BOOTREPLY over the network socket within 5 seconds")
 	}
 	if reply[0] != 2 {
 		t.Fatalf("op = %d, want BOOTREPLY", reply[0])
