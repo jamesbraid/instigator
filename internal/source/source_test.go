@@ -119,6 +119,35 @@ func TestResolveLocalV7TarGz(t *testing.T) {
 	}
 }
 
+func TestResolveEmptyV7TarGz(t *testing.T) {
+	var raw bytes.Buffer
+	if err := tar.NewWriter(&raw).Close(); err != nil {
+		t.Fatal(err)
+	}
+	var compressed bytes.Buffer
+	gzipWriter := gzip.NewWriter(&compressed)
+	if _, err := gzipWriter.Write(raw.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	cache := t.TempDir()
+	archive := filepath.Join(cache, "empty.tar.gz")
+	if err := os.WriteFile(archive, compressed.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := New(Options{CacheDir: cache}).Resolve(archive)
+	if err != nil || res.Kind != vfs.OriginDirectory {
+		t.Fatalf("kind=%v err=%v", res.Kind, err)
+	}
+	defer res.Closer.Close()
+	entries, err := fs.ReadDir(res.FS, ".")
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("entries=%v err=%v", entries, err)
+	}
+}
+
 func TestResolveLocalTardist(t *testing.T) {
 	var raw bytes.Buffer
 	tw := tar.NewWriter(&raw)

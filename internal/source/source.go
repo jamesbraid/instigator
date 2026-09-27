@@ -280,7 +280,7 @@ func unpackUnrecognizedTar(ctx context.Context, dir string, opts []extract.Confi
 		return err
 	}
 	defer f.Close()
-	if _, err := tar.NewReader(f).Next(); err != nil {
+	if _, err := tar.NewReader(f).Next(); err != nil && err != io.EOF {
 		return fmt.Errorf("decompressed tar %s: %w", entries[0].Name(), err)
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
