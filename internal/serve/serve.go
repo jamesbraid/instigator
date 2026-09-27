@@ -728,6 +728,11 @@ func (s *Servers) RSHAddr() net.Addr { return s.rshLn.Addr() }
 
 // Close shuts every listener and releases the media.
 func (s *Servers) Close() error {
+	return s.CloseWithReason("clean")
+}
+
+// CloseWithReason stops the services and records why the run ended.
+func (s *Servers) CloseWithReason(reason string) error {
 	s.closing.Store(true)
 	if s.bootpConn != nil {
 		s.bootpConn.Close()
@@ -760,7 +765,6 @@ func (s *Servers) Close() error {
 	var recErr error
 	if s.rec != nil {
 		if s.started.Load() {
-			reason := "clean"
 			if !drained {
 				reason = "incomplete"
 			}

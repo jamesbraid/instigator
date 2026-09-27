@@ -59,7 +59,11 @@ services:
 
 	stop := make(chan os.Signal, 1)
 	errCh := make(chan error, 1)
-	go func() { errCh <- runUntilSignal(configPath, false, "", sockPath, io.Discard, stop) }()
+	captureDir := ""
+	if disconnect {
+		captureDir = filepath.Join(dir, "capture")
+	}
+	go func() { errCh <- runUntilSignal(configPath, false, captureDir, sockPath, io.Discard, stop) }()
 
 	// Act as the machine: connect once the socket is up, attach a guest stack.
 	conn := dialWhenReady(t, sockPath, time.Now().Add(5*time.Second))
@@ -125,6 +129,21 @@ services:
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("serve did not shut down")
+	}
+	if disconnect {
+		events, err := os.ReadFile(filepath.Join(captureDir, "events.jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, line := range strings.Split(string(events), "\n") {
+			if strings.Contains(line, `"event":"server_stop"`) && strings.Contains(line, `"result":"disconnected"`) {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("capture did not record disconnected server stop: %s", events)
+		}
 	}
 }
 

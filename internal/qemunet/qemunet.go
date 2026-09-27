@@ -179,7 +179,8 @@ func (n *Network) stop(err error) {
 // malformed frame also closes the stream and stops the other pump.
 func (n *Network) Done() <-chan struct{} { return n.done }
 
-// Err reports why the pumps stopped. It is nil after an explicit Close.
+// Err reports the first cause that stopped the pumps. It is nil if Close
+// initiated shutdown before a pump reported an error.
 func (n *Network) Err() error {
 	n.errMu.Lock()
 	defer n.errMu.Unlock()

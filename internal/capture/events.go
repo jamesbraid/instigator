@@ -29,8 +29,7 @@ func (r *Recorder) ServerStart() {
 	r.emit(&header{Event: "server_start"})
 }
 
-// ServerStop records a clean shutdown; reason rides in Result so the
-// summary can tell a graceful stop from a future abnormal one.
+// ServerStop records why serving ended in the Result field.
 func (r *Recorder) ServerStop(reason string) {
 	r.emit(&header{Event: "server_stop", Result: reason})
 }

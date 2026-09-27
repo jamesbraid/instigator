@@ -102,7 +102,7 @@ func (r *Recorder) Close() error {
 	return closeErr
 }
 
-// Finish closes the run at a clean shutdown: it emits server_stop, closes
+// Finish closes the run: it emits server_stop, closes
 // events.jsonl, rewrites run.json with the end time, then reads the events
 // back to write summary.json and render the human summary. It must run
 // after every session and transfer has ended; a late event from an

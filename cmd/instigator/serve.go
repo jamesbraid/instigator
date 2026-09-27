@@ -115,7 +115,7 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket s
 		case <-stop:
 			logger.Infof("shutting down")
 		case <-privateNet.Done():
-			return errors.Join(fmt.Errorf("private network disconnected: %w", privateNet.Err()), s.Close())
+			return errors.Join(fmt.Errorf("private network disconnected: %w", privateNet.Err()), s.CloseWithReason("disconnected"))
 		}
 	} else {
 		<-stop
