@@ -43,10 +43,11 @@ At `Inst>` load the command file from the server:
 admin source <server-ip>:/install.cmds
 ```
 
-The command file opens every enabled supplemental set, reopens the primary
-release last, selects the standard product set, applies the known package
-choice for this install, and starts the install. It does not use positional
-`conflicts` choices.
+The command file opens every enabled supplemental set and reopens the primary
+release last. If `inst` opens an `Install software from` menu, enter the number
+beside `done`. The command file then selects the standard product set, applies
+the known package choice for this install, and starts the install. It does not
+use positional `conflicts` choices.
 
 For a dry run, type the commands from the file manually and omit the final `go`.
 

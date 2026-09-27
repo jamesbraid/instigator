@@ -43,7 +43,6 @@ func TestCommandsExactFourSetSequence(t *testing.T) {
 		"open 192.0.2.10:/applications/dist\n" +
 		"open 192.0.2.10:/development/dist\n" +
 		"open 192.0.2.10:/6.5.30/dist\n" +
-		"done\n" +
 		"keep *\n" +
 		"install standard\n" +
 		"keep java_dev.sw.base\n" +
@@ -64,7 +63,6 @@ func TestCommandsSingleSet(t *testing.T) {
 
 	want := "" +
 		"open 192.0.2.10:/6.5.30/dist\n" +
-		"done\n" +
 		"keep *\n" +
 		"install standard\n" +
 		"keep java_dev.sw.base\n" +
@@ -78,7 +76,7 @@ func TestCommandsSingleSet(t *testing.T) {
 func TestCommandsReopensPrimaryAfterAdditionalSets(t *testing.T) {
 	got := Commands(testParams())
 	primary := "open 192.0.2.10:/6.5.30/dist\n"
-	install := "done\nkeep *\ninstall standard\nkeep java_dev.sw.base\ngo\n"
+	install := "keep *\ninstall standard\nkeep java_dev.sw.base\ngo\n"
 	if strings.Index(got, primary) < 0 {
 		t.Fatalf("Commands omitted primary reopen:\n%s", got)
 	}
@@ -106,7 +104,6 @@ func TestCommandsPreservesProvenBaseProfileOrder(t *testing.T) {
 		"open 192.0.2.10:/complementary/dist",
 		"open 192.0.2.10:/freeware/dist",
 		"open 192.0.2.10:/6.5.30/dist",
-		"done",
 		"keep *",
 		"install standard",
 		"keep java_dev.sw.base",
@@ -146,6 +143,7 @@ func TestCommandsNeverEmitsRetiredDirectives(t *testing.T) {
 		"install prereqs",
 		"\nconflicts\n",
 		"\nquit\n",
+		"\ndone\n",
 	} {
 		if strings.Contains(got, retired) {
 			t.Errorf("Commands output must not contain retired directive %q, got:\n%s", retired, got)
@@ -165,13 +163,13 @@ func TestCommandsInstallSelectionAppendsAfterBaseline(t *testing.T) {
 }
 
 // TestCommandsMaintenanceStreamSwitchesFirst checks the maintenance stream
-// emits "install maint" right after done, before the standard selection, so
+// emits "install maint" before the standard selection, so
 // the standard set resolves to maintenance versions.
 func TestCommandsMaintenanceStreamSwitchesFirst(t *testing.T) {
 	p := testParams()
 	p.Selection = Selection{Stream: "maintenance"}
 	got := Commands(p)
-	if !strings.Contains(got, "done\ninstall maint\nkeep *\n") {
+	if !strings.Contains(got, "install maint\nkeep *\n") {
 		t.Fatalf("maintenance stream not switched before selection:\n%s", got)
 	}
 }

@@ -55,8 +55,9 @@ func Commands(p Params) string {
 	// foundation source can select an older same-named product. Reopening
 	// the primary source makes the 6.5.30 release metadata win.
 	fmt.Fprintf(&b, "open %s:%s\n", p.ServerIP, p.Sets[0])
-	// Finish the source-selection menu before processing selections.
-	b.WriteString("done\n")
+	// Reopening the primary source pauses at an interactive distribution
+	// menu. The operator must select its numbered done item on the console.
+	// A scripted "done" runs only after that menu closes and is rejected.
 	// Switch the release stream before selecting, so the standard selection
 	// resolves to the maintenance versions. The feature stream is inst's
 	// default and needs no directive.

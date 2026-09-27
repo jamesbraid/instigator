@@ -68,6 +68,9 @@ generated selections and start the install:
 admin source <server-ip>:/install.cmds
 ```
 
+If `inst` opens an `Install software from` menu, enter the number beside
+`done`. The command file resumes its package selections and starts the install.
+
 The [installation guide](docs/install.md) has the full command sequence,
 profile ordering, first-boot checks, and captured install notes.
 
