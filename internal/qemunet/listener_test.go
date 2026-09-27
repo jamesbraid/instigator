@@ -82,3 +82,20 @@ func TestListenerAcceptsAndServes(t *testing.T) {
 		t.Fatalf("bad reply: op=%d yiaddr=%s", reply[0], net.IP(reply[16:20]))
 	}
 }
+
+func TestUnixListenerCanReopenAfterClose(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "install.sock")
+	cfg := Config{ServerIP: netip.AddrFrom4(testSrvIP), PrefixLen: 24, MAC: net.HardwareAddr([]byte(testSrvMAC))}
+	first, err := Listen(path, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Listen(path, cfg)
+	if err != nil {
+		t.Fatalf("reopen after Close: %v", err)
+	}
+	defer second.Close()
+}
