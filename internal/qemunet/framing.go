@@ -18,14 +18,27 @@ import (
 func writeFrame(w io.Writer, frame []byte) error {
 	var hdr [4]byte
 	binary.BigEndian.PutUint32(hdr[:], uint32(len(frame)))
-	if _, err := w.Write(hdr[:]); err != nil {
+	if err := writeFull(w, hdr[:]); err != nil {
 		return err
 	}
 	if len(frame) == 0 {
 		return nil
 	}
-	_, err := w.Write(frame)
-	return err
+	return writeFull(w, frame)
+}
+
+func writeFull(w io.Writer, p []byte) error {
+	for len(p) > 0 {
+		n, err := w.Write(p)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		p = p[n:]
+	}
+	return nil
 }
 
 // readFrame reads one framed Ethernet frame. A length past max is refused

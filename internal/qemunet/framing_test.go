@@ -41,3 +41,33 @@ func TestReadFrameRejectsOversizeLength(t *testing.T) {
 		t.Fatal("readFrame accepted an oversize length; want an error")
 	}
 }
+
+type shortWriter struct{ bytes.Buffer }
+
+func (w *shortWriter) Write(p []byte) (int, error) {
+	if len(p) > 2 {
+		p = p[:2]
+	}
+	return w.Buffer.Write(p)
+}
+
+func TestWriteFrameHandlesShortWrites(t *testing.T) {
+	var w shortWriter
+	if err := writeFrame(&w, []byte("ethernet frame")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readFrame(&w.Buffer, 65535)
+	if err != nil || string(got) != "ethernet frame" {
+		t.Fatalf("read frame = %q, %v", got, err)
+	}
+}
+
+type zeroWriter struct{}
+
+func (zeroWriter) Write([]byte) (int, error) { return 0, nil }
+
+func TestWriteFrameRejectsZeroProgress(t *testing.T) {
+	if err := writeFrame(zeroWriter{}, []byte("frame")); err != io.ErrShortWrite {
+		t.Fatalf("writeFrame = %v, want io.ErrShortWrite", err)
+	}
+}
