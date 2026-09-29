@@ -33,15 +33,25 @@ func (b *lockedBuffer) String() string {
 	return b.Buffer.String()
 }
 
+func shortSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "i-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "s")
+}
+
 // TestServeNetworkSocketAnswersBootp runs the whole serve command over a
 // Unix socket. A machine stand-in sends a BOOTP request over the QEMU stream
 // and the server answers with its configured address.
 func TestServeNetworkSocketAnswersBootp(t *testing.T) {
-	servePrivateNetworkAnswersBootp(t, "unix", filepath.Join(t.TempDir(), "irix-install.sock"), false)
+	servePrivateNetworkAnswersBootp(t, "unix", shortSocketPath(t), false)
 }
 
 func TestServeNetworkSocketExitsOnDisconnect(t *testing.T) {
-	servePrivateNetworkAnswersBootp(t, "unix", filepath.Join(t.TempDir(), "irix-install.sock"), true)
+	servePrivateNetworkAnswersBootp(t, "unix", shortSocketPath(t), true)
 }
 
 func TestServeNetworkTCPAnswersBootp(t *testing.T) {

@@ -3,6 +3,7 @@ package qemunet
 import (
 	"net"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,11 +11,21 @@ import (
 	"github.com/jamesbraid/instigator/internal/bootp"
 )
 
+func shortSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "q-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "s")
+}
+
 // TestListenerAcceptsAndServes drives the whole endpoint path: Instigator
 // listens on a Unix socket, a machine connects, and the accepted Network
 // carries a real BOOTP exchange.
 func TestListenerAcceptsAndServes(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "irix-install.sock")
+	path := shortSocketPath(t)
 	l, err := Listen(path, Config{ServerIP: netip.AddrFrom4(testSrvIP), PrefixLen: 24, MAC: net.HardwareAddr([]byte(testSrvMAC))})
 	if err != nil {
 		t.Fatalf("Listen: %v", err)
@@ -84,7 +95,7 @@ func TestListenerAcceptsAndServes(t *testing.T) {
 }
 
 func TestUnixListenerCanReopenAfterClose(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "install.sock")
+	path := shortSocketPath(t)
 	cfg := Config{ServerIP: netip.AddrFrom4(testSrvIP), PrefixLen: 24, MAC: net.HardwareAddr([]byte(testSrvMAC))}
 	first, err := Listen(path, cfg)
 	if err != nil {
