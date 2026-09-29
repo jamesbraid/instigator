@@ -321,16 +321,22 @@ func checkInstallSelections(cfg *config.Config, tree *vfs.Tree) error {
 	for _, script := range cfg.InstallScripts {
 		for _, selection := range script.Install {
 			product := selection
+			fileSuffixes := []string{".sw", ".man"}
 			for _, suffix := range []string{".sw", ".man"} {
 				if index := strings.Index(selection, suffix); index >= 0 &&
 					(index+len(suffix) == len(selection) || selection[index+len(suffix)] == '.') {
 					product = selection[:index]
+					fileSuffixes = []string{suffix}
 					break
 				}
 			}
+			wantFiles := make([]string, 0, len(fileSuffixes))
+			for _, suffix := range fileSuffixes {
+				wantFiles = append(wantFiles, product+suffix)
+			}
 			found := false
 			for _, set := range enabled {
-				for _, suffix := range []string{".sw", ".man"} {
+				for _, suffix := range fileSuffixes {
 					info, err := tree.Stat(set + "/dist/" + product + suffix)
 					if err == nil && info.Mode().IsRegular() {
 						found = true
@@ -342,7 +348,7 @@ func checkInstallSelections(cfg *config.Config, tree *vfs.Tree) error {
 				}
 			}
 			if !found {
-				return fmt.Errorf("install script %q selects %q, but no enabled distribution contains %s.sw or %s.man", script.Name, selection, product, product)
+				return fmt.Errorf("install script %q selects %q, but no enabled distribution contains %s", script.Name, selection, strings.Join(wantFiles, " or "))
 			}
 		}
 	}

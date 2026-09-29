@@ -400,6 +400,42 @@ func TestCheckRejectsArchiveWithoutSelectedProduct(t *testing.T) {
 	}
 }
 
+func TestCheckMatchesSelectedProductType(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		selection string
+		file      string
+		wantError bool
+	}{
+		{name: "software selection cannot match manual", selection: "rad4x.sw.driver", file: "rad4x.man", wantError: true},
+		{name: "manual selection cannot match software", selection: "rad4x.man.driver", file: "rad4x.sw", wantError: true},
+		{name: "software selection matches software", selection: "rad4x.sw.driver", file: "rad4x.sw"},
+		{name: "manual selection matches manual", selection: "rad4x.man.driver", file: "rad4x.man"},
+		{name: "untyped selection matches either", selection: "rad4x", file: "rad4x.man"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := fourSetConfig(t, true)
+			dir := t.TempDir()
+			cfg.InstallSets = append(cfg.InstallSets, config.InstallSet{
+				Name:    "addon-rad4",
+				Enabled: true,
+				Layers: []config.Layer{{
+					Name:   "rad4",
+					Source: distImage(t, dir, "products.image", tc.file),
+				}},
+			})
+			cfg.InstallScripts = []config.InstallScript{{Name: "addon-rad4", Install: []string{tc.selection}}}
+			err := Check(cfg)
+			if tc.wantError && err == nil {
+				t.Fatalf("Check accepted %q with only %q", tc.selection, tc.file)
+			}
+			if !tc.wantError && err != nil {
+				t.Fatalf("Check rejected %q with %q: %v", tc.selection, tc.file, err)
+			}
+		})
+	}
+}
+
 // The operator instructions offer every named script alongside install.cmds.
 func TestNamedScriptOfferedToOperator(t *testing.T) {
 	cfg := fourSetConfig(t, true)
