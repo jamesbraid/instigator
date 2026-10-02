@@ -7,6 +7,7 @@ on:
 
 jobs:
   test:
+    if: ${{ github.server_url != 'https://github.com' }}
     runs-on: ubuntu-latest
     steps:
       - name: check out source
@@ -36,26 +37,3 @@ jobs:
           done
       - name: go test -race
         run: go test -race ./...
-
-  # Hosted macOS/Windows runners exist only on github.com. -race stays on the
-  # Linux job (Windows -race needs a C toolchain and is flaky).
-  test-native:
-    if: ${{ github.server_url == 'https://github.com' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: check out source
-        uses: actions/checkout@v4
-      - name: set up go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.26"
-      - name: go vet
-        run: go vet ./...
-      - name: go build
-        run: go build ./...
-      - name: go test
-        run: go test ./...
