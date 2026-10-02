@@ -502,7 +502,7 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 					return fmt.Errorf("only a shell session is served")
 				}
 				sess := s.rec.BeginSession(aliasByIP[req.Addr], req.Addr.String(), req.RemoteUser, req.LocalUser)
-				err := instcmd.RunShell(cmdFS{tree}, req.Stdin, req.Stdout, req.Stderr, logger, sess)
+				err := instcmd.RunShellWithSignals(cmdFS{tree}, req.Stdin, req.Stdout, req.Stderr, req.Signals, logger, sess)
 				sess.End(err)
 				return err
 			},

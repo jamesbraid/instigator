@@ -2,12 +2,17 @@ package instcmd
 
 import (
 	"bytes"
+	"io"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jamesbraid/instigator/internal/logging"
+	"mvdan.cc/sh/v3/syntax"
 )
 
 // shellTestFS builds a fixture with a distinctive (non-uniform) byte
@@ -97,6 +102,517 @@ func TestShellMarkerProtocol(t *testing.T) {
 	if strings.HasSuffix(errb, "\n") {
 		t.Fatal("stderr marker must not be newline-terminated")
 	}
+}
+
+func TestShellSIGINTStopsTransferAndContinuesInstWrapper(t *testing.T) {
+	script := "dd if=/6.5.30/disc1/dist/sa bs=512 ; ( status=$? ; trap '' 2 ; echo 'DD_STATUS='$status )\n" +
+		"dd if=/6.5.30/disc1/dist/sa bs=512 iseek=1 count=1 ; echo NEXT_STATUS=$?\n" +
+		"echo after\n"
+	firstBlock, rest := interruptShellTransfer(t, script, true)
+	wantFirst := shellTestFS().files["6.5.30/disc1/dist/sa"][:512]
+	if !bytes.Equal(firstBlock, wantFirst) {
+		t.Fatal("first block does not match the served file")
+	}
+	status := []byte("DD_STATUS=130\n")
+	statusAt := bytes.Index(rest, status)
+	if statusAt < 0 {
+		t.Fatalf("interrupted dd status marker missing: %q", rest)
+	}
+	nextBlock := shellTestFS().files["6.5.30/disc1/dist/sa"][512:1024]
+	if !bytes.Equal(rest[statusAt+len(status):statusAt+len(status)+len(nextBlock)], nextBlock) {
+		t.Fatalf("next seek output is not byte-exact: %q", rest)
+	}
+	if !bytes.Contains(rest[statusAt+len(status)+len(nextBlock):], []byte("NEXT_STATUS=0\nafter\n")) {
+		t.Fatalf("shell did not finish the next seek and following command: %q", rest)
+	}
+}
+
+func TestShellSIGINTInterruptsCatAndContinues(t *testing.T) {
+	fsys := shellTestFS()
+	fsys.files["6.5.30/disc1/dist/sa"] = bytes.Repeat([]byte("x"), 8<<20)
+	script := "cat /6.5.30/disc1/dist/sa ; ( status=$? ; echo 'CAT_STATUS='$status )\necho after\n"
+	firstBlock, rest := interruptShellTransferWithFS(t, fsys, script, false)
+	wantFirst := fsys.files["6.5.30/disc1/dist/sa"][:512]
+	if !bytes.Equal(firstBlock, wantFirst) {
+		t.Fatal("first cat bytes do not match the served file")
+	}
+	if !bytes.Contains(rest, []byte("CAT_STATUS=130\nafter\n")) {
+		t.Fatalf("interrupted cat did not preserve shell continuation: %q", rest)
+	}
+}
+
+func TestShellSIGINTPipelineStagesShareInterruption(t *testing.T) {
+	fsys := shellTestFS()
+	// The interpreter connects pipeline stages with an OS pipe. Keep cat
+	// active after dd blocks on the socket so both transfers are in flight.
+	fsys.files["6.5.30/disc1/dist/sa"] = bytes.Repeat([]byte("x"), 8<<20)
+	script := "cat /6.5.30/disc1/dist/sa | dd bs=512 ; ( status=$? ; echo 'PIPE_STATUS='$status )\necho after\n"
+	_, rest := interruptShellTransferWithFS(t, fsys, script, true)
+	if !bytes.Contains(rest, []byte("PIPE_STATUS=130\nafter\n")) {
+		t.Fatalf("pipeline error suppressed its marker or next command: %q", rest)
+	}
+}
+
+func TestShellSIGINTUnsupportedPipelineKeepsPriorBehavior(t *testing.T) {
+	fsys := shellTestFS()
+	fsys.files["6.5.30/disc1/dist/sa"] = bytes.Repeat([]byte("matched\n"), 1024)
+	want := fsys.files["6.5.30/disc1/dist/sa"]
+	server, client := net.Pipe()
+	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	stdin, input := io.Pipe()
+	writes := make(chan struct{}, 16)
+	deadlines := make(chan struct{}, 1)
+	stdout := &observedConn{Conn: server, writes: writes, deadlines: deadlines}
+	signals := make(chan byte, 1)
+	done := make(chan error, 1)
+	t.Cleanup(func() {
+		input.Close()
+		stdin.Close()
+		client.Close()
+		server.Close()
+	})
+	go func() {
+		done <- RunShellWithSignals(fsys, stdin, stdout, io.Discard, signals, logging.New(io.Discard, logging.LevelDebug), nil)
+		server.Close()
+	}()
+	if _, err := io.WriteString(input, "cat /6.5.30/disc1/dist/sa | grep matched ; echo PIPE_STATUS=$?\necho after\n"); err != nil {
+		t.Fatalf("write pipeline command: %v", err)
+	}
+	select {
+	case <-writes:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pipeline did not begin writing output")
+	}
+	first := make([]byte, 512)
+	if _, err := io.ReadFull(client, first); err != nil {
+		t.Fatalf("read first pipeline bytes: %v", err)
+	}
+	signals <- 2
+	select {
+	case <-deadlines:
+		t.Fatal("unsupported pipeline did not retain prior signal-ignore behavior")
+	case <-time.After(50 * time.Millisecond):
+	}
+	got := make([]byte, len(want))
+	copy(got, first)
+	if _, err := io.ReadFull(client, got[len(first):]); err != nil {
+		t.Fatalf("read remaining pipeline output: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("SIGINT changed the unsupported pipeline output")
+	}
+	marker := make([]byte, len("PIPE_STATUS=0\nafter\n"))
+	if _, err := io.ReadFull(client, marker); err != nil {
+		t.Fatalf("read pipeline status marker: %v", err)
+	}
+	if string(marker) != "PIPE_STATUS=0\nafter\n" {
+		t.Fatalf("pipeline status and next command = %q", marker)
+	}
+	for {
+		select {
+		case <-writes:
+		default:
+			goto drained
+		}
+	}
+drained:
+	if _, err := io.WriteString(input, "dd if=/6.5.30/disc1/dist/sa bs=512 ; echo DD_STATUS=$?\n"); err != nil {
+		t.Fatalf("write following dd command: %v", err)
+	}
+	select {
+	case <-writes:
+	case <-time.After(2 * time.Second):
+		t.Fatal("following dd did not begin writing")
+	}
+	signals <- 2
+	select {
+	case <-deadlines:
+	case <-time.After(2 * time.Second):
+		t.Fatal("signal handling was not restored for the following dd")
+	}
+	ddStatus := make([]byte, len("DD_STATUS=130\n"))
+	if _, err := io.ReadFull(client, ddStatus); err != nil {
+		t.Fatalf("read interrupted dd status: %v", err)
+	}
+	if string(ddStatus) != "DD_STATUS=130\n" {
+		t.Fatalf("following dd status = %q", ddStatus)
+	}
+	if err := input.Close(); err != nil {
+		t.Fatalf("close shell input: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunShellWithSignals: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shell did not finish after the interrupted dd")
+	}
+}
+
+func TestUnsupportedTransferPipelineClassifier(t *testing.T) {
+	parser := syntax.NewParser(syntax.Variant(syntax.LangPOSIX))
+	for _, tc := range []struct {
+		line        string
+		unsupported bool
+	}{
+		{line: "cat file | dd bs=512"},
+		{line: "dd if=file | dd bs=512"},
+		{line: "cat file | grep matched", unsupported: true},
+		{line: "(cat file) | grep matched", unsupported: true},
+		{line: "$cmd | grep matched", unsupported: true},
+		{line: "echo abc | dd", unsupported: true},
+	} {
+		file, err := parser.Parse(strings.NewReader(tc.line), "")
+		if err != nil {
+			t.Fatalf("parse %q: %v", tc.line, err)
+		}
+		if got := hasUnsupportedTransferPipeline(file); got != tc.unsupported {
+			t.Errorf("hasUnsupportedTransferPipeline(%q) = %t, want %t", tc.line, got, tc.unsupported)
+		}
+	}
+}
+
+func TestShellBackgroundSyntaxIgnoresSIGINT(t *testing.T) {
+	fsys := shellTestFS()
+	server, client := net.Pipe()
+	conn := &heldTransferConn{
+		Conn:        server,
+		dataWrite:   make(chan struct{}, 1),
+		markerWrite: make(chan struct{}, 2),
+		deadlines:   make(chan struct{}, 1),
+	}
+	stdin, input := io.Pipe()
+	signals := make(chan byte, 1)
+	done := make(chan error, 1)
+	t.Cleanup(func() {
+		input.Close()
+		stdin.Close()
+		client.Close()
+		server.Close()
+	})
+	go func() {
+		done <- RunShellWithSignals(fsys, stdin, conn, io.Discard, signals, logging.New(io.Discard, logging.LevelDebug), nil)
+	}()
+	inputWriterDone := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(input, "dd if=/6.5.30/disc1/dist/sa bs=512 count=1 &\n")
+		inputWriterDone <- err
+	}()
+	select {
+	case <-conn.dataWrite:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background dd write did not start")
+	}
+	select {
+	case err := <-inputWriterDone:
+		if err != nil {
+			t.Fatalf("write shell commands: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shell did not read both commands")
+	}
+	signals <- 2
+	select {
+	case <-conn.deadlines:
+		t.Fatal("SIGINT unexpectedly set a deadline in a background-using session")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, 512)
+	if _, err := io.ReadFull(client, got); err != nil {
+		t.Fatalf("read background transfer after ignored SIGINT: %v", err)
+	}
+	if want := fsys.files["6.5.30/disc1/dist/sa"][:512]; !bytes.Equal(got, want) {
+		t.Fatal("background transfer output changed after SIGINT")
+	}
+	if _, err := io.WriteString(input, "echo marker\n"); err != nil {
+		t.Fatalf("write foreground marker command: %v", err)
+	}
+	select {
+	case <-conn.markerWrite:
+	case <-time.After(2 * time.Second):
+		t.Fatal("foreground echo did not run after background transfer")
+	}
+	got = make([]byte, len("marker\n"))
+	if _, err := io.ReadFull(client, got); err != nil {
+		t.Fatalf("read foreground marker: %v", err)
+	}
+	if string(got) != "marker\n" {
+		t.Fatalf("foreground output = %q, want %q", got, "marker\n")
+	}
+	if err := input.Close(); err != nil {
+		t.Fatalf("close shell input: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunShellWithSignals: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shell did not finish after the foreground marker")
+	}
+}
+
+func TestShellBackgroundTransferContinuesAfterInputEOF(t *testing.T) {
+	fsys := shellTestFS()
+	data := bytes.Repeat([]byte("x"), 8<<10)
+	fsys.files["6.5.30/disc1/dist/sa"] = data
+	stdout := &blockedFirstWrite{started: make(chan struct{}), release: make(chan struct{}), completed: make(chan struct{}), want: len(data)}
+	stdin, input := io.Pipe()
+	t.Cleanup(func() { stdin.Close(); input.Close() })
+	done := make(chan error, 1)
+	go func() {
+		done <- RunShellWithSignals(fsys, stdin, stdout, io.Discard, nil, logging.New(io.Discard, logging.LevelDebug), nil)
+	}()
+	if _, err := io.WriteString(input, "dd if=/6.5.30/disc1/dist/sa bs=512 &\n"); err != nil {
+		t.Fatalf("write background command: %v", err)
+	}
+	select {
+	case <-stdout.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background transfer did not start writing")
+	}
+	if err := input.Close(); err != nil {
+		t.Fatalf("close shell input: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunShellWithSignals: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shell waited for a background transfer at input EOF")
+	}
+	close(stdout.release)
+	select {
+	case <-stdout.completed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background transfer did not complete after shell EOF")
+	}
+}
+
+func TestTransferInterruptControllerShutdownDoesNotStrandTransfers(t *testing.T) {
+	signals := make(chan byte, 1)
+	deadlines := make(chan time.Time, 2)
+	controller := newTransferInterruptController(signals, deadlineRecorder{deadlines: deadlines})
+	transfer := controller.begin()
+	signals <- 2
+	select {
+	case deadline := <-deadlines:
+		if deadline.IsZero() {
+			t.Fatal("SIGINT did not install an output deadline")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("SIGINT did not reach the active transfer")
+	}
+	controller.close()
+	select {
+	case deadline := <-deadlines:
+		if deadline.IsZero() {
+			t.Fatal("controller cleared the output deadline before its active transfer finished")
+		}
+	default:
+	}
+
+	finished := make(chan struct{})
+	go func() {
+		transfer.finish()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("active transfer finish blocked after controller shutdown")
+	}
+	select {
+	case deadline := <-deadlines:
+		if !deadline.IsZero() {
+			t.Fatal("transfer finish did not clear its output deadline")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("transfer finish did not restore the output deadline")
+	}
+	late := make(chan *fileTransferInterrupt, 1)
+	go func() { late <- controller.begin() }()
+	select {
+	case transfer := <-late:
+		transfer.finish()
+	case <-time.After(2 * time.Second):
+		t.Fatal("transfer started after shutdown blocked on the stopped controller")
+	}
+}
+
+func interruptShellTransfer(t *testing.T, script string, waitForSecondWrite bool) ([]byte, []byte) {
+	t.Helper()
+	return interruptShellTransferWithFS(t, shellTestFS(), script, waitForSecondWrite)
+}
+
+func interruptShellTransferWithFS(t *testing.T, fsys FileSystem, script string, waitForSecondWrite bool) ([]byte, []byte) {
+	t.Helper()
+	server, client := net.Pipe()
+	t.Cleanup(func() { client.Close() })
+	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	writes := make(chan struct{}, 16)
+	deadlines := make(chan struct{}, 1)
+	stdout := &observedConn{Conn: server, writes: writes, deadlines: deadlines}
+	signals := make(chan byte, 1)
+	done := make(chan error, 1)
+	go func() {
+		var errbuf strings.Builder
+		logger := logging.New(io.Discard, logging.LevelDebug)
+		done <- RunShellWithSignals(fsys, strings.NewReader(script), stdout, &errbuf, signals, logger, nil)
+		server.Close()
+	}()
+
+	select {
+	case <-writes:
+	case <-time.After(2 * time.Second):
+		t.Fatal("file transfer did not begin writing")
+	}
+	firstBlock := make([]byte, 512)
+	if _, err := io.ReadFull(client, firstBlock); err != nil {
+		t.Fatalf("read first block: %v", err)
+	}
+	if waitForSecondWrite {
+		select {
+		case <-writes:
+		case <-time.After(2 * time.Second):
+			t.Fatal("transfer did not start the blocked next write")
+		}
+	}
+	signals <- 2
+	select {
+	case <-deadlines:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SIGINT did not interrupt the blocked socket write")
+	}
+
+	rest, err := io.ReadAll(client)
+	if err != nil {
+		t.Fatalf("bounded read of wrapper output: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunShellWithSignals: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shell did not finish after interrupted transfer")
+	}
+	return firstBlock, rest
+}
+
+type blockedFirstWrite struct {
+	started   chan struct{}
+	release   chan struct{}
+	completed chan struct{}
+	want      int
+	mu        sync.Mutex
+	written   int
+	first     sync.Once
+	done      sync.Once
+}
+
+func (w *blockedFirstWrite) Write(p []byte) (int, error) {
+	w.first.Do(func() {
+		close(w.started)
+		<-w.release
+	})
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.written += len(p)
+	if w.written >= w.want {
+		w.done.Do(func() { close(w.completed) })
+	}
+	return len(p), nil
+}
+
+type deadlineRecorder struct {
+	deadlines chan<- time.Time
+}
+
+type heldTransferConn struct {
+	net.Conn
+	dataWrite   chan struct{}
+	markerWrite chan struct{}
+	deadlines   chan struct{}
+}
+
+func (c *heldTransferConn) Write(p []byte) (int, error) {
+	data := len(p) == 512
+	marker := bytes.Equal(p, []byte("marker\n"))
+	if data {
+		c.dataWrite <- struct{}{}
+	}
+	if marker {
+		c.markerWrite <- struct{}{}
+	}
+	n, err := c.Conn.Write(p)
+	return n, err
+}
+
+func (c *heldTransferConn) SetWriteDeadline(deadline time.Time) error {
+	if !deadline.IsZero() {
+		select {
+		case c.deadlines <- struct{}{}:
+		default:
+		}
+	}
+	return c.Conn.SetWriteDeadline(deadline)
+}
+
+func (d deadlineRecorder) SetWriteDeadline(deadline time.Time) error {
+	d.deadlines <- deadline
+	return nil
+}
+
+func TestShellIgnoresIdleAndNonInterruptSignals(t *testing.T) {
+	var out, errout strings.Builder
+	signals := make(chan byte, 2)
+	signals <- 2
+	signals <- 1
+	script := "dd if=/6.5.30/disc1/dist/sa bs=512 count=1 ; ( status=$? ; echo 'DD_STATUS='$status )\n"
+	logger := logging.New(io.Discard, logging.LevelDebug)
+	if err := RunShellWithSignals(shellTestFS(), strings.NewReader(script), &out, &errout, signals, logger, nil); err != nil {
+		t.Fatalf("RunShellWithSignals: %v (stderr: %s)", err, errout.String())
+	}
+	if !strings.HasSuffix(out.String(), "DD_STATUS=0\n") {
+		t.Fatalf("idle SIGINT or unsupported signal interrupted the transfer: %q", out.String())
+	}
+	if len(out.String()) != 512+len("DD_STATUS=0\n") {
+		t.Fatalf("transfer output length = %d, want one block plus marker", len(out.String()))
+	}
+}
+
+type observedConn struct {
+	net.Conn
+	writes    chan<- struct{}
+	deadlines chan<- struct{}
+}
+
+func (c *observedConn) Write(p []byte) (int, error) {
+	select {
+	case c.writes <- struct{}{}:
+	default:
+	}
+	return c.Conn.Write(p)
+}
+
+func (c *observedConn) SetWriteDeadline(deadline time.Time) error {
+	if !deadline.IsZero() {
+		select {
+		case c.deadlines <- struct{}{}:
+		default:
+		}
+	}
+	return c.Conn.SetWriteDeadline(deadline)
 }
 
 // TestShellPipeIntoDD covers inst's capability probe: a pipe feeding

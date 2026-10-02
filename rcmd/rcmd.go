@@ -45,6 +45,11 @@ type Request struct {
 	// which a shell command (rsh exec /bin/sh) reads its command stream
 	// from. It carries only what the client sends next, unbounded.
 	Stdin io.Reader
+
+	// Signals receives bytes sent by the client on the stderr callback
+	// connection. An rsh client uses these bytes to interrupt its command.
+	// It is nil when the request has no callback connection.
+	Signals <-chan byte
 }
 
 // Handler executes one command. A returned error is reported to the
@@ -229,6 +234,7 @@ func (s *Server) handle(c net.Conn) {
 	// Without a stderr channel, stderr shares the primary connection,
 	// as rshd's dup2 onto the socket does.
 	req := &Request{Addr: ip, Stdout: c, Stderr: c}
+	var signalConn net.Conn
 	if errPort != 0 {
 		dial := s.DialStderr
 		if dial == nil {
@@ -240,6 +246,7 @@ func (s *Server) handle(c net.Conn) {
 			refuse(c, "cannot connect stderr")
 			return
 		}
+		signalConn = ec
 		defer ec.Close()
 		req.Stderr = ec
 	}
@@ -264,12 +271,42 @@ func (s *Server) handle(c net.Conn) {
 		refuse(c, "no handler")
 		return
 	}
+	if signalConn != nil {
+		signals := make(chan byte, 16)
+		stop := make(chan struct{})
+		readerDone := make(chan struct{})
+		req.Signals = signals
+		go forwardSignals(signalConn, signals, stop, readerDone)
+		defer func() {
+			close(stop)
+			signalConn.Close()
+			<-readerDone
+		}()
+	}
 	if _, err := c.Write([]byte{0}); err != nil {
 		return
 	}
 	if err := s.Handler(req); err != nil {
 		fmt.Fprintf(req.Stderr, "%v\n", err)
 		s.Logger.Errorf("rcmd: %s: %q: %v", tcp, req.Command, err)
+	}
+}
+
+func forwardSignals(conn net.Conn, signals chan<- byte, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
+	var b [1]byte
+	for {
+		n, err := conn.Read(b[:])
+		if n > 0 {
+			select {
+			case signals <- b[0]:
+			case <-stop:
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
 	}
 }
 

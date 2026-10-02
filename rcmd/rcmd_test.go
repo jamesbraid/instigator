@@ -147,6 +147,52 @@ func TestStderrCallbackBeforeFields(t *testing.T) {
 	}
 }
 
+func TestSignalArrivesFromStderrCallback(t *testing.T) {
+	el, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer el.Close()
+	errPort := el.Addr().(*net.TCPAddr).Port
+
+	addr := startServer(t, &rcmd.Server{
+		AllowHighPorts: true,
+		Handler: func(req *rcmd.Request) error {
+			select {
+			case signal := <-req.Signals:
+				_, err := fmt.Fprintf(req.Stdout, "signal=%d", signal)
+				return err
+			case <-time.After(2 * time.Second):
+				return fmt.Errorf("timed out waiting for rsh signal")
+			}
+		},
+	})
+	c, err := net.Dial("tcp", addr.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	fmt.Fprintf(c, "%d\x00", errPort)
+	callback, err := el.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer callback.Close()
+	fmt.Fprint(c, "guest\x00guest\x00exec /bin/sh\x00")
+	c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	ack := make([]byte, 1)
+	if _, err := io.ReadFull(c, ack); err != nil || ack[0] != 0 {
+		t.Fatalf("ack=%d err=%v", ack[0], err)
+	}
+	if _, err := callback.Write([]byte{2}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(c)
+	if err != nil || string(out) != "signal=2" {
+		t.Fatalf("response=%q err=%v", out, err)
+	}
+}
+
 func TestHandlerErrorReported(t *testing.T) {
 	// rshd accepts (zero byte) before the command runs; a runtime
 	// failure arrives as stderr text, which without a stderr channel

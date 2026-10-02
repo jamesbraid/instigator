@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -34,6 +35,8 @@ type shellEnv struct {
 	logger *logging.Logger
 	sess   *capture.Session // nil when capture is off; every use is nil-safe
 
+	transfers *transferInterruptController
+
 	// refused is set by any handler that refuses a command as policy (not
 	// whitelisted, a write attempt, an operand it won't accept), so the
 	// scanner loop can record the command's result as "refused" rather
@@ -45,6 +48,224 @@ type shellEnv struct {
 
 func newShellEnv(fsys FileSystem, logger *logging.Logger) *shellEnv {
 	return &shellEnv{fsys: fsys, cwd: "/", logger: logger}
+}
+
+type writeDeadlineSetter interface {
+	SetWriteDeadline(time.Time) error
+}
+
+type transferInterruptController struct {
+	mu          sync.Mutex
+	active      int
+	interrupted bool
+	disabled    bool
+	suspended   bool
+	deadlineSet bool
+	closed      bool
+	deadline    writeDeadlineSetter
+	actions     chan transferAction
+	stop        chan struct{}
+	done        chan struct{}
+}
+
+type fileTransferInterrupt struct {
+	controller *transferInterruptController
+	active     bool
+}
+
+type transferAction struct {
+	begin   bool
+	disable bool
+	suspend bool
+	restore bool
+	done    chan bool
+}
+
+func newTransferInterruptController(signals <-chan byte, deadline writeDeadlineSetter) *transferInterruptController {
+	c := &transferInterruptController{
+		deadline: deadline,
+		actions:  make(chan transferAction),
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+	go func() {
+		defer close(c.done)
+		signals := signals
+		for {
+			select {
+			case signal, ok := <-signals:
+				if !ok {
+					signals = nil
+					continue
+				}
+				c.interrupt(signal)
+			case action := <-c.actions:
+				if action.disable {
+					c.mu.Lock()
+					c.disabled = true
+					c.interrupted = false
+					c.clearDeadlineLocked()
+					c.mu.Unlock()
+					action.done <- true
+				} else if action.suspend || action.restore {
+					c.mu.Lock()
+					c.suspended = action.suspend
+					c.mu.Unlock()
+					action.done <- true
+				} else if action.begin {
+					c.mu.Lock()
+					accepted := !c.closed
+					if accepted && c.active == 0 {
+						// Bytes queued while the shell was idle must not
+						// cancel this new transfer. This goroutine is the
+						// sole reader.
+						for signals != nil {
+							select {
+							case _, ok := <-signals:
+								if !ok {
+									signals = nil
+								}
+							default:
+								goto drained
+							}
+						}
+					}
+				drained:
+					if accepted {
+						c.active++
+					}
+					c.mu.Unlock()
+					action.done <- accepted
+				} else {
+					c.mu.Lock()
+					c.finishLocked()
+					c.mu.Unlock()
+					action.done <- true
+				}
+			case <-c.stop:
+				return
+			}
+		}
+	}()
+	return c
+}
+
+func (c *transferInterruptController) interrupt(signal byte) {
+	if signal != 2 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.closed && !c.disabled && !c.suspended && c.active > 0 && !c.interrupted {
+		c.interrupted = true
+		if c.deadline != nil && c.deadline.SetWriteDeadline(time.Now()) == nil {
+			c.deadlineSet = true
+		}
+	}
+}
+
+func (c *transferInterruptController) begin() *fileTransferInterrupt {
+	done := make(chan bool)
+	action := transferAction{begin: true, done: done}
+	select {
+	case c.actions <- action:
+		return &fileTransferInterrupt{controller: c, active: <-done}
+	case <-c.done:
+		return &fileTransferInterrupt{}
+	}
+}
+
+// disable preserves the shell's historical signal-ignore behavior when its
+// syntax starts background work. There is no process-group lifecycle tracking
+// in this restricted shell, so signals stay ignored for the rest of the
+// session once background syntax is accepted.
+func (c *transferInterruptController) disable() {
+	done := make(chan bool)
+	action := transferAction{disable: true, done: done}
+	select {
+	case c.actions <- action:
+		<-done
+	case <-c.done:
+	}
+}
+
+func (c *transferInterruptController) suspend() {
+	c.setSuspended(true)
+}
+
+func (c *transferInterruptController) restore() {
+	c.setSuspended(false)
+}
+
+func (c *transferInterruptController) setSuspended(suspended bool) {
+	done := make(chan bool)
+	action := transferAction{suspend: suspended, restore: !suspended, done: done}
+	select {
+	case c.actions <- action:
+		<-done
+	case <-c.done:
+	}
+}
+
+func (c *transferInterruptController) close() {
+	c.mu.Lock()
+	c.closed = true
+	c.mu.Unlock()
+	close(c.stop)
+	<-c.done
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.active == 0 {
+		c.interrupted = false
+		c.clearDeadlineLocked()
+	}
+}
+
+func (e *shellEnv) beginFileTransfer() *fileTransferInterrupt {
+	return e.transfers.begin()
+}
+
+func (t *fileTransferInterrupt) interruptedNow() bool {
+	if !t.active {
+		return false
+	}
+	c := t.controller
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.interrupted
+}
+
+func (t *fileTransferInterrupt) finish() {
+	if !t.active {
+		return
+	}
+	t.active = false
+	c := t.controller
+	done := make(chan bool)
+	action := transferAction{done: done}
+	select {
+	case c.actions <- action:
+		<-done
+	case <-c.done:
+		c.mu.Lock()
+		c.finishLocked()
+		c.mu.Unlock()
+	}
+}
+
+func (c *transferInterruptController) finishLocked() {
+	c.active--
+	if c.active == 0 {
+		c.interrupted = false
+		c.clearDeadlineLocked()
+	}
+}
+
+func (c *transferInterruptController) clearDeadlineLocked() {
+	if c.deadlineSet && c.deadline != nil {
+		_ = c.deadline.SetWriteDeadline(time.Time{})
+		c.deadlineSet = false
+	}
 }
 
 // resolve turns p into an absolute vfs path against cwd, using "path"
@@ -113,6 +334,19 @@ func (e *shellEnv) logServed(rawPath string) {
 // command writes its own diagnostic and the shell keeps going, matching
 // inst's expectation that the trailing marker wrapper always still runs.
 func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, logger *logging.Logger, sess *capture.Session) error {
+	return RunShellWithSignals(fsys, stdin, stdout, stderr, nil, logger, sess)
+}
+
+// RunShellWithSignals runs one rsh shell and delivers callback-connection
+// SIGINT bytes to active foreground file transfers. A command line containing
+// background syntax disables signal handling for the rest of that session.
+// Pipelines outside the supported dd/cat forms retain the prior behavior and
+// ignore signal bytes for that line.
+func RunShellWithSignals(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, signals <-chan byte, logger *logging.Logger, sess *capture.Session) error {
+	var writeDeadline writeDeadlineSetter
+	if setter, ok := stdout.(writeDeadlineSetter); ok {
+		writeDeadline = setter
+	}
 	// With capture on, count every EFS backing read against the current
 	// command (countingFS) and every socket write - stdout and stderr both
 	// bind to the rsh connection - against the command and the session.
@@ -126,6 +360,8 @@ func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, logger
 	}
 	env := newShellEnv(fsys, logger)
 	env.sess = sess
+	env.transfers = newTransferInterruptController(signals, writeDeadline)
+	defer env.transfers.close()
 	runner, err := interp.New(
 		interp.StdIO(nil, stdout, stderr),
 		interp.Env(expand.ListEnviron("PATH=", "HOME=/", "IFS= \t\n")),
@@ -160,6 +396,13 @@ func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, logger
 			logger.Warnf("instcmd: rsh-sh: %q: parse error: %v", line, perr)
 			continue
 		}
+		background := hasBackgroundSyntax(file)
+		unsupportedPipeline := hasUnsupportedTransferPipeline(file)
+		if background {
+			env.transfers.disable()
+		} else if unsupportedPipeline {
+			env.transfers.suspend()
+		}
 		// One scanner line is one command. Clear the per-command refusal
 		// flag, mark this command current so the counting wrappers
 		// attribute to it, run it, then record its exit status and whether
@@ -181,12 +424,84 @@ func RunShell(fsys FileSystem, stdin io.Reader, stdout, stderr io.Writer, logger
 				logger.Errorf("instcmd: rsh-sh: %q: %v", line, err)
 			}
 		}
+		if unsupportedPipeline && !background {
+			env.transfers.restore()
+		}
 		cmd.End(status, env.refused.Load())
 		if runner.Exited() {
 			break
 		}
 	}
 	return sc.Err()
+}
+
+func hasBackgroundSyntax(file *syntax.File) bool {
+	background := false
+	syntax.Walk(file, func(node syntax.Node) bool {
+		if stmt, ok := node.(*syntax.Stmt); ok && (stmt.Background || stmt.Disown) {
+			background = true
+			return false
+		}
+		return !background
+	})
+	return background
+}
+
+func hasUnsupportedTransferPipeline(file *syntax.File) bool {
+	unsupported := false
+	syntax.Walk(file, func(node syntax.Node) bool {
+		if unsupported {
+			return false
+		}
+		pipeline, ok := node.(*syntax.BinaryCmd)
+		if !ok || (pipeline.Op != syntax.Pipe && pipeline.Op != syntax.PipeAll) {
+			return true
+		}
+		unsupported = !transferPipelineStages(pipeline)
+		return !unsupported
+	})
+	return unsupported
+}
+
+func transferPipelineStages(pipeline *syntax.BinaryCmd) bool {
+	supported := true
+	var visit func(*syntax.Stmt)
+	visit = func(stmt *syntax.Stmt) {
+		if nested, ok := stmt.Cmd.(*syntax.BinaryCmd); ok && (nested.Op == syntax.Pipe || nested.Op == syntax.PipeAll) {
+			visit(nested.X)
+			visit(nested.Y)
+			return
+		}
+		call, ok := stmt.Cmd.(*syntax.CallExpr)
+		if !ok || len(call.Args) == 0 {
+			supported = false
+			return
+		}
+		for _, arg := range call.Args {
+			if arg.Lit() == "" {
+				supported = false
+			}
+		}
+		name := path.Base(call.Args[0].Lit())
+		if name != "cat" && name != "dd" {
+			supported = false
+			return
+		}
+		if name == "cat" {
+			if len(call.Args) < 2 {
+				supported = false
+				return
+			}
+			for _, arg := range call.Args[1:] {
+				if arg.Lit() == "-" {
+					supported = false
+				}
+			}
+		}
+	}
+	visit(pipeline.X)
+	visit(pipeline.Y)
+	return supported
 }
 
 // callHandler intercepts specific builtin names before the runner's own
@@ -667,11 +982,41 @@ func lsDate(t time.Time) string {
 	return fmt.Sprintf("%s %2d %02d:%02d", t.Format("Jan"), t.Day(), t.Hour(), t.Minute())
 }
 
+func copyFileTransfer(dst io.Writer, src io.Reader, transfer *fileTransferInterrupt) error {
+	buf := make([]byte, 32*1024)
+	for {
+		if transfer.interruptedNow() {
+			return io.ErrClosedPipe
+		}
+		n, err := src.Read(buf)
+		if n > 0 {
+			written, writeErr := dst.Write(buf[:n])
+			if writeErr != nil {
+				return writeErr
+			}
+			if transfer.interruptedNow() {
+				return io.ErrClosedPipe
+			}
+			if written != n {
+				return io.ErrShortWrite
+			}
+		}
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
 func shCat(env *shellEnv, hc interp.HandlerContext, args []string) error {
 	if len(args) == 0 {
 		io.Copy(hc.Stdout, stdinOr(hc))
 		return nil
 	}
+	transfer := env.beginFileTransfer()
+	defer transfer.finish()
 	for _, p := range args {
 		f, err := env.fsys.Open(env.fsPath(p))
 		if err != nil {
@@ -679,8 +1024,14 @@ func shCat(env *shellEnv, hc interp.HandlerContext, args []string) error {
 			return interp.ExitStatus(1)
 		}
 		env.logServed(p)
-		if _, err := io.Copy(hc.Stdout, io.NewSectionReader(f, 0, f.Size())); err != nil {
+		if err := copyFileTransfer(hc.Stdout, io.NewSectionReader(f, 0, f.Size()), transfer); err != nil {
+			if transfer.interruptedNow() {
+				return interp.ExitStatus(130)
+			}
 			return err
+		}
+		if transfer.interruptedNow() {
+			return interp.ExitStatus(130)
 		}
 	}
 	return nil
@@ -788,13 +1139,24 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 		src = io.LimitReader(src, count*ibs)
 	}
 
+	transfer := env.beginFileTransfer()
+	defer transfer.finish()
 	buf := make([]byte, ibs)
 	var full, partial int64
 	for {
+		if transfer.interruptedNow() {
+			return interp.ExitStatus(130)
+		}
 		n, err := io.ReadFull(src, buf)
 		if n > 0 {
 			if _, werr := hc.Stdout.Write(buf[:n]); werr != nil {
+				if transfer.interruptedNow() {
+					return interp.ExitStatus(130)
+				}
 				return werr
+			}
+			if transfer.interruptedNow() {
+				return interp.ExitStatus(130)
 			}
 			if int64(n) == ibs {
 				full++
