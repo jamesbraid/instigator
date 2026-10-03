@@ -1,6 +1,7 @@
 package qemunet
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net"
@@ -10,6 +11,57 @@ import (
 
 	"github.com/jamesbraid/instigator/internal/bootp"
 )
+
+func TestNetworkQueuedDatagramsRemainDistinct(t *testing.T) {
+	srv, gst := pipedNetworks(t)
+	receiver, err := srv.ListenPacket(12345)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer receiver.Close()
+	sender, err := gst.ListenPacket(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	dst := &net.UDPAddr{IP: testSrvIPAddr(), Port: 12345}
+	const packets = 64
+	// Stay below netstack's 32 KiB UDP receive buffer while all data is queued.
+	const payloadSize = 256
+	for i := range packets {
+		if _, err := sender.WriteTo(bytes.Repeat([]byte{byte(i)}, payloadSize), dst); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Let every frame reuse the scratch buffer before consuming queued packets.
+	deadline := time.Now().Add(5 * time.Second)
+	for srv.stack.Stats().UDP.PacketsReceived.Value() < packets {
+		if time.Now().After(deadline) {
+			t.Fatal("datagrams did not reach the receiving stack")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if drops := srv.stack.Stats().UDP.ReceiveBufferErrors.Value(); drops != 0 {
+		t.Fatalf("%d datagrams dropped before checking their data", drops)
+	}
+	receiver.SetReadDeadline(deadline)
+	got := make([]byte, 1500)
+	var seen [packets]bool
+	for range packets {
+		n, _, err := receiver.ReadFrom(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// ARP resolution can reorder datagrams; each identity must survive once.
+		if n != payloadSize || got[0] >= packets || !bytes.Equal(got[:n], bytes.Repeat(got[:1], payloadSize)) {
+			t.Fatalf("queued datagram was overwritten: length %d, data %x", n, got[:n])
+		}
+		if seen[got[0]] {
+			t.Fatalf("queued datagram %d appeared twice", got[0])
+		}
+		seen[got[0]] = true
+	}
+}
 
 func TestNetworkStopsOnPeerClose(t *testing.T) {
 	c, peer := net.Pipe()

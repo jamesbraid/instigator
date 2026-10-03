@@ -3,6 +3,8 @@ package qemunet
 import (
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -51,4 +53,33 @@ func bootpRequest(mac tcpip.LinkAddress, file string) []byte {
 	copy(p[236:240], []byte{99, 130, 83, 99}) // RFC 1048 magic cookie
 	p[240] = 255                              // end
 	return p
+}
+
+func socketPair(t *testing.T, transport string) (net.Conn, net.Conn) {
+	t.Helper()
+	address := "127.0.0.1:0"
+	if transport == "unix" {
+		dir, err := os.MkdirTemp("", "qn-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.RemoveAll(dir) })
+		address = filepath.Join(dir, "s")
+	}
+	ln, err := net.Listen(transport, address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	conn, err := net.Dial(transport, ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	peer, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { peer.Close() })
+	return conn, peer
 }

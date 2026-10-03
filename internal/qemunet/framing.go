@@ -13,18 +13,29 @@ import (
 	"io"
 )
 
-// writeFrame writes one Ethernet frame using QEMU's stream framing: a
-// four-byte big-endian length prefix followed by the frame bytes.
-func writeFrame(w io.Writer, frame []byte) error {
-	var hdr [4]byte
-	binary.BigEndian.PutUint32(hdr[:], uint32(len(frame)))
-	if err := writeFull(w, hdr[:]); err != nil {
-		return err
-	}
-	if len(frame) == 0 {
-		return nil
-	}
-	return writeFull(w, frame)
+// frameWriter owns its scratch space for the lifetime of one stream pump.
+// Combining the prefix and payload avoids a socket write for every prefix.
+type frameWriter struct {
+	w   io.Writer
+	buf []byte
+}
+
+func (w *frameWriter) write(frame []byte) error {
+	w.append(frame)
+	return w.flush()
+}
+
+func (w *frameWriter) append(frame []byte) {
+	start := len(w.buf)
+	w.buf = append(w.buf, 0, 0, 0, 0)
+	binary.BigEndian.PutUint32(w.buf[start:], uint32(len(frame)))
+	w.buf = append(w.buf, frame...)
+}
+
+func (w *frameWriter) flush() error {
+	err := writeFull(w.w, w.buf)
+	w.buf = w.buf[:0]
+	return err
 }
 
 func writeFull(w io.Writer, p []byte) error {
@@ -41,25 +52,33 @@ func writeFull(w io.Writer, p []byte) error {
 	return nil
 }
 
-// readFrame reads one framed Ethernet frame. A length past max is refused
-// rather than allocated, so a corrupt or hostile peer cannot drive an
+type frameReader struct {
+	r   io.Reader
+	hdr [4]byte
+	buf []byte
+}
+
+// read reads one framed Ethernet frame, valid until the next call. A length
+// past max is refused rather than allocated, so a corrupt peer cannot drive an
 // unbounded allocation. It returns io.EOF only on a clean boundary (before
 // the length header); a truncated frame is io.ErrUnexpectedEOF.
-func readFrame(r io.Reader, max int) ([]byte, error) {
-	var hdr [4]byte
-	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+func (r *frameReader) read(max int) ([]byte, error) {
+	if _, err := io.ReadFull(r.r, r.hdr[:]); err != nil {
 		return nil, err // io.EOF here means a clean end of stream
 	}
-	n := binary.BigEndian.Uint32(hdr[:])
+	n := binary.BigEndian.Uint32(r.hdr[:])
 	if int64(n) > int64(max) {
 		return nil, fmt.Errorf("qemunet: framed length %d exceeds maximum %d", n, max)
 	}
-	if n == 0 {
-		return []byte{}, nil
+	if cap(r.buf) < int(n) {
+		r.buf = make([]byte, n)
 	}
-	frame := make([]byte, n)
-	if _, err := io.ReadFull(r, frame); err != nil {
+	r.buf = r.buf[:n]
+	if _, err := io.ReadFull(r.r, r.buf); err != nil {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
 		return nil, err
 	}
-	return frame, nil
+	return r.buf, nil
 }

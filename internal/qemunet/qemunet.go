@@ -31,8 +31,10 @@ const (
 	maxFrame = 65535
 
 	// channelQueue is how many outbound packets the link endpoint buffers
-	// before writes block on the stream.
+	// before the endpoint rejects new packets.
 	channelQueue = 512
+
+	frameBatchSize = 32
 )
 
 // Config describes the private segment a Network serves on.
@@ -126,13 +128,15 @@ func New(conn io.ReadWriteCloser, cfg Config) (*Network, error) {
 // readLoop moves frames from the stream into the stack.
 func (n *Network) readLoop() {
 	defer n.wg.Done()
-	r := bufio.NewReader(n.conn)
+	r := frameReader{r: bufio.NewReader(n.conn)}
 	for {
-		frame, err := readFrame(r, maxFrame)
+		frame, err := r.read(maxFrame)
 		if err != nil {
 			n.stop(fmt.Errorf("read frame: %w", err))
 			return
 		}
+		// MakeWithData copies into stack-owned storage before the next read
+		// reuses the stream reader's scratch buffer.
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
 			Payload: buffer.MakeWithData(frame),
 		})
@@ -146,19 +150,27 @@ func (n *Network) readLoop() {
 // writeLoop moves frames from the stack onto the stream.
 func (n *Network) writeLoop() {
 	defer n.wg.Done()
+	w := frameWriter{w: n.conn}
 	for {
 		pkt := n.ch.ReadContext(n.ctx)
 		if pkt == nil {
 			return // Close cancelled the context
 		}
-		frame := stack.PayloadSince(pkt.LinkHeader())
-		pkt.DecRef()
-		if frame == nil {
-			continue
+		// Drain only packets already queued. Bound the batch so continuous
+		// traffic cannot postpone a flush, and never wait to fill a batch.
+		for count := 0; pkt != nil; count++ {
+			frame := stack.PayloadSince(pkt.LinkHeader())
+			pkt.DecRef()
+			if frame != nil {
+				w.append(frame.AsSlice())
+				frame.Release()
+			}
+			if count == frameBatchSize-1 {
+				break
+			}
+			pkt = n.ch.Read()
 		}
-		err := writeFrame(n.conn, frame.AsSlice())
-		frame.Release()
-		if err != nil {
+		if err := w.flush(); err != nil {
 			n.stop(fmt.Errorf("write frame: %w", err))
 			return
 		}
