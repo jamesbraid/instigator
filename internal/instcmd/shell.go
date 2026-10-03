@@ -1141,7 +1141,13 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 
 	transfer := env.beginFileTransfer()
 	defer transfer.finish()
-	buf := make([]byte, ibs)
+	// Group whole input blocks to avoid a socket write and backing read for
+	// every 512 bytes. Offsets and record counts still use the requested ibs.
+	bufSize := ibs
+	if ibs < 32*1024 {
+		bufSize = (32 * 1024 / ibs) * ibs
+	}
+	buf := make([]byte, bufSize)
 	var full, partial int64
 	for {
 		if transfer.interruptedNow() {
@@ -1149,7 +1155,8 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 		}
 		n, err := io.ReadFull(src, buf)
 		if n > 0 {
-			if _, werr := hc.Stdout.Write(buf[:n]); werr != nil {
+			written, werr := hc.Stdout.Write(buf[:n])
+			if werr != nil {
 				if transfer.interruptedNow() {
 					return interp.ExitStatus(130)
 				}
@@ -1158,9 +1165,11 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 			if transfer.interruptedNow() {
 				return interp.ExitStatus(130)
 			}
-			if int64(n) == ibs {
-				full++
-			} else {
+			if written != n {
+				return io.ErrShortWrite
+			}
+			full += int64(n) / ibs
+			if int64(n)%ibs != 0 {
 				partial++
 			}
 		}

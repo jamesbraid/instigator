@@ -105,11 +105,13 @@ func TestShellMarkerProtocol(t *testing.T) {
 }
 
 func TestShellSIGINTStopsTransferAndContinuesInstWrapper(t *testing.T) {
+	fsys := shellTestFS()
+	fsys.files["6.5.30/disc1/dist/sa"] = bytes.Repeat(fsys.files["6.5.30/disc1/dist/sa"], 64)
 	script := "dd if=/6.5.30/disc1/dist/sa bs=512 ; ( status=$? ; trap '' 2 ; echo 'DD_STATUS='$status )\n" +
 		"dd if=/6.5.30/disc1/dist/sa bs=512 iseek=1 count=1 ; echo NEXT_STATUS=$?\n" +
 		"echo after\n"
-	firstBlock, rest := interruptShellTransfer(t, script, true)
-	wantFirst := shellTestFS().files["6.5.30/disc1/dist/sa"][:512]
+	firstBlock, rest := interruptShellTransferWithFS(t, fsys, script, true)
+	wantFirst := fsys.files["6.5.30/disc1/dist/sa"][:32*1024]
 	if !bytes.Equal(firstBlock, wantFirst) {
 		t.Fatal("first block does not match the served file")
 	}
@@ -118,7 +120,7 @@ func TestShellSIGINTStopsTransferAndContinuesInstWrapper(t *testing.T) {
 	if statusAt < 0 {
 		t.Fatalf("interrupted dd status marker missing: %q", rest)
 	}
-	nextBlock := shellTestFS().files["6.5.30/disc1/dist/sa"][512:1024]
+	nextBlock := fsys.files["6.5.30/disc1/dist/sa"][512:1024]
 	if !bytes.Equal(rest[statusAt+len(status):statusAt+len(status)+len(nextBlock)], nextBlock) {
 		t.Fatalf("next seek output is not byte-exact: %q", rest)
 	}
@@ -447,11 +449,6 @@ func TestTransferInterruptControllerShutdownDoesNotStrandTransfers(t *testing.T)
 	}
 }
 
-func interruptShellTransfer(t *testing.T, script string, waitForSecondWrite bool) ([]byte, []byte) {
-	t.Helper()
-	return interruptShellTransferWithFS(t, shellTestFS(), script, waitForSecondWrite)
-}
-
 func interruptShellTransferWithFS(t *testing.T, fsys FileSystem, script string, waitForSecondWrite bool) ([]byte, []byte) {
 	t.Helper()
 	server, client := net.Pipe()
@@ -476,7 +473,12 @@ func interruptShellTransferWithFS(t *testing.T, fsys FileSystem, script string, 
 	case <-time.After(2 * time.Second):
 		t.Fatal("file transfer did not begin writing")
 	}
-	firstBlock := make([]byte, 512)
+	firstSize := 512
+	if waitForSecondWrite {
+		// Consume one complete group so the next grouped write can block.
+		firstSize = 32 * 1024
+	}
+	firstBlock := make([]byte, firstSize)
 	if _, err := io.ReadFull(client, firstBlock); err != nil {
 		t.Fatalf("read first block: %v", err)
 	}
