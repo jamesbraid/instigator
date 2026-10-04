@@ -234,15 +234,21 @@ drained:
 	case <-time.After(2 * time.Second):
 		t.Fatal("signal handling was not restored for the following dd")
 	}
-	ddStatus := make([]byte, len("DD_STATUS=130\n"))
-	if _, err := io.ReadFull(client, ddStatus); err != nil {
-		t.Fatalf("read interrupted dd status: %v", err)
-	}
-	if string(ddStatus) != "DD_STATUS=130\n" {
-		t.Fatalf("following dd status = %q", ddStatus)
-	}
 	if err := input.Close(); err != nil {
 		t.Fatalf("close shell input: %v", err)
+	}
+	// A write already in flight can deliver bytes before the deadline takes
+	// effect. Drain that prefix before checking the interrupted status.
+	rest, err := io.ReadAll(client)
+	if err != nil {
+		t.Fatalf("read interrupted dd output: %v", err)
+	}
+	ddStatus := []byte("DD_STATUS=130\n")
+	if !bytes.HasSuffix(rest, ddStatus) {
+		t.Fatalf("following dd output has no interrupted status: %q", rest)
+	}
+	if output := bytes.TrimSuffix(rest, ddStatus); !bytes.HasPrefix(want, output) {
+		t.Fatalf("following dd output is not a file prefix: %q", output)
 	}
 	select {
 	case err := <-done:
