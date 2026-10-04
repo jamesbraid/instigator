@@ -10,10 +10,8 @@ import (
 	"time"
 
 	"github.com/jamesbraid/instigator/internal/capture"
-	"github.com/jamesbraid/instigator/internal/config"
 	"github.com/jamesbraid/instigator/internal/instcmd"
 	"github.com/jamesbraid/instigator/internal/logging"
-	"github.com/jamesbraid/instigator/internal/vfs"
 )
 
 const installReturnPrefix = "__instigator/attempts/"
@@ -28,14 +26,6 @@ func installReturnPath(attempt string) string {
 
 func installGoCommands(server, attempt string) string {
 	return fmt.Sprintf("go\nadmin source %s:%s\n", server, installReturnPath(attempt))
-}
-
-func scriptNames(cfg *config.Config) []string {
-	names := make([]string, 0, len(cfg.InstallScripts))
-	for _, script := range cfg.InstallScripts {
-		names = append(names, script.Name)
-	}
-	return names
 }
 
 // installScripts serves token-bearing command files without changing the
@@ -56,15 +46,14 @@ type installAttempt struct {
 	returned                    bool
 }
 
-func newInstallScripts(cfg *config.Config, tree *vfs.Tree, logger *logging.Logger, rec *capture.Recorder) *installScripts {
+func newInstallScripts(server string, generated []generatedFile, logger *logging.Logger, rec *capture.Recorder) *installScripts {
 	s := &installScripts{
-		server: cfg.ServerIP.String(), logger: logger, rec: rec,
+		server: server, logger: logger, rec: rec,
 		starts: make(map[string]string), attempts: make(map[string]*installAttempt),
 	}
-	for _, name := range append([]string{"install"}, scriptNames(cfg)...) {
-		path := fsName(installStartPath(name))
-		if _, err := tree.Stat(path); err == nil {
-			s.starts[path] = name + ".cmds"
+	for _, file := range generated {
+		if file.generator == "admin-source" {
+			s.starts[fsName(installStartPath(strings.TrimSuffix(file.path, ".cmds")))] = file.path
 		}
 	}
 	return s
@@ -82,7 +71,7 @@ func (s *installScripts) open(name, client, address string) (instcmd.File, bool,
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			attempt.start = time.Now()
-			s.attempts[attempt.id] = attempt
+			s.attempts[fsName(installReturnPath(attempt.id))] = attempt
 			s.rec.InstallStart(attempt.id, attempt.client, attempt.script)
 			s.logger.Infof("install_start: %s (%s), attempt %s: go dispatched", attempt.script, attempt.client, attempt.id)
 		}), true, nil
@@ -112,9 +101,8 @@ func (s *installScripts) open(name, client, address string) (instcmd.File, bool,
 }
 
 func (s *installScripts) findReturn(name, address string) *installAttempt {
-	id := strings.TrimSuffix(strings.TrimPrefix(name, installReturnPrefix), "/returned.cmds")
-	attempt := s.attempts[id]
-	if attempt == nil || attempt.address != address || fsName(installReturnPath(id)) != name {
+	attempt := s.attempts[name]
+	if attempt == nil || attempt.address != address {
 		return nil
 	}
 	return attempt

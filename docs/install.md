@@ -69,15 +69,11 @@ the standard selection plus that script's own
 
 ### Install timing
 
-Every generated script ends by fetching a small command file that runs `go`
-and then fetches a return marker. Instigator logs the elapsed time between
-these fetches. Each execution gets its own token, so repeated installs and
-different clients have separate timings.
+Every generated script uses native `admin source` handoffs to time `go`.
+Each execution gets a separate token to identify its start and return.
 
-Normal INFO logs include timestamped `install_start` and `install_returned`
-records. Both identify the script, client, and attempt. The return record also
-reports elapsed time. These records are emitted even without `--capture-dir`
-or `-v`. For example, with the attempt token abbreviated:
+Timestamped INFO logs identify the script, client, and attempt. Return records
+include elapsed time. Capture and `-v` are optional. Example with token abbreviated:
 
 ```text
 2026-10-03T12:00:00Z INFO  install_start: install.cmds (o200), attempt <token>: go dispatched
@@ -92,35 +88,27 @@ instigator serve --capture-dir RUN config.yaml
 instigator trace summary RUN
 ```
 
-`events.jsonl` records `install_start` and `install_returned`. The `installs`
-array in `summary.json` identifies the script, client, attempt, timestamps,
-and `duration_ms`. An attempt without a return marker is `incomplete` and has
-no finished duration. The summary can be regenerated after a crash.
+`events.jsonl` retains these events. The `installs` array in `summary.json`
+adds timestamps and `duration_ms` to each attempt. Missing return markers
+leave attempts `incomplete` with no finished duration. Regenerate the summary
+after a crash with `trace summary`.
 
-This measures the `go` operation, including the marker fetch overhead and any
-menus or prompts encountered during `go`. Commands before `go` and reboot
-are outside that interval. A return marker means execution reached the command
-after `go`. Inspect the guest output and first boot to establish installation
-success. If an error aborts the command file, the attempt stays incomplete.
-Handwritten scripts and commands entered directly at `Inst>` have no timing
-markers.
+Timing includes marker fetch overhead and prompts during `go`. Earlier commands
+and reboot are outside the interval. A return means execution reached the
+command after `go`. Verify success from guest output and first boot. Errors
+that abort the command file leave the attempt incomplete. Handwritten scripts
+and commands entered at `Inst>` have no markers.
 
-The native command-file handoff and newline-only return marker were tested
-with installed IRIX 6.5 `inst` 4.1. Cancellation and an empty selection aborted
-the command file before its return marker. A full successful miniroot install
-with these markers has not been tested.
+Chaining and the newline-only marker were tested with installed IRIX 6.5
+`inst` 4.1. A full successful miniroot install with these markers remains untested.
 
 ### Private network disconnects
 
-With `--network-socket` or `--network-tcp`, closing the emulator's network
-connection stops Instigator. A message such as `private network disconnected:
-read frame: EOF` reports that connection closing. It does not establish
-installation completion. The final error includes a timestamp and exits with
-status 1.
-
-With capture enabled, Instigator finalizes the run with a `server_stop` event
-whose result is `disconnected`. Attempts without return markers remain
-`incomplete`.
+With `--network-socket` or `--network-tcp`, an emulator network disconnect stops
+Instigator with a timestamped error and exit status 1. For example,
+`private network disconnected: read frame: EOF` reports the connection closing.
+It does not establish installation completion. Capture ends with
+`server_stop` / `disconnected`. Attempts without return markers stay incomplete.
 
 ## Tested 6.5.30 install-set ordering
 

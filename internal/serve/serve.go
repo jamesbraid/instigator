@@ -426,7 +426,7 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 	allow := func(a netip.Addr) bool { return allowed[a] }
 
 	logStartup(cfg, tree, prof, logger, o.instructions)
-	scripts := newInstallScripts(cfg, tree, logger, s.rec)
+	scripts := newInstallScripts(cfg.ServerIP.String(), prof.generated, logger, s.rec)
 
 	// Listeners are bound now but their serve loops are launched only after
 	// server_start is emitted, so no bootp/tftp/rsh event can precede it.
@@ -675,51 +675,31 @@ func generate(cfg *config.Config, tree *vfs.Tree) (profile, error) {
 		p.bootPath = boot
 	}
 
-	cmds := []byte(instscript.Commands(instscript.Params{
-		ServerIP:  cfg.ServerIP.String(),
-		Sets:      p.dists,
-		StartPath: installStartPath("install"),
-	}))
-	p.generated = []generatedFile{
-		{
-			path:      "install.cmds",
-			generator: "admin-source",
-			content:   cmds,
-		},
-		{
-			path:      p.primary + "/dist/.related_dists",
-			generator: "related-dists",
-			content:   []byte(instscript.RelatedDists(p.dists)),
-		},
-	}
-	// Each configured install script is a second admin-source file: the same
-	// baseline over the same enabled sets, plus that script's selections,
-	// served at /<name>.cmds for the operator to pick instead of install.cmds.
-	for _, sc := range cfg.InstallScripts {
+	// Keep every script and its timing entrypoint together. The entrypoint's
+	// fixed-size token is replaced by the rsh adapter for each execution.
+	addScript := func(name string, selection instscript.Selection) {
 		body := instscript.Commands(instscript.Params{
 			ServerIP:  cfg.ServerIP.String(),
 			Sets:      p.dists,
-			StartPath: installStartPath(sc.Name),
-			Selection: instscript.Selection{
-				Stream:  sc.Stream,
-				Install: sc.Install,
-				Keep:    sc.Keep,
-				Remove:  sc.Remove,
-			},
+			StartPath: installStartPath(name),
+			Selection: selection,
 		})
 		p.generated = append(p.generated, generatedFile{
-			path:      sc.Name + ".cmds",
+			path:      name + ".cmds",
 			generator: "admin-source",
 			content:   []byte(body),
-		})
-	}
-	// Marker entrypoints have fixed-size metadata. The rsh adapter replaces
-	// their token when serving a fetch without mutating the media tree.
-	for _, name := range append([]string{"install"}, scriptNames(cfg)...) {
-		p.generated = append(p.generated, generatedFile{
+		}, generatedFile{
 			path: fsName(installStartPath(name)), generator: "install-timing",
 			content: []byte(installGoCommands(cfg.ServerIP.String(), strings.Repeat("0", 32))),
 		})
+	}
+	addScript("install", instscript.Selection{})
+	p.generated = append(p.generated, generatedFile{
+		path: p.primary + "/dist/.related_dists", generator: "related-dists",
+		content: []byte(instscript.RelatedDists(p.dists)),
+	})
+	for _, sc := range cfg.InstallScripts {
+		addScript(sc.Name, instscript.Selection{Stream: sc.Stream, Install: sc.Install, Keep: sc.Keep, Remove: sc.Remove})
 	}
 	for _, f := range p.generated {
 		if err := tree.AddGenerated(f.path, f.generator, f.content); err != nil {
