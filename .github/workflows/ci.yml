@@ -15,7 +15,7 @@ jobs:
       - name: set up go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
+          go-version-file: go.mod
       - name: gofmt (fail on unformatted files)
         run: |
           fmt_out="$(gofmt -l .)"

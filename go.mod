@@ -1,6 +1,6 @@
 module github.com/jamesbraid/instigator
 
-go 1.26.3
+go 1.27.1
 
 require (
 	github.com/cavaliergopher/grab/v3 v3.0.1

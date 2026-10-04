@@ -1,7 +1,7 @@
 # Build a static instigator binary and ship it on scratch. The container
 # needs host or macvlan networking to see the client's broadcast BOOTP;
 # see the README.
-FROM docker.io/library/golang:1.26 AS build
+FROM docker.io/library/golang:1.27.1 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

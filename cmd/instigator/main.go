@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	"github.com/urfave/cli/v3"
 )
@@ -83,6 +84,10 @@ func main() {
 		},
 		Writer:    os.Stdout,
 		ErrWriter: os.Stderr,
+	}
+
+	if info, ok := debug.ReadBuildInfo(); ok {
+		root.Version = info.Main.Version
 	}
 
 	if err := root.Run(context.Background(), os.Args); err != nil {

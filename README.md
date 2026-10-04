@@ -26,11 +26,14 @@ reached the IRIX console login.
 
 ## Quick start
 
-Build the server:
+Build the server with Go 1.27.1 or newer:
 
 ```sh
 go build -o instigator ./cmd/instigator
 ```
+
+`./instigator --version` prints the module version recorded by Go, including
+`+dirty` for local changes. Builds without source metadata report `(devel)`.
 
 Copy [`instigator.example.yaml`](instigator.example.yaml), then set the
 server address, the client MAC/IP, and the paths to your SGI images. Keep

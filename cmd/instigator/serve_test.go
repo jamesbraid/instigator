@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"debug/buildinfo"
 	"fmt"
 	"io"
 	"net"
@@ -47,6 +48,21 @@ func instigator(t *testing.T) string {
 		t.Fatal(built.err)
 	}
 	return built.path
+}
+
+func TestVersionReportsBuildInfo(t *testing.T) {
+	binary := instigator(t)
+	info, err := buildinfo.ReadFile(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := exec.Command(binary, "--version").CombinedOutput()
+	if err != nil {
+		t.Fatalf("--version: %v: %s", err, output)
+	}
+	if want := "instigator version " + info.Main.Version + "\n"; string(output) != want {
+		t.Errorf("--version = %q, want %q", output, want)
+	}
 }
 
 // serveConfig writes a config whose single set is a small image. A bootp
