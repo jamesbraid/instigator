@@ -34,6 +34,7 @@ type shellEnv struct {
 	cwd    string // always an absolute, path.Clean'd vfs path
 	logger *logging.Logger
 	sess   *capture.Session // nil when capture is off; every use is nil-safe
+	output *clientOutput
 
 	transfers *transferInterruptController
 
@@ -326,6 +327,17 @@ func (e *shellEnv) logServed(rawPath string) {
 	e.sess.RecordServed(abs, "", "")
 }
 
+type clientOutput struct{ io.Writer }
+
+func (e *shellEnv) fileTransferred(f File, dst io.Writer, offset, length int64) {
+	if dst != e.output {
+		return
+	}
+	if observer, ok := f.(FileTransferObserver); ok {
+		observer.Transferred(offset, length)
+	}
+}
+
 // RunShell serves the shell inst opens over rsh with "exec /bin/sh": one
 // mvdan/sh Runner for the life of the connection, fed one line at a time
 // so state (variables, traps, $?) persists across lines like a real
@@ -360,10 +372,11 @@ func RunShellWithSignals(fsys FileSystem, stdin io.Reader, stdout, stderr io.Wri
 	}
 	env := newShellEnv(fsys, logger)
 	env.sess = sess
+	env.output = &clientOutput{stdout}
 	env.transfers = newTransferInterruptController(signals, writeDeadline)
 	defer env.transfers.close()
 	runner, err := interp.New(
-		interp.StdIO(nil, stdout, stderr),
+		interp.StdIO(nil, env.output, stderr),
 		interp.Env(expand.ListEnviron("PATH=", "HOME=/", "IFS= \t\n")),
 		interp.Dir("/"),
 		interp.CallHandler(callHandler(env)),
@@ -1033,6 +1046,7 @@ func shCat(env *shellEnv, hc interp.HandlerContext, args []string) error {
 		if transfer.interruptedNow() {
 			return interp.ExitStatus(130)
 		}
+		env.fileTransferred(f, hc.Stdout, 0, f.Size())
 	}
 	return nil
 }
@@ -1111,6 +1125,7 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 	}
 
 	var src io.Reader
+	var inputFile File
 	if file != "" {
 		f, err := env.fsys.Open(env.fsPath(file))
 		if err != nil {
@@ -1118,6 +1133,7 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 			return interp.ExitStatus(1)
 		}
 		env.logServed(file)
+		inputFile = f
 		off := skip * ibs
 		size := f.Size() - off
 		if size < 0 {
@@ -1149,6 +1165,7 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 	}
 	buf := make([]byte, bufSize)
 	var full, partial int64
+	var copied int64
 	for {
 		if transfer.interruptedNow() {
 			return interp.ExitStatus(130)
@@ -1169,6 +1186,7 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 				return io.ErrShortWrite
 			}
 			full += int64(n) / ibs
+			copied += int64(n)
 			if int64(n)%ibs != 0 {
 				partial++
 			}
@@ -1184,6 +1202,7 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 	}
 	p := boolToInt(partial > 0)
 	fmt.Fprintf(hc.Stderr, "%d+%d records in\n%d+%d records out\n", full, p, full, p)
+	env.fileTransferred(inputFile, hc.Stdout, skip*ibs, copied)
 	return nil
 }
 
@@ -1244,7 +1263,7 @@ func (c countingFS) Open(path string) (File, error) {
 	if err != nil {
 		return nil, err
 	}
-	return countingFile{ReaderAt: c.sess.WrapReaderAt(f), size: f.Size()}, nil
+	return countingFile{ReaderAt: c.sess.WrapReaderAt(f), file: f}, nil
 }
 
 func (c countingFS) ReadDir(path string) ([]string, error) { return c.inner.ReadDir(path) }
@@ -1261,10 +1280,16 @@ func (c countingFS) ResolveImage(path string) (Resolved, error) {
 // wrapped ReaderAt) while keeping the original Size.
 type countingFile struct {
 	io.ReaderAt
-	size int64
+	file File
 }
 
-func (f countingFile) Size() int64 { return f.size }
+func (f countingFile) Size() int64 { return f.file.Size() }
+
+func (f countingFile) Transferred(offset, length int64) {
+	if observer, ok := f.file.(FileTransferObserver); ok {
+		observer.Transferred(offset, length)
+	}
+}
 
 // readDirHandler backs shell globbing. It is part of the sandbox, not a
 // convenience: the interpreter's default handler globs the host

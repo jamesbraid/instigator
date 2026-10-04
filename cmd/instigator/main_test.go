@@ -4,12 +4,38 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jamesbraid/instigator/efs/efstest"
 )
+
+func TestCLIErrorIncludesTimestamp(t *testing.T) {
+	if missing := os.Getenv("INSTIGATOR_TEST_MISSING_CONFIG"); missing != "" {
+		os.Args = []string{"instigator", "serve", missing}
+		main()
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCLIErrorIncludesTimestamp$")
+	cmd.Env = append(os.Environ(), "INSTIGATOR_TEST_MISSING_CONFIG="+filepath.Join(t.TempDir(), "missing.yaml"))
+	output, err := cmd.CombinedOutput()
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+		t.Fatalf("CLI error exit = %v; output %q", err, output)
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) < 4 {
+		t.Fatalf("incomplete CLI error: %q", output)
+	}
+	if _, err := time.Parse(time.RFC3339, fields[0]); err != nil {
+		t.Fatalf("CLI error has no timestamp: %q", output)
+	}
+	if fields[1] != "ERROR" || fields[2] != "instigator:" {
+		t.Fatalf("CLI error has no severity or program name: %q", output)
+	}
+}
 
 // The serve command's stdout is the operational server log. PROM and Inst
 // commands remain available in the static guide instead of being mixed into

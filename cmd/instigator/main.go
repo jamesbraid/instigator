@@ -5,10 +5,10 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"runtime/debug"
 
+	"github.com/jamesbraid/instigator/internal/logging"
 	"github.com/urfave/cli/v3"
 )
 
@@ -91,7 +91,7 @@ func main() {
 	}
 
 	if err := root.Run(context.Background(), os.Args); err != nil {
-		fmt.Fprintln(os.Stderr, "instigator:", err)
+		logging.New(os.Stderr, logging.LevelError).Errorf("instigator: %v", err)
 		os.Exit(1)
 	}
 }

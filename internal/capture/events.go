@@ -34,6 +34,37 @@ func (r *Recorder) ServerStop(reason string) {
 	r.emit(&header{Event: "server_stop", Result: reason})
 }
 
+type installStart struct {
+	header
+	Attempt string `json:"attempt"`
+	Script  string `json:"script"`
+}
+
+type installReturned struct {
+	installStart
+	DurationMS int64 `json:"duration_ms"`
+}
+
+// InstallStart records a generated script's marker immediately before go.
+func (r *Recorder) InstallStart(attempt, client, script string) {
+	e := &installStart{Attempt: attempt, Script: script}
+	e.Event = "install_start"
+	e.Client = client
+	r.emit(e)
+}
+
+// InstallReturned records that go returned, without claiming install success.
+func (r *Recorder) InstallReturned(attempt, client, script string, durationMS int64) {
+	e := &installReturned{
+		installStart: installStart{Attempt: attempt, Script: script},
+		DurationMS:   durationMS,
+	}
+	e.Event = "install_returned"
+	e.Client = client
+	e.Result = "returned"
+	r.emit(e)
+}
+
 type listenerExit struct {
 	header
 	Listener string `json:"listener"`

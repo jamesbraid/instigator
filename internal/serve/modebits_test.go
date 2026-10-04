@@ -35,7 +35,7 @@ func TestCmdFSStatCarriesSpecialBits(t *testing.T) {
 	}
 	t.Cleanup(func() { tree.Close() })
 
-	info, err := cmdFS{tree}.Stat("/6.5.30/dist/su")
+	info, err := cmdFS{t: tree}.Stat("/6.5.30/dist/su")
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}

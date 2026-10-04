@@ -49,7 +49,8 @@ beside `done`. The command file then selects the standard product set, applies
 the known package choice for this install, and starts the install. It does not
 use positional `conflicts` choices.
 
-For a dry run, type the commands from the file manually and omit the final `go`.
+For a dry run, type the selection commands from the file manually and omit the
+final `admin source` command, which starts `go`.
 
 ### Named install scripts
 
@@ -61,10 +62,65 @@ extra selections — for example a `debug` script that also installs `dbx`:
 admin source <server-ip>:/debug.cmds
 ```
 
-`/install.cmds` is unchanged and always available, so choosing a script is just
-a matter of which path you source. The named script opens the same sets in the
-same order, then applies the standard selection plus that script's own
+The default `/install.cmds` remains available, so choose a script by sourcing
+its path. The named script opens the same sets in the same order, then applies
+the standard selection plus that script's own
 `install`/`keep`/`remove` lines and release stream.
+
+### Install timing
+
+Every generated script ends by fetching a small command file that runs `go`
+and then fetches a return marker. Instigator logs the elapsed time between
+these fetches. Each execution gets its own token, so repeated installs and
+different clients have separate timings.
+
+Normal INFO logs include timestamped `install_start` and `install_returned`
+records. Both identify the script, client, and attempt. The return record also
+reports elapsed time. These records are emitted even without `--capture-dir`
+or `-v`. For example, with the attempt token abbreviated:
+
+```text
+2026-10-03T12:00:00Z INFO  install_start: install.cmds (o200), attempt <token>: go dispatched
+2026-10-03T12:22:50Z INFO  install_returned: install.cmds (o200), attempt <token>: go returned after 22m50.81s (success not verified)
+```
+
+To retain the timing events and transfer statistics, give each server run a
+fresh capture directory:
+
+```sh
+instigator serve --capture-dir RUN config.yaml
+instigator trace summary RUN
+```
+
+`events.jsonl` records `install_start` and `install_returned`. The `installs`
+array in `summary.json` identifies the script, client, attempt, timestamps,
+and `duration_ms`. An attempt without a return marker is `incomplete` and has
+no finished duration. The summary can be regenerated after a crash.
+
+This measures the `go` operation, including the marker fetch overhead and any
+menus or prompts encountered during `go`. Commands before `go` and reboot
+are outside that interval. A return marker means execution reached the command
+after `go`. Inspect the guest output and first boot to establish installation
+success. If an error aborts the command file, the attempt stays incomplete.
+Handwritten scripts and commands entered directly at `Inst>` have no timing
+markers.
+
+The native command-file handoff and newline-only return marker were tested
+with installed IRIX 6.5 `inst` 4.1. Cancellation and an empty selection aborted
+the command file before its return marker. A full successful miniroot install
+with these markers has not been tested.
+
+### Private network disconnects
+
+With `--network-socket` or `--network-tcp`, closing the emulator's network
+connection stops Instigator. A message such as `private network disconnected:
+read frame: EOF` reports that connection closing. It does not establish
+installation completion. The final error includes a timestamp and exits with
+status 1.
+
+With capture enabled, Instigator finalizes the run with a `server_stop` event
+whose result is `disconnected`. Attempts without return markers remain
+`incomplete`.
 
 ## Tested 6.5.30 install-set ordering
 

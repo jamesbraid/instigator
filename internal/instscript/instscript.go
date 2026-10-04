@@ -37,6 +37,9 @@ type Params struct {
 	// Selection extends the baseline for a named install script. The zero
 	// value is the baseline install.cmds.
 	Selection Selection
+	// StartPath hands off to a generated file that runs go and reports its
+	// return. Empty keeps the standalone command sequence unchanged.
+	StartPath string
 }
 
 // Commands returns inst(1M)'s admin-source sequence, one bare command per
@@ -78,7 +81,11 @@ func Commands(p Params) string {
 	for _, s := range p.Selection.Remove {
 		fmt.Fprintf(&b, "remove %s\n", s)
 	}
-	b.WriteString("go\n")
+	if p.StartPath == "" {
+		b.WriteString("go\n")
+	} else {
+		fmt.Fprintf(&b, "admin source %s:%s\n", p.ServerIP, p.StartPath)
+	}
 	return b.String()
 }
 

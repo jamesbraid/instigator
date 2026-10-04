@@ -30,6 +30,13 @@ type File interface {
 	Size() int64
 }
 
+// FileTransferObserver receives the range a successful cat or dd wrote to
+// the client. Metadata lookups, failed writes, and redirected output do not
+// notify it. A file can require its entire content before acting on a fetch.
+type FileTransferObserver interface {
+	Transferred(offset, length int64)
+}
+
 // Resolved is what ImageResolver reports: Image is the backing image's
 // filename, Path is the location within that image's own filesystem.
 type Resolved struct {

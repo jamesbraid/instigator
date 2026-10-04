@@ -333,8 +333,9 @@ func readmeImage(t *testing.T, dir, name, readme string) string {
 func TestGeneratedAdminCommandsMatchScript(t *testing.T) {
 	s, _ := captureStart(t, fourSetConfig(t, true))
 	want := instscript.Commands(instscript.Params{
-		ServerIP: "192.0.2.10",
-		Sets:     fourSetDists,
+		ServerIP:  "192.0.2.10",
+		Sets:      fourSetDists,
+		StartPath: installStartPath("install"),
 	})
 	admin := served(t, s, "install.cmds")
 	if admin != want {
@@ -358,13 +359,14 @@ func TestGeneratedNamedScriptServed(t *testing.T) {
 	cfg.InstallScripts = []config.InstallScript{sel}
 	s, _ := captureStart(t, cfg)
 
-	wantBaseline := instscript.Commands(instscript.Params{ServerIP: "192.0.2.10", Sets: fourSetDists})
+	wantBaseline := instscript.Commands(instscript.Params{ServerIP: "192.0.2.10", Sets: fourSetDists, StartPath: installStartPath("install")})
 	if got := served(t, s, "install.cmds"); got != wantBaseline {
 		t.Errorf("install.cmds changed by a named script:\n%q\nwant\n%q", got, wantBaseline)
 	}
 	wantDebug := instscript.Commands(instscript.Params{
-		ServerIP: "192.0.2.10",
-		Sets:     fourSetDists,
+		ServerIP:  "192.0.2.10",
+		Sets:      fourSetDists,
+		StartPath: installStartPath(sel.Name),
 		Selection: instscript.Selection{
 			Stream:  sel.Stream,
 			Install: sel.Install,

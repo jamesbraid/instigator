@@ -148,9 +148,17 @@ func (f treeFS) ResolveImage(path string) (tftp.Resolved, error) {
 
 // cmdFS adapts the install-set tree to the rsh command interpreter's
 // filesystem interface.
-type cmdFS struct{ t *vfs.Tree }
+type cmdFS struct {
+	t       *vfs.Tree
+	scripts *installScripts
+	client  string
+	address string
+}
 
 func (f cmdFS) Open(path string) (instcmd.File, error) {
+	if file, handled, err := f.scripts.open(fsName(path), f.client, f.address); handled {
+		return file, err
+	}
 	file, err := openRegular(f.t, path)
 	if err != nil {
 		return nil, notFound(path, err, instcmd.ErrNotFound)
@@ -171,6 +179,9 @@ func (f cmdFS) ReadDir(path string) ([]string, error) {
 }
 
 func (f cmdFS) Stat(path string) (instcmd.FileInfo, error) {
+	if info, handled, err := f.scripts.stat(fsName(path), f.address); handled {
+		return info, err
+	}
 	info, err := f.t.Stat(fsName(path))
 	if err != nil {
 		return instcmd.FileInfo{}, notFound(path, err, instcmd.ErrNotFound)
@@ -415,6 +426,7 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 	allow := func(a netip.Addr) bool { return allowed[a] }
 
 	logStartup(cfg, tree, prof, logger, o.instructions)
+	scripts := newInstallScripts(cfg, tree, logger, s.rec)
 
 	// Listeners are bound now but their serve loops are launched only after
 	// server_start is emitted, so no bootp/tftp/rsh event can precede it.
@@ -502,7 +514,8 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 					return fmt.Errorf("only a shell session is served")
 				}
 				sess := s.rec.BeginSession(aliasByIP[req.Addr], req.Addr.String(), req.RemoteUser, req.LocalUser)
-				err := instcmd.RunShellWithSignals(cmdFS{tree}, req.Stdin, req.Stdout, req.Stderr, req.Signals, logger, sess)
+				fsys := cmdFS{t: tree, scripts: scripts, client: aliasByIP[req.Addr], address: req.Addr.String()}
+				err := instcmd.RunShellWithSignals(fsys, req.Stdin, req.Stdout, req.Stderr, req.Signals, logger, sess)
 				sess.End(err)
 				return err
 			},
@@ -663,8 +676,9 @@ func generate(cfg *config.Config, tree *vfs.Tree) (profile, error) {
 	}
 
 	cmds := []byte(instscript.Commands(instscript.Params{
-		ServerIP: cfg.ServerIP.String(),
-		Sets:     p.dists,
+		ServerIP:  cfg.ServerIP.String(),
+		Sets:      p.dists,
+		StartPath: installStartPath("install"),
 	}))
 	p.generated = []generatedFile{
 		{
@@ -683,8 +697,9 @@ func generate(cfg *config.Config, tree *vfs.Tree) (profile, error) {
 	// served at /<name>.cmds for the operator to pick instead of install.cmds.
 	for _, sc := range cfg.InstallScripts {
 		body := instscript.Commands(instscript.Params{
-			ServerIP: cfg.ServerIP.String(),
-			Sets:     p.dists,
+			ServerIP:  cfg.ServerIP.String(),
+			Sets:      p.dists,
+			StartPath: installStartPath(sc.Name),
 			Selection: instscript.Selection{
 				Stream:  sc.Stream,
 				Install: sc.Install,
@@ -696,6 +711,14 @@ func generate(cfg *config.Config, tree *vfs.Tree) (profile, error) {
 			path:      sc.Name + ".cmds",
 			generator: "admin-source",
 			content:   []byte(body),
+		})
+	}
+	// Marker entrypoints have fixed-size metadata. The rsh adapter replaces
+	// their token when serving a fetch without mutating the media tree.
+	for _, name := range append([]string{"install"}, scriptNames(cfg)...) {
+		p.generated = append(p.generated, generatedFile{
+			path: fsName(installStartPath(name)), generator: "install-timing",
+			content: []byte(installGoCommands(cfg.ServerIP.String(), strings.Repeat("0", 32))),
 		})
 	}
 	for _, f := range p.generated {

@@ -20,6 +20,7 @@ const slowestN = 10
 // two sessions idle in the same wall-second are not two seconds of idle.
 type Summary struct {
 	Sessions []SessionSummary `json:"sessions"`
+	Installs []InstallSummary `json:"installs,omitempty"`
 
 	BytesServed      int64 `json:"bytes_served"`
 	Commands         int   `json:"commands"`
@@ -42,6 +43,18 @@ type Summary struct {
 	Verbs   []VerbLatency `json:"verbs"`
 	Paths   []PathReuse   `json:"path_reuse"`
 	Slowest []SlowCommand `json:"slowest_commands"`
+}
+
+// InstallSummary pairs a script's start marker with its matching return marker.
+// A return confirms only that go returned, not that the installation succeeded.
+type InstallSummary struct {
+	Attempt    string `json:"attempt"`
+	Client     string `json:"client"`
+	Script     string `json:"script"`
+	Started    string `json:"started"`
+	Returned   string `json:"returned"`
+	DurationMS *int64 `json:"duration_ms,omitempty"`
+	Result     string `json:"result"`
 }
 
 // SessionSummary is one rsh session's timing. Active is the sum of its
@@ -91,6 +104,9 @@ type SlowCommand struct {
 // line. Missing fields stay zero.
 type rawEvent struct {
 	Event   string `json:"event"`
+	TS      string `json:"ts"`
+	Attempt string `json:"attempt"`
+	Script  string `json:"script"`
 	Session string `json:"session"`
 	Client  string `json:"client"`
 	Result  string `json:"result"`
@@ -147,6 +163,7 @@ func Summarize(r io.Reader) (Summary, error) {
 	verbDurations := map[string][]int64{}
 	pathAgg := map[string]*PathReuse{}
 	var pathOrder []string
+	installIndex := map[string]int{}
 
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 64*1024), 8*1024*1024)
@@ -168,6 +185,29 @@ func Summarize(r io.Reader) (Summary, error) {
 			continue
 		}
 		switch e.Event {
+		case "install_start":
+			if _, exists := installIndex[e.Attempt]; exists {
+				break
+			}
+			installIndex[e.Attempt] = len(sum.Installs)
+			sum.Installs = append(sum.Installs, InstallSummary{
+				Attempt: e.Attempt, Client: e.Client, Script: e.Script,
+				Started: e.TS, Result: "incomplete",
+			})
+
+		case "install_returned":
+			index, exists := installIndex[e.Attempt]
+			if !exists {
+				break
+			}
+			install := &sum.Installs[index]
+			if install.Result == "returned" || install.Client != e.Client || install.Script != e.Script {
+				break
+			}
+			install.Returned = e.TS
+			install.DurationMS = &e.DurationMS
+			install.Result = "returned"
+
 		case "rsh_session_start":
 			get(e.Session).client = e.Client
 
@@ -345,6 +385,14 @@ func percentile(sorted []int64, p float64) int64 {
 // totals, and the slowest commands. It is the human half of the summary
 // the server prints at shutdown and `trace summary` prints on demand.
 func (s Summary) WriteText(w io.Writer) {
+	for _, install := range s.Installs {
+		fmt.Fprintf(w, "install %s (%s), attempt %s: ", install.Script, install.Client, install.Attempt)
+		if install.Result == "returned" && install.DurationMS != nil {
+			fmt.Fprintf(w, "go returned after %s (not verified success)\n", dur(*install.DurationMS))
+		} else {
+			fmt.Fprintln(w, "incomplete (no matching go return marker)")
+		}
+	}
 	for _, ss := range s.Sessions {
 		fmt.Fprintf(w, "session %s (%s): wall %s  active %s  idle %s  commands %d  bytes_out %s\n",
 			ss.ID, ss.Client, dur(ss.WallMS), dur(ss.ActiveMS), dur(ss.IdleMS), ss.Commands, bytesH(ss.BytesOut))

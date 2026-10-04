@@ -250,7 +250,7 @@ func TestAdaptersRefuseDirectories(t *testing.T) {
 	} else if errors.Is(err, tftp.ErrNotFound) {
 		t.Errorf("tftp adapter reported a directory as missing: %v", err)
 	}
-	if _, err := (cmdFS{s.tree}).Open("/6.5.30/dist"); err == nil {
+	if _, err := (cmdFS{t: s.tree}).Open("/6.5.30/dist"); err == nil {
 		t.Error("instcmd adapter opened a directory")
 	} else if errors.Is(err, instcmd.ErrNotFound) {
 		t.Errorf("instcmd adapter reported a directory as missing: %v", err)
@@ -262,13 +262,13 @@ func TestAdaptersReportMissingPaths(t *testing.T) {
 	if _, err := (treeFS{s.tree}).Open("/6.5.30/stand/fx.32"); !errors.Is(err, tftp.ErrNotFound) {
 		t.Errorf("tftp adapter: err = %v, want tftp.ErrNotFound", err)
 	}
-	if _, err := (cmdFS{s.tree}).Open("/6.5.30/stand/fx.32"); !errors.Is(err, instcmd.ErrNotFound) {
+	if _, err := (cmdFS{t: s.tree}).Open("/6.5.30/stand/fx.32"); !errors.Is(err, instcmd.ErrNotFound) {
 		t.Errorf("instcmd adapter: err = %v, want instcmd.ErrNotFound", err)
 	}
-	if _, err := (cmdFS{s.tree}).ReadDir("/nowhere"); !errors.Is(err, instcmd.ErrNotFound) {
+	if _, err := (cmdFS{t: s.tree}).ReadDir("/nowhere"); !errors.Is(err, instcmd.ErrNotFound) {
 		t.Errorf("instcmd adapter ReadDir: err = %v, want instcmd.ErrNotFound", err)
 	}
-	if _, err := (cmdFS{s.tree}).Stat("/nowhere"); !errors.Is(err, instcmd.ErrNotFound) {
+	if _, err := (cmdFS{t: s.tree}).Stat("/nowhere"); !errors.Is(err, instcmd.ErrNotFound) {
 		t.Errorf("instcmd adapter Stat: err = %v, want instcmd.ErrNotFound", err)
 	}
 }
@@ -277,7 +277,7 @@ func TestAdaptersReportMissingPaths(t *testing.T) {
 // addresses the tree root as "" once the leading slash is stripped.
 func TestCmdFSListsAndStats(t *testing.T) {
 	s, _ := startAll(t)
-	f := cmdFS{s.tree}
+	f := cmdFS{t: s.tree}
 	names, err := f.ReadDir("")
 	if err != nil {
 		t.Fatalf("ReadDir(root): %v", err)
@@ -308,7 +308,7 @@ func TestCmdFSListsAndStats(t *testing.T) {
 // layer to name - reports an error instead of a made-up source.
 func TestCmdFSResolvesOrigins(t *testing.T) {
 	s, _ := startAll(t)
-	f := cmdFS{s.tree}
+	f := cmdFS{t: s.tree}
 	r, err := f.ResolveImage("/6.5.30/dist/sa")
 	if err != nil {
 		t.Fatalf("ResolveImage: %v", err)
