@@ -156,33 +156,54 @@ func parseExtent(b []byte) Extent {
 // past the end as io.ReaderAt requires. Holes between extents read as
 // zeros.
 func (fs *FS) ReadAt(ino *Inode, p []byte, off int64) (int, error) {
+	if off < 0 {
+		return 0, fmt.Errorf("efs: negative read offset %d", off)
+	}
 	size := int64(ino.Size)
 	if off >= size {
 		return 0, io.EOF
 	}
 	want := int64(len(p))
-	if off+want > size {
+	if want > size-off {
 		want = size - off
 	}
+	i := sort.Search(len(ino.Extents), func(i int) bool {
+		e := ino.Extents[i]
+		return (int64(e.Offset)+int64(e.Len))*blockSize > off
+	})
 	var done int64
 	for done < want {
+		if i < len(ino.Extents) && ino.Extents[i].Len == 0 {
+			i++
+			continue
+		}
 		pos := off + done
-		blk := uint32(pos / blockSize)
-		bo := pos % blockSize
-		chunk := int64(blockSize) - bo
-		if chunk > want-done {
-			chunk = want - done
-		}
-		src, err := fs.blockFor(ino, blk)
-		if err != nil {
-			return int(done), err
-		}
-		if src == nil {
-			for i := int64(0); i < chunk; i++ {
-				p[done+i] = 0
+		chunk := want - done
+		if i >= len(ino.Extents) || pos < int64(ino.Extents[i].Offset)*blockSize {
+			if i < len(ino.Extents) {
+				chunk = min(chunk, int64(ino.Extents[i].Offset)*blockSize-pos)
 			}
+			clear(p[done : done+chunk])
 		} else {
-			copy(p[done:done+chunk], src[bo:bo+chunk])
+			e := ino.Extents[i]
+			start := int64(e.Offset) * blockSize
+			end := start + int64(e.Len)*blockSize
+			chunk = min(chunk, end-pos)
+			// Read a contiguous extent directly into the caller's buffer,
+			// avoiding a temporary allocation and cache lookup per block.
+			physical := (fs.base+int64(e.Block))*blockSize + pos - start
+			n, err := fs.r.ReadAt(p[done:done+chunk], physical)
+			done += int64(n)
+			if err != nil {
+				return int(done), err
+			}
+			if int64(n) != chunk {
+				return int(done), io.ErrUnexpectedEOF
+			}
+			if pos+chunk == end {
+				i++
+			}
+			continue
 		}
 		done += chunk
 	}
@@ -190,19 +211,6 @@ func (fs *FS) ReadAt(ino *Inode, p []byte, off int64) (int, error) {
 		return int(done), io.EOF
 	}
 	return int(done), nil
-}
-
-// blockFor maps a logical file block to its data, or nil for a hole.
-func (fs *FS) blockFor(ino *Inode, logical uint32) ([]byte, error) {
-	i := sort.Search(len(ino.Extents), func(i int) bool {
-		e := ino.Extents[i]
-		return e.Offset+e.Len > logical
-	})
-	if i >= len(ino.Extents) || ino.Extents[i].Offset > logical {
-		return nil, nil // hole
-	}
-	e := ino.Extents[i]
-	return fs.readBlock(int64(e.Block + (logical - e.Offset)))
 }
 
 // ReadDir parses directory blocks: magic 0xbeef, a slot-offset table, and

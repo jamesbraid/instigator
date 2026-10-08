@@ -185,6 +185,15 @@ func TestIndirectExtents(t *testing.T) {
 			t.Fatalf("block %d starts with %q, want %q", i, p[0], c)
 		}
 	}
+	all := make([]byte, len(want)*512)
+	if n, err := fs.ReadAt(node, all, 0); n != len(all) || err != nil {
+		t.Fatalf("read across indirect extents = %d, %v", n, err)
+	}
+	for i, c := range want {
+		if !bytes.Equal(all[i*512:(i+1)*512], bytes.Repeat([]byte{c}, 512)) {
+			t.Fatalf("indirect extent %d has incorrect data", i)
+		}
+	}
 }
 
 func TestReadlink(t *testing.T) {
