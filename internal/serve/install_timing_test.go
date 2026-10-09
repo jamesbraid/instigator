@@ -216,3 +216,69 @@ func TestRSHRecordsAllGeneratedInstallScripts(t *testing.T) {
 type failedInstallOutput struct{}
 
 func (failedInstallOutput) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+// Each pass of a two-pass script is its own timed attempt: the first go's
+// return hands off to the second pass, whose go returns separately.
+func TestRSHTimesBothPassesOfAnAddonScript(t *testing.T) {
+	cfg := addonConfig(t)
+	dir := t.TempDir()
+	rec, err := capture.New(dir, capture.WithSummaryWriter(io.Discard))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := Start(cfg, nil, withRSHHighPorts(), withRecorder(rec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	fetch := func(path string) string {
+		t.Helper()
+		conn, err := net.Dial("tcp", s.RSHAddr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		fmt.Fprint(conn, "0\x00root\x00root\x00exec /bin/sh\x00")
+		fmt.Fprintf(conn, "ls -ln %s >/dev/null && cat %s\n", path, path)
+		conn.(*net.TCPConn).CloseWrite()
+		body, err := io.ReadAll(conn)
+		if err != nil || len(body) == 0 || body[0] != 0 {
+			t.Fatalf("rsh fetch %s: %q, %v", path, body, err)
+		}
+		return string(body[1:])
+	}
+	first := fetch(sourcedPath(t, fetch("/addon-rad4.cmds")))
+	lines := strings.Split(strings.TrimSpace(first), "\n")
+	if len(lines) != 3 || lines[0] != "go" {
+		t.Fatalf("first pass go file = %q", first)
+	}
+	returned, _ := strings.CutPrefix(lines[1], "admin source 192.0.2.10:")
+	if fetch(returned) != "\n" {
+		t.Fatalf("first return marker %s not served", returned)
+	}
+	then := fetch(sourcedPath(t, first))
+	second := fetch(sourcedPath(t, then))
+	if !strings.HasPrefix(second, "go\n") || strings.Count(second, "\n") != 2 || fetch(sourcedPath(t, second)) != "\n" {
+		t.Fatalf("second pass go file = %q", second)
+	}
+	if err := s.CloseWithReason("disconnected"); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "summary.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summary capture.Summary
+	if err := json.Unmarshal(body, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if len(summary.Installs) != 2 {
+		t.Fatalf("install attempts = %+v", summary.Installs)
+	}
+	for i, script := range []string{"addon-rad4.cmds", "addon-rad4.cmds then"} {
+		attempt := summary.Installs[i]
+		if attempt.Script != script || attempt.Result != "returned" || attempt.DurationMS == nil {
+			t.Errorf("wrong install summary: %+v", attempt)
+		}
+	}
+}

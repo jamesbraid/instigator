@@ -179,6 +179,35 @@ IRIX release stream: the default feature stream, or `maintenance` for the
 fixes-only maintenance overlays. `install` is reserved for the baseline, so no
 script may take that name.
 
+### Add-on sets
+
+Third-party products that install into paths the operating system makes
+symbolic links, such as a graphics driver writing below `/var/sysgen/boot`,
+must be installed after the operating system. Installed in the same `go`,
+`inst` can create a real directory first, and the link the operating system's
+own product makes later is never created. Mark such a set `addon: true` and
+install from it in a script's `then:` pass:
+
+```yaml
+install_sets:
+  - name: addon-rad4
+    addon: true
+    layers:
+      - {name: rad4, source: https://media.example.com/rad4x_65_13k.tar.gz, dist: dist_6.5}
+
+install_scripts:
+  - name: addon-rad4
+    then:
+      sets: [addon-rad4]
+      install: [rad4x.sw.driver, rad4x.sw.xserver, rad4x.man]
+```
+
+No first pass opens an add-on set, including `/install.cmds`. After the first
+`go` returns to `Inst>`, the script opens the `then` sets, keeps everything
+already installed, selects the named products and runs `go` again. `then.sets`
+must name enabled add-on sets, and `instigator check` requires each
+`then.install` name to have a `.sw` or `.man` file in them.
+
 ## Development
 
 Run the test suite with:

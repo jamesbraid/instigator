@@ -20,12 +20,26 @@ func installStartPath(script string) string {
 	return "/__instigator/" + script + "/start.cmds"
 }
 
+// installThenPath holds a script's second pass, sourced after its first go
+// returns. installThenStartPath times that pass's go.
+func installThenPath(script string) string {
+	return "/__instigator/" + script + "/then.cmds"
+}
+
+func installThenStartPath(script string) string {
+	return "/__instigator/" + script + "/then/start.cmds"
+}
+
 func installReturnPath(attempt string) string {
 	return "/" + installReturnPrefix + attempt + "/returned.cmds"
 }
 
-func installGoCommands(server, attempt string) string {
-	return fmt.Sprintf("go\nadmin source %s:%s\n", server, installReturnPath(attempt))
+func installGoCommands(server, attempt, next string) string {
+	commands := fmt.Sprintf("go\nadmin source %s:%s\n", server, installReturnPath(attempt))
+	if next != "" {
+		commands += fmt.Sprintf("admin source %s:%s\n", server, next)
+	}
+	return commands
 }
 
 // installScripts serves token-bearing command files without changing the
@@ -33,11 +47,17 @@ func installGoCommands(server, attempt string) string {
 // written to the client; fetching it again yields a separate attempt.
 type installScripts struct {
 	server   string
-	starts   map[string]string
+	starts   map[string]installEntry
 	logger   *logging.Logger
 	rec      *capture.Recorder
 	mu       sync.Mutex
 	attempts map[string]*installAttempt
+}
+
+// installEntry is one timed go: the script pass it belongs to and the
+// command file sourced after it returns.
+type installEntry struct {
+	script, next string
 }
 
 type installAttempt struct {
@@ -49,11 +69,11 @@ type installAttempt struct {
 func newInstallScripts(server string, generated []generatedFile, logger *logging.Logger, rec *capture.Recorder) *installScripts {
 	s := &installScripts{
 		server: server, logger: logger, rec: rec,
-		starts: make(map[string]string), attempts: make(map[string]*installAttempt),
+		starts: make(map[string]installEntry), attempts: make(map[string]*installAttempt),
 	}
 	for _, file := range generated {
-		if file.generator == "admin-source" {
-			s.starts[fsName(installStartPath(strings.TrimSuffix(file.path, ".cmds")))] = file.path
+		if file.generator == "install-timing" {
+			s.starts[file.path] = installEntry{script: file.script, next: file.next}
 		}
 	}
 	return s
@@ -63,11 +83,11 @@ func (s *installScripts) open(name, client, address string) (instcmd.File, bool,
 	if s == nil {
 		return nil, false, nil
 	}
-	if script, ok := s.starts[name]; ok {
+	if entry, ok := s.starts[name]; ok {
 		var token [16]byte
 		rand.Read(token[:])
-		attempt := &installAttempt{id: hex.EncodeToString(token[:]), script: script, client: client, address: address}
-		return newInstallFile([]byte(installGoCommands(s.server, attempt.id)), func() {
+		attempt := &installAttempt{id: hex.EncodeToString(token[:]), script: entry.script, client: client, address: address}
+		return newInstallFile([]byte(installGoCommands(s.server, attempt.id, entry.next)), func() {
 			s.mu.Lock()
 			defer s.mu.Unlock()
 			attempt.start = time.Now()

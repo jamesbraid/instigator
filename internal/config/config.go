@@ -43,9 +43,12 @@ type Layer struct {
 // full logical path written by more than one layer, which layer's copy
 // wins. Replacements names a later layer that replaces files from an
 // earlier layer across the set; an exact collision winner takes precedence.
+// Addon marks a set that no first pass opens: only a script's Then pass
+// installs from it, after the operating system is on the target.
 type InstallSet struct {
 	Name         string
 	Enabled      bool
+	Addon        bool
 	Layers       []Layer
 	Collisions   map[string]string
 	Replacements map[string]string
@@ -57,13 +60,25 @@ type InstallSet struct {
 // Keep, and Remove add inst install/keep/remove lines. Stream selects the IRIX
 // release stream - "" or "feature" is the default feature stream and emits no
 // extra directive, "maintenance" emits "install maint". The script is served at
-// /<Name>.cmds.
+// /<Name>.cmds. Then, when set, is a second pass run after the first go
+// returns.
 type InstallScript struct {
 	Name    string
 	Install []string
 	Keep    []string
 	Remove  []string
 	Stream  string
+	Then    *ThenPass
+}
+
+// ThenPass opens add-on sets after the first pass has installed the
+// operating system and installs only the named products from them. An
+// add-on whose files go below paths that the operating system makes
+// symbolic links, such as /var/sysgen/boot, needs those links in place
+// first, which a single pass does not guarantee.
+type ThenPass struct {
+	Sets    []string
+	Install []string
 }
 
 // TFTPService holds the tftp toggle and its transfer port range.
@@ -126,6 +141,7 @@ type raw struct {
 	InstallSets []struct {
 		Name    string `yaml:"name"`
 		Enabled *bool  `yaml:"enabled"`
+		Addon   bool   `yaml:"addon"`
 		Layers  []struct {
 			Name   string `yaml:"name"`
 			Source string `yaml:"source"`
@@ -143,6 +159,10 @@ type raw struct {
 		Keep    []string `yaml:"keep"`
 		Remove  []string `yaml:"remove"`
 		Stream  string   `yaml:"stream"`
+		Then    *struct {
+			Sets    []string `yaml:"sets"`
+			Install []string `yaml:"install"`
+		} `yaml:"then"`
 	} `yaml:"install_scripts"`
 	Services *struct {
 		BOOTP *bool `yaml:"bootp"`
@@ -293,12 +313,19 @@ func Parse(b []byte) (*Config, error) {
 		c.InstallSets = append(c.InstallSets, InstallSet{
 			Name:         rs.Name,
 			Enabled:      enabled,
+			Addon:        rs.Addon,
 			Layers:       layers,
 			Collisions:   rs.Collisions,
 			Replacements: rs.Replacements,
 		})
 	}
 
+	addonSets := make(map[string]bool)
+	for _, set := range c.InstallSets {
+		if set.Addon && set.Enabled {
+			addonSets[set.Name] = true
+		}
+	}
 	scriptNames := make(map[string]bool, len(r.InstallScripts))
 	for i, rsc := range r.InstallScripts {
 		if rsc.Name == "" {
@@ -323,12 +350,26 @@ func Parse(b []byte) (*Config, error) {
 		default:
 			return nil, fmt.Errorf("config: install_scripts[%d] (%s): stream %q must be \"feature\" or \"maintenance\"", i, rsc.Name, rsc.Stream)
 		}
+		var then *ThenPass
+		var thenInstall []string
+		if rsc.Then != nil {
+			if len(rsc.Then.Sets) == 0 || len(rsc.Then.Install) == 0 {
+				return nil, fmt.Errorf("config: install_scripts[%d] (%s): then needs at least one set and one install entry", i, rsc.Name)
+			}
+			for _, name := range rsc.Then.Sets {
+				if !addonSets[name] {
+					return nil, fmt.Errorf("config: install_scripts[%d] (%s): then set %q is not an enabled addon set", i, rsc.Name, name)
+				}
+			}
+			then = &ThenPass{Sets: rsc.Then.Sets, Install: rsc.Then.Install}
+			thenInstall = rsc.Then.Install
+		}
 		// Each selection entry becomes one inst command line, so an empty or
 		// multi-line token would corrupt the generated command file.
 		for _, g := range []struct {
 			field   string
 			entries []string
-		}{{"install", rsc.Install}, {"keep", rsc.Keep}, {"remove", rsc.Remove}} {
+		}{{"install", rsc.Install}, {"keep", rsc.Keep}, {"remove", rsc.Remove}, {"then.install", thenInstall}} {
 			for _, e := range g.entries {
 				if e == "" || strings.ContainsAny(e, "\n\r") {
 					return nil, fmt.Errorf("config: install_scripts[%d] (%s): %s entry %q must be a single non-empty token", i, rsc.Name, g.field, e)
@@ -341,6 +382,7 @@ func Parse(b []byte) (*Config, error) {
 			Keep:    rsc.Keep,
 			Remove:  rsc.Remove,
 			Stream:  rsc.Stream,
+			Then:    then,
 		})
 	}
 

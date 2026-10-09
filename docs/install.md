@@ -67,10 +67,24 @@ its path. The named script opens the same sets in the same order, then applies
 the standard selection plus that script's own
 `install`/`keep`/`remove` lines and release stream.
 
+### Add-on second pass
+
+A script with a `then:` pass installs add-on sets after the operating system.
+Its first `go` installs from every enabled set that is not an add-on. When
+that `go` returns to `Inst>`, the script opens the add-on distributions, runs
+`keep *`, selects the configured add-on products and runs `go` again. Opening
+an add-on distribution at this point does not show the `Install software
+from` menu. After the second `go` returns, `quit` and answer the restart
+prompt as usual. An IRIX 6.5.30 install of the PsiTech RAD4 driver this way
+relinked the kernel with the driver during `quit`'s automatic
+reconfiguration, and the first boot loaded it.
+
 ### Install timing
 
 Every generated script uses native `admin source` handoffs to time `go`.
-Each execution gets a separate token to identify its start and return.
+Each execution gets a separate token to identify its start and return. A
+script with a second pass records two attempts: `NAME.cmds` for the first
+`go` and `NAME.cmds then` for the second.
 
 Timestamped INFO logs identify the script, client, and attempt. Return records
 include elapsed time. Capture and `-v` are optional. Example with token abbreviated:

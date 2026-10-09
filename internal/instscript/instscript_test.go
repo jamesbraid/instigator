@@ -265,3 +265,28 @@ func TestRelatedDistsIsDeterministic(t *testing.T) {
 		t.Error("RelatedDists is not deterministic for identical input")
 	}
 }
+
+// TestThenCommandsExactSequence pins the second pass byte for byte: open
+// the add-on sets, keep what the first pass installed, select only the
+// add-on products, then hand off to the timed go.
+func TestThenCommandsExactSequence(t *testing.T) {
+	p := ThenParams{
+		ServerIP:  "192.0.2.10",
+		Sets:      []string{"/addon-rad4/dist"},
+		Install:   []string{"rad4x.sw.driver", "rad4x.man"},
+		StartPath: "/__instigator/addon-rad4/then/start.cmds",
+	}
+	want := "" +
+		"open 192.0.2.10:/addon-rad4/dist\n" +
+		"keep *\n" +
+		"install rad4x.sw.driver\n" +
+		"install rad4x.man\n" +
+		"admin source 192.0.2.10:/__instigator/addon-rad4/then/start.cmds\n"
+	if got := ThenCommands(p); got != want {
+		t.Errorf("ThenCommands() = %q, want %q", got, want)
+	}
+	p.StartPath = ""
+	if got := ThenCommands(p); !strings.HasSuffix(got, "install rad4x.man\ngo\n") {
+		t.Errorf("standalone second pass does not end with go: %q", got)
+	}
+}

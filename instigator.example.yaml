@@ -127,6 +127,18 @@ install_sets:
 # "keep", and "remove" add those inst lines after the standard selection.
 # "stream" picks the IRIX release stream: the default feature stream, or
 # "maintenance" to follow the fixes-only maintenance overlays instead.
+# A set marked "addon: true" is never opened by a first pass. A script's
+# "then" pass opens it after the first go returns and installs only the
+# named products, so an add-on's files land after the operating system has
+# made the symbolic links they install through:
+#   - name: addon-rad4        # under install_sets
+#     addon: true
+#     layers:
+#       - {name: rad4, source: /media/rad4x_65_13k.tar.gz, dist: dist_6.5}
+#   - name: addon-rad4        # under install_scripts
+#     then:
+#       sets: [addon-rad4]
+#       install: [rad4x.sw.driver, rad4x.sw.xserver, rad4x.man]
 # install_scripts:
 #   - name: debug
 #     install:

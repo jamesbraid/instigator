@@ -316,13 +316,15 @@ func buildTree(cfg *config.Config) (*vfs.Tree, profile, error) {
 	return tree, prof, nil
 }
 
-// A named script must only select products that the enabled distributions
-// serve. An archive left as a single tar file can otherwise pass the media
-// build while inst finds no products after opening its distribution.
+// A named script must only select products that the distributions its pass
+// opens serve. An archive left as a single tar file can otherwise pass the
+// media build while inst finds no products after opening its distribution.
+// The first pass opens every enabled set except add-ons; a then pass opens
+// only its named add-on sets.
 func checkInstallSelections(cfg *config.Config, tree *vfs.Tree) error {
 	var enabled []string
 	for _, set := range cfg.InstallSets {
-		if set.Enabled {
+		if set.Enabled && !set.Addon {
 			enabled = append(enabled, set.Name)
 		}
 	}
@@ -330,37 +332,49 @@ func checkInstallSelections(cfg *config.Config, tree *vfs.Tree) error {
 		return nil
 	}
 	for _, script := range cfg.InstallScripts {
-		for _, selection := range script.Install {
-			product := selection
-			fileSuffixes := []string{".sw", ".man"}
-			for _, suffix := range []string{".sw", ".man"} {
-				if index := strings.Index(selection, suffix); index >= 0 &&
-					(index+len(suffix) == len(selection) || selection[index+len(suffix)] == '.') {
-					product = selection[:index]
-					fileSuffixes = []string{suffix}
-					break
-				}
+		if err := checkSelections(tree, script.Name, "", script.Install, enabled); err != nil {
+			return err
+		}
+		if script.Then != nil {
+			if err := checkSelections(tree, script.Name, "then ", script.Then.Install, script.Then.Sets); err != nil {
+				return err
 			}
-			wantFiles := make([]string, 0, len(fileSuffixes))
+		}
+	}
+	return nil
+}
+
+func checkSelections(tree *vfs.Tree, script, pass string, selections, sets []string) error {
+	for _, selection := range selections {
+		product := selection
+		fileSuffixes := []string{".sw", ".man"}
+		for _, suffix := range []string{".sw", ".man"} {
+			if index := strings.Index(selection, suffix); index >= 0 &&
+				(index+len(suffix) == len(selection) || selection[index+len(suffix)] == '.') {
+				product = selection[:index]
+				fileSuffixes = []string{suffix}
+				break
+			}
+		}
+		wantFiles := make([]string, 0, len(fileSuffixes))
+		for _, suffix := range fileSuffixes {
+			wantFiles = append(wantFiles, product+suffix)
+		}
+		found := false
+		for _, set := range sets {
 			for _, suffix := range fileSuffixes {
-				wantFiles = append(wantFiles, product+suffix)
-			}
-			found := false
-			for _, set := range enabled {
-				for _, suffix := range fileSuffixes {
-					info, err := tree.Stat(set + "/dist/" + product + suffix)
-					if err == nil && info.Mode().IsRegular() {
-						found = true
-						break
-					}
-				}
-				if found {
+				info, err := tree.Stat(set + "/dist/" + product + suffix)
+				if err == nil && info.Mode().IsRegular() {
+					found = true
 					break
 				}
 			}
-			if !found {
-				return fmt.Errorf("install script %q selects %q, but no enabled distribution contains %s", script.Name, selection, strings.Join(wantFiles, " or "))
+			if found {
+				break
 			}
+		}
+		if !found {
+			return fmt.Errorf("install script %q %sselects %q, but no distribution it opens contains %s", script, pass, selection, strings.Join(wantFiles, " or "))
 		}
 	}
 	return nil
@@ -634,11 +648,15 @@ type profile struct {
 }
 
 // generatedFile is one file instigator synthesizes: its tree path,
-// recorded origin, and bytes.
+// recorded origin, and bytes. An install-timing entry point also names the
+// script pass it times and the command file it hands off to after its go
+// returns, if any.
 type generatedFile struct {
 	path      string
 	generator string
 	content   []byte
+	script    string
+	next      string
 }
 
 // generate adds the machine-consumed files instigator serves alongside
@@ -652,8 +670,10 @@ type generatedFile struct {
 // just not offered.
 func generate(cfg *config.Config, tree *vfs.Tree) (profile, error) {
 	var p profile
+	// Add-on sets stay out of the first pass, so no script can install an
+	// add-on before the operating system it builds on.
 	for _, set := range cfg.InstallSets {
-		if !set.Enabled {
+		if !set.Enabled || set.Addon {
 			continue
 		}
 		if p.primary == "" {
@@ -675,31 +695,57 @@ func generate(cfg *config.Config, tree *vfs.Tree) (profile, error) {
 		p.bootPath = boot
 	}
 
-	// Keep every script and its timing entrypoint together. The entrypoint's
-	// fixed-size token is replaced by the rsh adapter for each execution.
-	addScript := func(name string, selection instscript.Selection) {
+	// Keep every script and its timing entrypoints together. An
+	// entrypoint's fixed-size token is replaced by the rsh adapter for each
+	// execution.
+	server := cfg.ServerIP.String()
+	timing := func(path, script, next string) generatedFile {
+		return generatedFile{
+			path: fsName(path), generator: "install-timing", script: script, next: next,
+			content: []byte(installGoCommands(server, strings.Repeat("0", 32), next)),
+		}
+	}
+	addScript := func(name string, selection instscript.Selection, then *config.ThenPass) {
 		body := instscript.Commands(instscript.Params{
-			ServerIP:  cfg.ServerIP.String(),
+			ServerIP:  server,
 			Sets:      p.dists,
 			StartPath: installStartPath(name),
 			Selection: selection,
 		})
+		next := ""
+		if then != nil {
+			next = installThenPath(name)
+		}
 		p.generated = append(p.generated, generatedFile{
 			path:      name + ".cmds",
 			generator: "admin-source",
 			content:   []byte(body),
-		}, generatedFile{
-			path: fsName(installStartPath(name)), generator: "install-timing",
-			content: []byte(installGoCommands(cfg.ServerIP.String(), strings.Repeat("0", 32))),
-		})
+		}, timing(installStartPath(name), name+".cmds", next))
+		if then == nil {
+			return
+		}
+		var sets []string
+		for _, set := range then.Sets {
+			sets = append(sets, "/"+set+"/dist")
+		}
+		p.generated = append(p.generated, generatedFile{
+			path:      fsName(installThenPath(name)),
+			generator: "admin-source-then",
+			content: []byte(instscript.ThenCommands(instscript.ThenParams{
+				ServerIP:  server,
+				Sets:      sets,
+				Install:   then.Install,
+				StartPath: installThenStartPath(name),
+			})),
+		}, timing(installThenStartPath(name), name+".cmds then", ""))
 	}
-	addScript("install", instscript.Selection{})
+	addScript("install", instscript.Selection{}, nil)
 	p.generated = append(p.generated, generatedFile{
 		path: p.primary + "/dist/.related_dists", generator: "related-dists",
 		content: []byte(instscript.RelatedDists(p.dists)),
 	})
 	for _, sc := range cfg.InstallScripts {
-		addScript(sc.Name, instscript.Selection{Stream: sc.Stream, Install: sc.Install, Keep: sc.Keep, Remove: sc.Remove})
+		addScript(sc.Name, instscript.Selection{Stream: sc.Stream, Install: sc.Install, Keep: sc.Keep, Remove: sc.Remove}, sc.Then)
 	}
 	for _, f := range p.generated {
 		if err := tree.AddGenerated(f.path, f.generator, f.content); err != nil {

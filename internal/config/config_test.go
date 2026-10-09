@@ -206,6 +206,36 @@ func TestRejects(t *testing.T) {
 			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
 			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]\n" +
 			"install_scripts: [{name: dbg, stream: nightly}]",
+		// A then pass installs add-ons only, after the first pass has
+		// installed the operating system from every other set.
+		"then naming a set that is not an addon": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]\n" +
+			"install_scripts: [{name: dbg, then: {sets: [m], install: [a]}}]",
+		"then naming an unknown set": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]\n" +
+			"install_scripts: [{name: dbg, then: {sets: [x], install: [a]}}]",
+		"then naming a disabled addon": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}, " +
+			"{name: x, addon: true, enabled: false, layers: [{name: x, source: /media/x.tar.gz}]}]\n" +
+			"install_scripts: [{name: dbg, then: {sets: [x], install: [a]}}]",
+		"then without sets": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}, " +
+			"{name: x, addon: true, layers: [{name: x, source: /media/x.tar.gz}]}]\n" +
+			"install_scripts: [{name: dbg, then: {install: [a]}}]",
+		"then without install": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}, " +
+			"{name: x, addon: true, layers: [{name: x, source: /media/x.tar.gz}]}]\n" +
+			"install_scripts: [{name: dbg, then: {sets: [x]}}]",
+		"then entry with a newline": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}, " +
+			"{name: x, addon: true, layers: [{name: x, source: /media/x.tar.gz}]}]\n" +
+			"install_scripts: [{name: dbg, then: {sets: [x], install: [\"a\\nb\"]}}]",
 		// A newline in a selection entry would break inst's one-command-per-line
 		// command file.
 		"script entry with a newline": "server_ip: 192.0.2.10\n" +
@@ -317,6 +347,35 @@ install_scripts:
 	}
 	if len(m.Remove) != 1 || m.Remove[0] != "old.sw.thing" {
 		t.Fatalf("script 1 remove = %+v", m.Remove)
+	}
+}
+
+func TestParseAddonSetAndThenPass(t *testing.T) {
+	cfg, err := Parse([]byte(`
+server_ip: 10.0.0.1
+clients: [{name: a, mac: "02:00:00:00:00:01", ip: 10.0.0.2}]
+install_sets:
+  - name: m
+    layers: [{name: base, source: /media/m/base.iso}]
+  - name: addon-rad4
+    addon: true
+    layers: [{name: rad4, source: /media/rad4x.tar.gz, dist: dist_6.5}]
+install_scripts:
+  - name: addon-rad4
+    then:
+      sets: [addon-rad4]
+      install: [rad4x.sw.driver, rad4x.man]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.InstallSets[0].Addon || !cfg.InstallSets[1].Addon || !cfg.InstallSets[1].Enabled {
+		t.Fatalf("install sets = %+v", cfg.InstallSets)
+	}
+	then := cfg.InstallScripts[0].Then
+	if then == nil || len(then.Sets) != 1 || then.Sets[0] != "addon-rad4" ||
+		len(then.Install) != 2 || then.Install[1] != "rad4x.man" {
+		t.Fatalf("then = %+v", then)
 	}
 }
 

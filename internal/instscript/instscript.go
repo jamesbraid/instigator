@@ -1,6 +1,7 @@
 // Package instscript generates the command file loaded by IRIX inst. It
 // opens supplemental sets in order, reopens the primary set last, applies
-// the tested selections, and starts installation.
+// the tested selections, and starts installation. A second pass can then
+// install add-on products on top of the installed operating system.
 package instscript
 
 import (
@@ -80,6 +81,43 @@ func Commands(p Params) string {
 	}
 	for _, s := range p.Selection.Remove {
 		fmt.Fprintf(&b, "remove %s\n", s)
+	}
+	if p.StartPath == "" {
+		b.WriteString("go\n")
+	} else {
+		fmt.Fprintf(&b, "admin source %s:%s\n", p.ServerIP, p.StartPath)
+	}
+	return b.String()
+}
+
+// ThenParams fills in the second pass of a script, run after the first go
+// has returned to Inst>.
+type ThenParams struct {
+	// ServerIP is the netinstall server's address.
+	ServerIP string
+	// Sets holds the served dist path of every add-on set the pass opens.
+	Sets []string
+	// Install lists the inst product/subsystem tokens to install from them.
+	Install []string
+	// StartPath hands off to a generated file that runs go and reports its
+	// return. Empty ends the pass with a plain go.
+	StartPath string
+}
+
+// ThenCommands returns the second pass: open the add-on sets, keep
+// everything already installed, select only the named add-on products and
+// start installation. Running it as its own go installs the operating
+// system first, so the add-on's files go through the symbolic links the
+// operating system's products create, such as /var/sysgen/boot, instead
+// of making real directories in their place.
+func ThenCommands(p ThenParams) string {
+	var b strings.Builder
+	for _, set := range p.Sets {
+		fmt.Fprintf(&b, "open %s:%s\n", p.ServerIP, set)
+	}
+	b.WriteString("keep *\n")
+	for _, s := range p.Install {
+		fmt.Fprintf(&b, "install %s\n", s)
 	}
 	if p.StartPath == "" {
 		b.WriteString("go\n")

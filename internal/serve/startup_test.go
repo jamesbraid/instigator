@@ -511,3 +511,75 @@ func TestNoEnabledSetsGeneratesNothing(t *testing.T) {
 		t.Errorf("disabled set is not served: %q", got)
 	}
 }
+
+// addonConfig adds an add-on set and a script that installs from it in a
+// second pass.
+func addonConfig(t *testing.T) *config.Config {
+	t.Helper()
+	cfg := fourSetConfig(t, true)
+	cfg.InstallSets = append(cfg.InstallSets, config.InstallSet{
+		Name:    "addon-rad4",
+		Enabled: true,
+		Addon:   true,
+		Layers: []config.Layer{{
+			Name:   "rad4",
+			Source: distImage(t, t.TempDir(), "rad4.image", "rad4x.sw"),
+		}},
+	})
+	cfg.InstallScripts = []config.InstallScript{{
+		Name: "addon-rad4",
+		Then: &config.ThenPass{Sets: []string{"addon-rad4"}, Install: []string{"rad4x.sw.driver"}},
+	}}
+	return cfg
+}
+
+// No first pass opens an add-on set, so neither the baseline nor a named
+// script can install add-on files before the operating system's own. The
+// add-on script reaches its second pass only after the first go returns.
+func TestAddonSetOpensOnlyInTheSecondPass(t *testing.T) {
+	s, c := captureStart(t, addonConfig(t))
+	for _, name := range []string{"install.cmds", "addon-rad4.cmds", "6.5.30/dist/.related_dists"} {
+		if strings.Contains(served(t, s, name), "addon-rad4/dist") {
+			t.Errorf("%s opens the add-on set:\n%s", name, served(t, s, name))
+		}
+	}
+	for _, l := range c.instructions {
+		if strings.Contains(l, "addon-rad4/dist") {
+			t.Errorf("add-on set offered as a distribution: %q", l)
+		}
+	}
+	wantFirst := instscript.Commands(instscript.Params{ServerIP: "192.0.2.10", Sets: fourSetDists, StartPath: installStartPath("addon-rad4")})
+	if got := served(t, s, "addon-rad4.cmds"); got != wantFirst {
+		t.Errorf("addon-rad4.cmds =\n%q\nwant\n%q", got, wantFirst)
+	}
+	start := served(t, s, fsName(installStartPath("addon-rad4")))
+	if !strings.HasPrefix(start, "go\n") || !strings.HasSuffix(start, "\nadmin source 192.0.2.10:"+installThenPath("addon-rad4")+"\n") {
+		t.Errorf("first pass does not hand off to the second after go:\n%s", start)
+	}
+	wantThen := instscript.ThenCommands(instscript.ThenParams{
+		ServerIP: "192.0.2.10", Sets: []string{"/addon-rad4/dist"},
+		Install: []string{"rad4x.sw.driver"}, StartPath: installThenStartPath("addon-rad4"),
+	})
+	if got := served(t, s, fsName(installThenPath("addon-rad4"))); got != wantThen {
+		t.Errorf("second pass =\n%q\nwant\n%q", got, wantThen)
+	}
+	if start := served(t, s, fsName(installStartPath("install"))); strings.Count(start, "admin source") != 1 {
+		t.Errorf("baseline gained a second pass:\n%s", start)
+	}
+}
+
+func TestCheckLimitsEachPassToTheSetsItOpens(t *testing.T) {
+	cfg := addonConfig(t)
+	if err := Check(cfg); err != nil {
+		t.Fatalf("check rejected the add-on in its second pass: %v", err)
+	}
+	cfg.InstallScripts[0].Then.Install = []string{"apps.sw.base"}
+	if err := Check(cfg); err == nil || !strings.Contains(err.Error(), "then selects \"apps.sw.base\"") {
+		t.Fatalf("check accepted a second-pass product outside its add-on sets: %v", err)
+	}
+	cfg.InstallScripts[0].Then.Install = []string{"rad4x.sw.driver"}
+	cfg.InstallScripts[0].Install = []string{"rad4x.sw.driver"}
+	if err := Check(cfg); err == nil || !strings.Contains(err.Error(), "rad4x.sw.driver") {
+		t.Fatalf("check accepted a first-pass add-on product: %v", err)
+	}
+}
