@@ -1,6 +1,7 @@
 package config
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -467,5 +468,102 @@ install_sets:
 		if err == nil {
 			t.Fatalf("accepted %s", replacement)
 		}
+	}
+}
+
+const serverPrefix = "server_ip: 192.0.2.10\n" +
+	"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n"
+
+// ParseInstallSets reads a file of install sets alone, which Parse
+// refuses, and the sets of a full configuration alike. It ignores the
+// server's settings, even an invalid install script.
+func TestParseInstallSets(t *testing.T) {
+	const sets = `
+install_scripts: [{name: install}]
+cache_dir: /var/x
+credentials: [{host: h.example, username: u, password: "${EXTRACT_TEST_PW}"}]
+install_sets:
+  - name: "6.5.30"
+    layers:
+      - {name: f1, source: /f1.iso, boot: true}
+      - {name: ov1, source: /media/ov1, dist: dist6.5}
+    collisions: {"a/b": f1}
+    replacements: {f1: ov1}
+    after: [spare]
+  - name: spare
+    enabled: false
+    layers: [{name: base, source: /media/spare}]
+`
+	t.Setenv("EXTRACT_TEST_PW", "secret")
+	cfg, err := ParseInstallSets([]byte(sets))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []InstallSet{
+		{Name: "6.5.30", Enabled: true, Layers: []Layer{
+			{Name: "f1", Source: "/f1.iso", Dist: "dist", Boot: true},
+			{Name: "ov1", Source: "/media/ov1", Dist: "dist6.5"},
+		}, Collisions: map[string]string{"a/b": "f1"}, Replacements: map[string]string{"f1": "ov1"}, After: []string{"spare"}},
+		{Name: "spare", Layers: []Layer{{Name: "base", Source: "/media/spare", Dist: "dist"}}},
+	}
+	if !reflect.DeepEqual(cfg.InstallSets, want) {
+		t.Fatalf("sets = %+v\nwant %+v", cfg.InstallSets, want)
+	}
+	if cfg.CacheDir != "/var/x" || len(cfg.Credentials) != 1 || cfg.Credentials[0] != (Credential{Host: "h.example", Username: "u", Password: "secret"}) {
+		t.Errorf("cache_dir and credentials = %q, %+v", cfg.CacheDir, cfg.Credentials)
+	}
+	if _, err := Parse([]byte(sets)); err == nil {
+		t.Error("Parse accepted a file with no server_ip or clients")
+	}
+	full, err := Parse([]byte(sample))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ParseInstallSets([]byte(sample)); err != nil || !reflect.DeepEqual(got.InstallSets, full.InstallSets) {
+		t.Errorf("full config: %+v, %v; Parse gives %+v", got, err, full.InstallSets)
+	}
+}
+
+// ParseInstallSets applies the install-set rules TestRejects covers for
+// Parse; the after key adds two of its own.
+func TestInstallSetRules(t *testing.T) {
+	cases := map[string]string{
+		"no install sets":      "cache_dir: /x",
+		"layer with no source": "install_sets: [{name: m, layers: [{name: base}]}]",
+		"unknown after":        "install_sets: [{name: m, after: [x], layers: [{name: a, source: /a}]}]",
+		"after cycle": "install_sets: [{name: m, after: [n], layers: [{name: a, source: /a}]}, " +
+			"{name: n, after: [m], layers: [{name: b, source: /b}]}]",
+	}
+	for name, y := range cases {
+		if _, err := ParseInstallSets([]byte(y)); err == nil {
+			t.Errorf("%s: ParseInstallSets accepted", name)
+		}
+		if _, err := Parse([]byte(serverPrefix + y)); err == nil {
+			t.Errorf("%s: Parse accepted", name)
+		}
+	}
+}
+
+// A set is installed after every set its after key names, transitively, and
+// each set once.
+func TestInstallOrder(t *testing.T) {
+	cfg, err := ParseInstallSets([]byte(`install_sets:
+  - {name: top, after: [mid, root], layers: [{name: a, source: /a}]}
+  - {name: mid, after: [root], layers: [{name: b, source: /b}]}
+  - {name: root, layers: [{name: c, source: /c}]}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sets, err := cfg.InstallOrder("top")
+	var got []string
+	for _, s := range sets {
+		got = append(got, s.Name)
+	}
+	if err != nil || !reflect.DeepEqual(got, []string{"root", "mid", "top"}) {
+		t.Errorf("order = %v, %v", got, err)
+	}
+	if _, err := cfg.InstallOrder("absent"); err == nil {
+		t.Error("an unknown install set has an order")
 	}
 }

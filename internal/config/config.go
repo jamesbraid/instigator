@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -45,6 +46,8 @@ type Layer struct {
 // earlier layer across the set; an exact collision winner takes precedence.
 // Addon marks a set that no first pass opens: only a script's Then pass
 // installs from it, after the operating system is on the target.
+// After names the install sets this one is installed after, such as a base
+// release under its overlays. Only extraction reads it; see InstallOrder.
 type InstallSet struct {
 	Name         string
 	Enabled      bool
@@ -52,6 +55,7 @@ type InstallSet struct {
 	Layers       []Layer
 	Collisions   map[string]string
 	Replacements map[string]string
+	After        []string
 }
 
 // InstallScript is one named inst command file generated in addition to the
@@ -154,6 +158,7 @@ type raw struct {
 		} `yaml:"layers"`
 		Collisions   map[string]string `yaml:"collisions"`
 		Replacements map[string]string `yaml:"replacements"`
+		After        []string          `yaml:"after"`
 	} `yaml:"install_sets"`
 	InstallScripts []struct {
 		Name    string   `yaml:"name"`
@@ -188,16 +193,18 @@ func Parse(b []byte) (*Config, error) {
 	if err := yaml.Unmarshal(b, &r); err != nil {
 		return nil, err
 	}
-	c := &Config{
-		// SGI PROM tftp wants low source ports; the range caps under
-		// 32768 by default
-		Services: Services{
-			BOOTP: true,
-			TFTP:  TFTPService{Enabled: true, PortRange: [2]int{2048, 32767}},
-			RSH:   true,
-		},
-		Ports: Ports{BOOTP: 67, TFTP: 69, RSH: 514},
+	c, err := r.installSets()
+	if err != nil {
+		return nil, err
 	}
+	// SGI PROM tftp wants low source ports; the range caps under
+	// 32768 by default
+	c.Services = Services{
+		BOOTP: true,
+		TFTP:  TFTPService{Enabled: true, PortRange: [2]int{2048, 32767}},
+		RSH:   true,
+	}
+	c.Ports = Ports{BOOTP: 67, TFTP: 69, RSH: 514}
 
 	if r.ServerIP == "" {
 		return nil, fmt.Errorf("config: server_ip is required")
@@ -229,98 +236,6 @@ func Parse(b []byte) (*Config, error) {
 			return nil, fmt.Errorf("config: clients[%d] (%s): ip: %w", i, rc.Name, err)
 		}
 		c.Clients = append(c.Clients, Client{Name: rc.Name, MAC: mac, IP: cip})
-	}
-
-	for _, rc := range r.Credentials {
-		c.Credentials = append(c.Credentials, Credential{
-			Host:     rc.Host,
-			Username: rc.Username,
-			Password: expandEnv(rc.Password),
-		})
-	}
-	c.CacheDir = r.CacheDir
-
-	if len(r.InstallSets) == 0 {
-		return nil, fmt.Errorf("config: at least one install set is required")
-	}
-	setNames := make(map[string]bool, len(r.InstallSets))
-	for i, rs := range r.InstallSets {
-		if rs.Name == "" || len(rs.Layers) == 0 {
-			return nil, fmt.Errorf("config: install_sets[%d]: name and at least one layer are required", i)
-		}
-		// A set is served as one directory directly under the tree root,
-		// so its name has to be a single path element. "." and ".." name
-		// the root and its parent, and "a/b" would build a nested root no
-		// set owns.
-		if !fs.ValidPath(rs.Name) || rs.Name == "." || strings.Contains(rs.Name, "/") {
-			return nil, fmt.Errorf("config: install_sets[%d] (%s): name must be a single directory name", i, rs.Name)
-		}
-		if setNames[rs.Name] {
-			return nil, fmt.Errorf("config: install_sets[%d]: duplicate install set name %q", i, rs.Name)
-		}
-		setNames[rs.Name] = true
-		enabled := true
-		if rs.Enabled != nil {
-			enabled = *rs.Enabled
-		}
-		seen := make(map[string]bool, len(rs.Layers))
-		layers := make([]Layer, 0, len(rs.Layers))
-		boot := ""
-		for j, rl := range rs.Layers {
-			if rl.Name == "" {
-				return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d]: name is required", i, rs.Name, j)
-			}
-			if seen[rl.Name] {
-				return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d]: duplicate layer name %q", i, rs.Name, j, rl.Name)
-			}
-			seen[rl.Name] = true
-			if rl.Source == "" {
-				return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d] (%s): source is required", i, rs.Name, j, rl.Name)
-			}
-			// One stand directory can be served per set, so two layers
-			// claiming the boot role would leave which media the PROM
-			// fetches fx.64 from up to layer order.
-			if rl.Boot {
-				if boot != "" {
-					return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d] (%s): layer %q already boots this set", i, rs.Name, j, rl.Name, boot)
-				}
-				boot = rl.Name
-			}
-			dist := rl.Dist
-			if dist == "" {
-				dist = "dist"
-			}
-			layers = append(layers, Layer{
-				Name:   rl.Name,
-				Source: rl.Source,
-				Base:   rl.Base,
-				Dist:   dist,
-				Stand:  rl.Stand,
-				Boot:   rl.Boot,
-			})
-		}
-		for from, to := range rs.Replacements {
-			fromIndex, toIndex := -1, -1
-			for index, layer := range layers {
-				if layer.Name == from {
-					fromIndex = index
-				}
-				if layer.Name == to {
-					toIndex = index
-				}
-			}
-			if fromIndex < 0 || toIndex <= fromIndex {
-				return nil, fmt.Errorf("config: install_sets[%d] (%s): replacement %q -> %q must name layers in source-then-replacement order", i, rs.Name, from, to)
-			}
-		}
-		c.InstallSets = append(c.InstallSets, InstallSet{
-			Name:         rs.Name,
-			Enabled:      enabled,
-			Addon:        rs.Addon,
-			Layers:       layers,
-			Collisions:   rs.Collisions,
-			Replacements: rs.Replacements,
-		})
 	}
 
 	addonSets := make(map[string]bool)
@@ -424,6 +339,166 @@ func Parse(b []byte) (*Config, error) {
 		}
 	}
 	return c, nil
+}
+
+// ParseInstallSets decodes and validates only what building install sets
+// reads: the sets, and the credentials and cache directory their sources
+// are fetched with. Every other key is ignored, so a file holding only
+// install_sets is accepted. Extraction uses it.
+func ParseInstallSets(b []byte) (*Config, error) {
+	var r raw
+	if err := yaml.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
+	return r.installSets()
+}
+
+// installSets decodes and validates the install sets, and the credentials
+// and cache directory their sources are fetched with.
+func (r *raw) installSets() (*Config, error) {
+	c := &Config{}
+	for _, rc := range r.Credentials {
+		c.Credentials = append(c.Credentials, Credential{
+			Host:     rc.Host,
+			Username: rc.Username,
+			Password: expandEnv(rc.Password),
+		})
+	}
+	c.CacheDir = r.CacheDir
+
+	if len(r.InstallSets) == 0 {
+		return nil, fmt.Errorf("config: at least one install set is required")
+	}
+	setNames := make(map[string]bool, len(r.InstallSets))
+	for i, rs := range r.InstallSets {
+		if rs.Name == "" || len(rs.Layers) == 0 {
+			return nil, fmt.Errorf("config: install_sets[%d]: name and at least one layer are required", i)
+		}
+		// A set is served as one directory directly under the tree root,
+		// so its name has to be a single path element. "." and ".." name
+		// the root and its parent, and "a/b" would build a nested root no
+		// set owns.
+		if !IsDirName(rs.Name) {
+			return nil, fmt.Errorf("config: install_sets[%d] (%s): name must be a single directory name", i, rs.Name)
+		}
+		if setNames[rs.Name] {
+			return nil, fmt.Errorf("config: install_sets[%d]: duplicate install set name %q", i, rs.Name)
+		}
+		setNames[rs.Name] = true
+		enabled := true
+		if rs.Enabled != nil {
+			enabled = *rs.Enabled
+		}
+		seen := make(map[string]bool, len(rs.Layers))
+		layers := make([]Layer, 0, len(rs.Layers))
+		boot := ""
+		for j, rl := range rs.Layers {
+			if rl.Name == "" {
+				return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d]: name is required", i, rs.Name, j)
+			}
+			if seen[rl.Name] {
+				return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d]: duplicate layer name %q", i, rs.Name, j, rl.Name)
+			}
+			seen[rl.Name] = true
+			if rl.Source == "" {
+				return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d] (%s): source is required", i, rs.Name, j, rl.Name)
+			}
+			// One stand directory can be served per set, so two layers
+			// claiming the boot role would leave which media the PROM
+			// fetches fx.64 from up to layer order.
+			if rl.Boot {
+				if boot != "" {
+					return nil, fmt.Errorf("config: install_sets[%d] (%s): layers[%d] (%s): layer %q already boots this set", i, rs.Name, j, rl.Name, boot)
+				}
+				boot = rl.Name
+			}
+			dist := rl.Dist
+			if dist == "" {
+				dist = "dist"
+			}
+			layers = append(layers, Layer{
+				Name:   rl.Name,
+				Source: rl.Source,
+				Base:   rl.Base,
+				Dist:   dist,
+				Stand:  rl.Stand,
+				Boot:   rl.Boot,
+			})
+		}
+		for from, to := range rs.Replacements {
+			fromIndex, toIndex := -1, -1
+			for index, layer := range layers {
+				if layer.Name == from {
+					fromIndex = index
+				}
+				if layer.Name == to {
+					toIndex = index
+				}
+			}
+			if fromIndex < 0 || toIndex <= fromIndex {
+				return nil, fmt.Errorf("config: install_sets[%d] (%s): replacement %q -> %q must name layers in source-then-replacement order", i, rs.Name, from, to)
+			}
+		}
+		c.InstallSets = append(c.InstallSets, InstallSet{
+			Name:         rs.Name,
+			Enabled:      enabled,
+			Addon:        rs.Addon,
+			Layers:       layers,
+			Collisions:   rs.Collisions,
+			Replacements: rs.Replacements,
+			After:        rs.After,
+		})
+	}
+
+	for _, set := range c.InstallSets {
+		if _, err := c.InstallOrder(set.Name); err != nil {
+			return nil, err
+		}
+	}
+	return c, nil
+}
+
+// InstallOrder returns the install set name and the sets it is installed
+// over, each once, every set after the sets its After names. It fails on an
+// unknown name or a cycle.
+func (c *Config) InstallOrder(name string) ([]InstallSet, error) {
+	var order []InstallSet
+	done, visiting := map[string]bool{}, map[string]bool{}
+	var visit func(name, from string) error
+	visit = func(name, from string) error {
+		switch {
+		case done[name]:
+			return nil
+		case visiting[name]:
+			return fmt.Errorf("config: install set %q: after %q forms a cycle", from, name)
+		}
+		i := slices.IndexFunc(c.InstallSets, func(s InstallSet) bool { return s.Name == name })
+		switch {
+		case i < 0 && from == "":
+			return fmt.Errorf("config: no install set %q", name)
+		case i < 0:
+			return fmt.Errorf("config: install set %q: after %q is not an install set", from, name)
+		}
+		visiting[name] = true
+		for _, b := range c.InstallSets[i].After {
+			if err := visit(b, name); err != nil {
+				return err
+			}
+		}
+		done[name] = true
+		order = append(order, c.InstallSets[i])
+		return nil
+	}
+	if err := visit(name, ""); err != nil {
+		return nil, err
+	}
+	return order, nil
+}
+
+// IsDirName reports whether name can be served directly under the tree
+// root: a single path element, not "." or "..".
+func IsDirName(name string) bool {
+	return fs.ValidPath(name) && name != "." && !strings.Contains(name, "/")
 }
 
 // expandEnv returns os.Getenv(NAME) when v is exactly "${NAME}"; any other
