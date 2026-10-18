@@ -208,6 +208,28 @@ already installed, selects the named products and runs `go` again. `then.sets`
 must name enabled add-on sets, and `instigator check` requires each
 `then.install` name to have a `.sw` or `.man` file in them.
 
+### Post-install commands
+
+`post_install` runs shell commands in the installed system after the script's
+last `go`, so one-line settings need no console session:
+
+```yaml
+install_scripts:
+  - name: dhcp
+    post_install:
+      - chkconfig -f autoconfig_ipaddress on
+```
+
+Each command is one line, run by `/bin/sh` through `inst`'s `shroot`, which
+runs it chrooted into the new system. A failing command prints
+`(command failed)` and `inst` skips the remaining commands. After the last one
+succeeds, `inst`'s `shell` preference goes back to `/bin/csh` and the console
+shows:
+
+```text
+instigator: post-install commands finished
+```
+
 ## Development
 
 Run the test suite with:

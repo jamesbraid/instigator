@@ -290,3 +290,19 @@ func TestThenCommandsExactSequence(t *testing.T) {
 		t.Errorf("standalone second pass does not end with go: %q", got)
 	}
 }
+
+// TestPostInstallCommandsExactSequence pins the post-install file: select
+// a POSIX shell, run each command in the target, restore inst's default
+// shell, then print the marker only reached when every command succeeded.
+func TestPostInstallCommandsExactSequence(t *testing.T) {
+	want := "" +
+		"set shell /bin/sh\n" +
+		"shroot chkconfig -f autoconfig_ipaddress on\n" +
+		"shroot touch /etc/marker\n" +
+		"set shell /bin/csh\n" +
+		"sh echo instigator: post-install commands finished\n"
+	got := PostInstallCommands([]string{"chkconfig -f autoconfig_ipaddress on", "touch /etc/marker"})
+	if got != want {
+		t.Errorf("PostInstallCommands() = %q, want %q", got, want)
+	}
+}

@@ -1,7 +1,8 @@
 // Package instscript generates the command file loaded by IRIX inst. It
 // opens supplemental sets in order, reopens the primary set last, applies
 // the tested selections, and starts installation. A second pass can then
-// install add-on products on top of the installed operating system.
+// install add-on products on top of the installed operating system, and
+// post-install commands can then run in the installed system.
 package instscript
 
 import (
@@ -124,6 +125,28 @@ func ThenCommands(p ThenParams) string {
 	} else {
 		fmt.Fprintf(&b, "admin source %s:%s\n", p.ServerIP, p.StartPath)
 	}
+	return b.String()
+}
+
+// PostInstallDone is the console line printed after every post-install
+// command has succeeded. A failing command prints "(command failed)"
+// instead, and inst skips the rest of the file.
+const PostInstallDone = "instigator: post-install commands finished"
+
+// PostInstallCommands returns a command file that runs each command in the
+// installed system, then prints PostInstallDone. inst's shroot runs its
+// arguments as one command in a chroot of the target, which exists only
+// after go has installed it. shroot uses inst's shell preference, /bin/csh
+// by default, so select /bin/sh for POSIX syntax. inst saves preferences in
+// the target's /var/inst/.swmgrrc, so put the default back afterwards.
+func PostInstallCommands(commands []string) string {
+	var b strings.Builder
+	b.WriteString("set shell /bin/sh\n")
+	for _, c := range commands {
+		fmt.Fprintf(&b, "shroot %s\n", c)
+	}
+	b.WriteString("set shell /bin/csh\n")
+	fmt.Fprintf(&b, "sh echo %s\n", PostInstallDone)
 	return b.String()
 }
 

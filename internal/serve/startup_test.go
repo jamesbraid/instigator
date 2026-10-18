@@ -568,6 +568,30 @@ func TestAddonSetOpensOnlyInTheSecondPass(t *testing.T) {
 	}
 }
 
+// Post-install commands follow the last go: a one-pass script's only go, or
+// a two-pass script's second.
+func TestPostInstallFollowsTheLastGo(t *testing.T) {
+	cfg := addonConfig(t)
+	post := []string{"chkconfig -f autoconfig_ipaddress on"}
+	cfg.InstallScripts[0].PostInstall = post
+	cfg.InstallScripts = append(cfg.InstallScripts, config.InstallScript{Name: "dhcp", PostInstall: post})
+	s, _ := captureStart(t, cfg)
+	for script, last := range map[string]string{
+		"addon-rad4": installThenStartPath("addon-rad4"),
+		"dhcp":       installStartPath("dhcp"),
+	} {
+		if got := served(t, s, fsName(last)); !strings.HasSuffix(got, "\nadmin source 192.0.2.10:"+installPostPath(script)+"\n") {
+			t.Errorf("%s: last go does not hand off to post-install:\n%s", script, got)
+		}
+		if got := served(t, s, fsName(installPostPath(script))); got != instscript.PostInstallCommands(post) {
+			t.Errorf("%s: post-install = %q", script, got)
+		}
+	}
+	if got := served(t, s, fsName(installStartPath("addon-rad4"))); strings.Contains(got, installPostPath("addon-rad4")) {
+		t.Errorf("post-install runs before the second pass:\n%s", got)
+	}
+}
+
 func TestCheckLimitsEachPassToTheSetsItOpens(t *testing.T) {
 	cfg := addonConfig(t)
 	if err := Check(cfg); err != nil {

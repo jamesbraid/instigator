@@ -705,14 +705,20 @@ func generate(cfg *config.Config, tree *vfs.Tree) (profile, error) {
 			content: []byte(installGoCommands(server, strings.Repeat("0", 32), next)),
 		}
 	}
-	addScript := func(name string, selection instscript.Selection, then *config.ThenPass) {
+	addScript := func(name string, selection instscript.Selection, then *config.ThenPass, post []string) {
 		body := instscript.Commands(instscript.Params{
 			ServerIP:  server,
 			Sets:      p.dists,
 			StartPath: installStartPath(name),
 			Selection: selection,
 		})
-		next := ""
+		// Post-install commands follow the last go, so they run in a target
+		// that already has every pass installed.
+		last := ""
+		if len(post) > 0 {
+			last = installPostPath(name)
+		}
+		next := last
 		if then != nil {
 			next = installThenPath(name)
 		}
@@ -721,31 +727,37 @@ func generate(cfg *config.Config, tree *vfs.Tree) (profile, error) {
 			generator: "admin-source",
 			content:   []byte(body),
 		}, timing(installStartPath(name), name+".cmds", next))
-		if then == nil {
-			return
+		if then != nil {
+			var sets []string
+			for _, set := range then.Sets {
+				sets = append(sets, "/"+set+"/dist")
+			}
+			p.generated = append(p.generated, generatedFile{
+				path:      fsName(installThenPath(name)),
+				generator: "admin-source-then",
+				content: []byte(instscript.ThenCommands(instscript.ThenParams{
+					ServerIP:  server,
+					Sets:      sets,
+					Install:   then.Install,
+					StartPath: installThenStartPath(name),
+				})),
+			}, timing(installThenStartPath(name), name+".cmds then", last))
 		}
-		var sets []string
-		for _, set := range then.Sets {
-			sets = append(sets, "/"+set+"/dist")
+		if last != "" {
+			p.generated = append(p.generated, generatedFile{
+				path:      fsName(last),
+				generator: "admin-source-post-install",
+				content:   []byte(instscript.PostInstallCommands(post)),
+			})
 		}
-		p.generated = append(p.generated, generatedFile{
-			path:      fsName(installThenPath(name)),
-			generator: "admin-source-then",
-			content: []byte(instscript.ThenCommands(instscript.ThenParams{
-				ServerIP:  server,
-				Sets:      sets,
-				Install:   then.Install,
-				StartPath: installThenStartPath(name),
-			})),
-		}, timing(installThenStartPath(name), name+".cmds then", ""))
 	}
-	addScript("install", instscript.Selection{}, nil)
+	addScript("install", instscript.Selection{}, nil, nil)
 	p.generated = append(p.generated, generatedFile{
 		path: p.primary + "/dist/.related_dists", generator: "related-dists",
 		content: []byte(instscript.RelatedDists(p.dists)),
 	})
 	for _, sc := range cfg.InstallScripts {
-		addScript(sc.Name, instscript.Selection{Stream: sc.Stream, Install: sc.Install, Keep: sc.Keep, Remove: sc.Remove}, sc.Then)
+		addScript(sc.Name, instscript.Selection{Stream: sc.Stream, Install: sc.Install, Keep: sc.Keep, Remove: sc.Remove}, sc.Then, sc.PostInstall)
 	}
 	for _, f := range p.generated {
 		if err := tree.AddGenerated(f.path, f.generator, f.content); err != nil {

@@ -61,14 +61,16 @@ type InstallSet struct {
 // release stream - "" or "feature" is the default feature stream and emits no
 // extra directive, "maintenance" emits "install maint". The script is served at
 // /<Name>.cmds. Then, when set, is a second pass run after the first go
-// returns.
+// returns. PostInstall lists shell commands run in the installed system
+// after the last go returns.
 type InstallScript struct {
-	Name    string
-	Install []string
-	Keep    []string
-	Remove  []string
-	Stream  string
-	Then    *ThenPass
+	Name        string
+	Install     []string
+	Keep        []string
+	Remove      []string
+	Stream      string
+	Then        *ThenPass
+	PostInstall []string
 }
 
 // ThenPass opens add-on sets after the first pass has installed the
@@ -163,6 +165,7 @@ type raw struct {
 			Sets    []string `yaml:"sets"`
 			Install []string `yaml:"install"`
 		} `yaml:"then"`
+		PostInstall []string `yaml:"post_install"`
 	} `yaml:"install_scripts"`
 	Services *struct {
 		BOOTP *bool `yaml:"bootp"`
@@ -376,13 +379,20 @@ func Parse(b []byte) (*Config, error) {
 				}
 			}
 		}
+		// inst runs each post-install command from one command-file line.
+		for _, cmd := range rsc.PostInstall {
+			if strings.TrimSpace(cmd) == "" || strings.ContainsAny(cmd, "\n\r") {
+				return nil, fmt.Errorf("config: install_scripts[%d] (%s): post_install entry %q must be a single non-empty line", i, rsc.Name, cmd)
+			}
+		}
 		c.InstallScripts = append(c.InstallScripts, InstallScript{
-			Name:    rsc.Name,
-			Install: rsc.Install,
-			Keep:    rsc.Keep,
-			Remove:  rsc.Remove,
-			Stream:  rsc.Stream,
-			Then:    then,
+			Name:        rsc.Name,
+			Install:     rsc.Install,
+			Keep:        rsc.Keep,
+			Remove:      rsc.Remove,
+			Stream:      rsc.Stream,
+			Then:        then,
+			PostInstall: rsc.PostInstall,
 		})
 	}
 

@@ -30,6 +30,12 @@ func installThenStartPath(script string) string {
 	return "/__instigator/" + script + "/then/start.cmds"
 }
 
+// installPostPath holds a script's post-install commands, sourced after its
+// last go returns.
+func installPostPath(script string) string {
+	return "/__instigator/" + script + "/post-install.cmds"
+}
+
 func installReturnPath(attempt string) string {
 	return "/" + installReturnPrefix + attempt + "/returned.cmds"
 }

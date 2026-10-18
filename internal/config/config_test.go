@@ -242,6 +242,15 @@ func TestRejects(t *testing.T) {
 			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
 			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]\n" +
 			"install_scripts: [{name: dbg, install: [\"a\\nb\"]}]",
+		// inst runs each post-install command from one command-file line.
+		"post_install entry with a newline": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]\n" +
+			"install_scripts: [{name: dbg, post_install: [\"true\\ntrue\"]}]",
+		"blank post_install entry": "server_ip: 192.0.2.10\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]\n" +
+			"install_scripts: [{name: dbg, post_install: [\" \"]}]",
 	}
 	for name, y := range cases {
 		if _, err := Parse([]byte(y)); err == nil {
@@ -376,6 +385,26 @@ install_scripts:
 	if then == nil || len(then.Sets) != 1 || then.Sets[0] != "addon-rad4" ||
 		len(then.Install) != 2 || then.Install[1] != "rad4x.man" {
 		t.Fatalf("then = %+v", then)
+	}
+}
+
+func TestParsePostInstall(t *testing.T) {
+	cfg, err := Parse([]byte(`
+server_ip: 10.0.0.1
+clients: [{name: a, mac: "02:00:00:00:00:01", ip: 10.0.0.2}]
+install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]
+install_scripts:
+  - name: dhcp
+    post_install:
+      - chkconfig -f autoconfig_ipaddress on
+      - grep -q x /etc/hosts || echo "a; b" >> /etc/motd
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.InstallScripts[0].PostInstall
+	if len(got) != 2 || got[0] != "chkconfig -f autoconfig_ipaddress on" || got[1] != `grep -q x /etc/hosts || echo "a; b" >> /etc/motd` {
+		t.Fatalf("post_install = %q", got)
 	}
 }
 

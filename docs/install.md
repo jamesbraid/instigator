@@ -79,6 +79,22 @@ prompt as usual. An IRIX 6.5.30 install of the PsiTech RAD4 driver this way
 relinked the kernel with the driver during `quit`'s automatic
 reconfiguration, and the first boot loaded it.
 
+### Post-install commands
+
+A script with `post_install` commands sources them after its last `go`
+returns, after the second pass when it has one. The file sets `inst`'s
+`shell` preference to `/bin/sh` and runs each command with `shroot`, which
+runs it in a chroot of the installed system. `shroot` fails before `go`
+because the target does not exist yet. The first failing command prints
+`(command failed)` and returns to `Inst>` without running the rest. When
+every command succeeds, the file sets `shell` back to the default
+`/bin/csh` and the console shows
+`instigator: post-install commands finished` before `Inst>`.
+
+`inst` saves preferences in the installed system's `/var/inst/.swmgrrc`, so
+after a failed command later `inst` sessions there keep `shell` at
+`/bin/sh` until it is set back.
+
 ### Install timing
 
 Every generated script uses native `admin source` handoffs to time `go`.

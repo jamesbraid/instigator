@@ -139,6 +139,12 @@ install_sets:
 #     then:
 #       sets: [addon-rad4]
 #       install: [rad4x.sw.driver, rad4x.sw.xserver, rad4x.man]
+# "post_install" lists one-line /bin/sh commands run chrooted into the
+# installed system after the last go. The console prints "instigator:
+# post-install commands finished" once all of them succeed:
+#   - name: dhcp
+#     post_install:
+#       - chkconfig -f autoconfig_ipaddress on
 # install_scripts:
 #   - name: debug
 #     install:
