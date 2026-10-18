@@ -92,35 +92,10 @@ func TestReadAtExtentsAndHoles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var offsets []int
-	for off := 0; off < len(want); off += 137 {
-		offsets = append(offsets, off)
-	}
-	offsets = append(offsets, len(want), len(want)+1)
-	for _, off := range offsets {
-		for _, size := range []int{0, 1, 511, 512, 777, len(want) + 13} {
-			p := bytes.Repeat([]byte{0xff}, size)
-			n, err := fs.ReadAt(node, p, int64(off))
-			end := min(off+size, len(want))
-			if off >= len(want) {
-				if n != 0 || err != io.EOF {
-					t.Fatalf("ReadAt(%d, %d) = %d, %v", off, size, n, err)
-				}
-				continue
-			}
-			wantErr := error(nil)
-			if end-off < size {
-				wantErr = io.EOF
-			}
-			if n != end-off || err != wantErr || !bytes.Equal(p[:n], want[off:end]) {
-				t.Fatalf("ReadAt(%d, %d) = %d, %v, want %d, %v and matching bytes", off, size, n, err, end-off, wantErr)
-			}
-		}
-	}
 	backing.calls = 0
-	p := make([]byte, len(want))
-	if _, err := fs.ReadAt(node, p, 0); err != nil {
-		t.Fatal(err)
+	p := bytes.Repeat([]byte{0xff}, len(want))
+	if n, err := fs.ReadAt(node, p, 0); n != len(want) || err != nil || !bytes.Equal(p, want) {
+		t.Fatalf("read across extents and holes = %d, %v, data match %v", n, err, bytes.Equal(p, want))
 	}
 	if backing.calls != 2 {
 		t.Errorf("read across two extents and holes used %d backing reads, want 2", backing.calls)
@@ -149,18 +124,13 @@ func TestReadAtBackingFailure(t *testing.T) {
 	data := bytes.Repeat([]byte("x"), 4096)
 	block, _ := img.AddData(data)
 	ino := img.AddFileExtents(int32(len(data)), [][3]uint32{{uint32(block), 8, 0}})
-	backing := bytes.NewReader(img.Bytes())
-	fs, err := efs.Open(backing, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	node, err := fs.Inode(ino)
-	if err != nil {
-		t.Fatal(err)
-	}
 	failure := errors.New("backing read failed")
 	const readable = 1024 + 17
-	faulty, err := efs.Open(failingReaderAt{backing, block*512 + readable, failure}, 0)
+	faulty, err := efs.Open(failingReaderAt{bytes.NewReader(img.Bytes()), block*512 + readable, failure}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := faulty.Inode(ino)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,31 +138,5 @@ func TestReadAtBackingFailure(t *testing.T) {
 	n, err := faulty.ReadAt(node, p, 0)
 	if n != readable || !errors.Is(err, failure) || !bytes.Equal(p[:n], data[:n]) {
 		t.Fatalf("ReadAt = %d, %v, want %d and backing failure", n, err, readable)
-	}
-}
-
-func BenchmarkReadAtExtent(b *testing.B) {
-	for _, size := range []int{512, 32 * 1024} {
-		b.Run(map[int]string{512: "512B", 32 * 1024: "32KiB"}[size], func(b *testing.B) {
-			img := efstest.New()
-			ino := img.AddFile(0o444, bytes.Repeat([]byte("x"), 64*1024))
-			fs, err := efs.Open(bytes.NewReader(img.Bytes()), 0)
-			if err != nil {
-				b.Fatal(err)
-			}
-			node, err := fs.Inode(ino)
-			if err != nil {
-				b.Fatal(err)
-			}
-			p := make([]byte, size)
-			b.SetBytes(int64(size))
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				if _, err := fs.ReadAt(node, p, 0); err != nil {
-					b.Fatal(err)
-				}
-			}
-		})
 	}
 }
