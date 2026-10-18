@@ -230,6 +230,95 @@ shows:
 instigator: post-install commands finished
 ```
 
+## Extracting installed files
+
+`instigator extract` writes the files inst products would install, and a
+manifest of every entry, to a host directory:
+
+```sh
+instigator extract [--path PATH]... [--subsystem GLOB]... [--unpack | --manifest-only] [--dist DIR] [--name NAME] <image|dir>... <outdir>
+instigator extract [--set NAME]... [--path PATH]... [--subsystem GLOB]... [--unpack | --manifest-only] <config.yaml> <outdir>
+```
+
+With images or directories, each is a layer of one install set, in the order
+given, merged with the default strict rules; layers that disagree need a
+config file. `--dist` names the distribution directory in every source
+(`dist` by default, `.` for the source root, as in an unpacked tardist), and
+`--name` the output, by default the first source's name without its
+extension. A single `.yaml` or `.yml` source is a config file, a full serve
+configuration or one holding only `install_sets:`; `--set` picks sets by name,
+and by default all are extracted. A set is built as when serving, and may
+name the sets it is installed after, which `serve` ignores:
+
+```yaml
+install_sets:
+  - name: base
+    layers: [...]            # the base release's discs
+  - name: overlay
+    after: [base]            # transitive; unknown names and cycles are refused
+    layers: [...]            # the overlay release's discs
+```
+
+Extracting `overlay` then writes one installed view: the sets it is
+installed after, in order, then the set itself. A product a later set ships
+again replaces the earlier product whole, and a later set wins any other
+install path it installs; the entries it replaces are `superseded` and never
+read. Where one set installs a directory and a later one a file or link, the
+later entry is an `error`. This is not a full `inst` run: files an overlay
+retires without reinstalling stay.
+
+```sh
+instigator extract --path usr/share/catman disc.image out/
+```
+
+writes `out/disc/` and `out/disc.jsonl`.
+
+- `--path PATH` keeps only entries at or under the install path `PATH`,
+  matched by whole components: `usr/include` keeps `usr/include/stdio.h` but
+  not `usr/include2`. Repeat it for several.
+- `--subsystem GLOB` keeps only entries whose subsystem matches the shell
+  pattern `GLOB` (Go's `path.Match`), such as `*.man.*` for every manual
+  page subsystem. Repeat it for several. With `--path` too, an entry must
+  pass both. Entries left out are neither listed nor read.
+- `--unpack` also removes compression on the installed file itself: a `.z`
+  name holding pack data or a `.Z` name holding compress data loses its
+  suffix, and links to it follow (`man/b.z -> a.z` becomes `man/b -> a`). The
+  archive's own compression is always removed.
+- `--manifest-only` writes only `<outdir>/<set>.jsonl`, planned from the
+  `.idb` files without opening any archive. Entries that would be extracted
+  have status `planned` and no `path`, `sha256` or `target`; whether one
+  would be written, a duplicate, a variant or an error needs its data.
+  Filters and `after` sets apply as usual. It cannot be combined with
+  `--unpack`.
+
+Files keep their `.idb` permission bits plus owner access; nothing is
+chowned. Device, socket and type `X` entries, and `delhist` entries (paths an
+older release installed), are recorded but not created. The manifest has one
+JSON object per entry, in product then `.idb` order, with empty fields
+omitted:
+
+| Field | Meaning |
+| --- | --- |
+| `path` | where the entry was written, relative to `<set>/` |
+| `installPath` | the path as written in the `.idb` |
+| `type`, `mode`, `owner`, `group` | from the `.idb` |
+| `product`, `subsystem` | owning product and subsystem |
+| `layer` | source layer holding a file's archive, or else the product's `.idb` |
+| `set` | the install set that supplied the entry |
+| `sha256` | digest of the bytes written |
+| `symlink`, `target` | link target as in the `.idb`, and as created |
+| `mach` | the `mach()` attribute |
+| `status` | `written`, `duplicate`, `variant`, `planned`, `superseded`, `skipped`, `error` or `unparsed` |
+| `error` | the reason, with the line number for `unparsed` |
+
+A path installed again with the same content is a `duplicate`. Anything else,
+such as a per-machine copy, is a `variant` written beside it as
+`<path>.<mach>`, or `<path>.<first 8 hex digits of its sha256>` when it has
+no `mach` or that name would exceed 255 bytes. An entry that cannot be
+extracted, for example because its archive's disc is not in the set, is an
+`error`; the run carries on and exits non-zero. Existing output is never
+overwritten.
+
 ## Development
 
 Run the test suite with:
@@ -243,7 +332,7 @@ generated `inst` commands, BOOTP, TFTP, rsh, and capture behavior. Tests that
 need local IRIX media skip when that media is unavailable:
 
 ```sh
-go test -run RealMedia -v ./internal/vfs ./internal/instcmd
+go test -run RealMedia -v ./internal/vfs ./internal/instcmd ./cmd/instigator
 ```
 
 Captures retain request, transfer, and timing data from real runs, so a later

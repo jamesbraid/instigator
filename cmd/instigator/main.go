@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime/debug"
 
+	"github.com/jamesbraid/instigator/internal/extract"
 	"github.com/jamesbraid/instigator/internal/logging"
 	"github.com/urfave/cli/v3"
 )
@@ -67,6 +68,28 @@ func main() {
 						path = given[0]
 					}
 					return runLs(cmd.Root().Writer, cmd.StringArgs("image")[0], path)
+				},
+			},
+			{
+				Name:      "extract",
+				Usage:     "write the installed files of disc images, directories or configured install sets to a host directory",
+				UsageText: "instigator extract [flags] <image|dir>... <outdir>\n   instigator extract [flags] <config.yaml> <outdir>",
+				Arguments: []cli.Argument{
+					&cli.StringArgs{Name: "args", UsageText: "<image|dir>... <outdir>", Min: 1, Max: -1},
+				},
+				Flags: []cli.Flag{
+					&cli.StringSliceFlag{Name: "set", Usage: "config mode: extract only the install set `NAME` (repeatable; default all)"},
+					&cli.StringFlag{Name: "dist", Usage: "direct mode: the distribution directory `DIR` in every source (default dist; . for the source root)"},
+					&cli.StringFlag{Name: "name", Usage: "direct mode: `NAME` of the output set (default: the first source's name without extension)"},
+					&cli.StringSliceFlag{Name: "path", Usage: "keep only entries at or under the install path `PATH` (repeatable)"},
+					&cli.StringSliceFlag{Name: "subsystem", Usage: "keep only entries of a subsystem matching `GLOB`, such as '*.man.*' (repeatable)"},
+					&cli.BoolFlag{Name: "unpack", Usage: "also remove the installed .z (pack) and .Z (compress) layers"},
+					&cli.BoolFlag{Name: "manifest-only", Usage: "write only the manifest, planned from the .idb files without reading any archive"},
+				},
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					return extractCommand(cmd.Root().Writer, cmd.StringArgs("args"), cmd.StringSlice("set"), cmd.String("dist"), cmd.String("name"),
+						extract.Options{Paths: cmd.StringSlice("path"), Subsystems: cmd.StringSlice("subsystem"),
+							Unpack: cmd.Bool("unpack"), ManifestOnly: cmd.Bool("manifest-only")})
 				},
 			},
 			{
