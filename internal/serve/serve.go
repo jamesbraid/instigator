@@ -30,6 +30,7 @@ import (
 	"github.com/jamesbraid/instigator/internal/instcmd"
 	"github.com/jamesbraid/instigator/internal/instscript"
 	"github.com/jamesbraid/instigator/internal/logging"
+	"github.com/jamesbraid/instigator/internal/mediatree"
 	"github.com/jamesbraid/instigator/internal/source"
 	"github.com/jamesbraid/instigator/internal/tftp"
 	"github.com/jamesbraid/instigator/internal/vfs"
@@ -299,8 +300,7 @@ func withRSHIdleTimeout(d time.Duration) Option {
 }
 
 func buildTree(cfg *config.Config) (*vfs.Tree, profile, error) {
-	res := source.New(source.Options{CacheDir: cacheDir(cfg), Credentials: toSourceCreds(cfg.Credentials)})
-	tree, err := vfs.Build(setSpecs(cfg), res)
+	tree, err := mediatree.Build(cfg.InstallSets, cfg.CacheDir, cfg.Credentials)
 	if err != nil {
 		return nil, profile{}, err
 	}
@@ -580,58 +580,6 @@ func isShell(command string) bool {
 		return true
 	}
 	return false
-}
-
-// cacheDir returns where the source resolver caches fetched and extracted
-// remote media. cfg.CacheDir wins when set; otherwise it's the user's cache
-// directory (~/.cache/instigator on Linux), and when even that is
-// unavailable - a scratch container with no HOME or XDG_CACHE_HOME - a fixed
-// fallback so a remote source still has somewhere to land.
-func cacheDir(cfg *config.Config) string {
-	if cfg.CacheDir != "" {
-		return cfg.CacheDir
-	}
-	d, err := os.UserCacheDir()
-	if err != nil {
-		return "/var/cache/instigator"
-	}
-	return filepath.Join(d, "instigator")
-}
-
-// toSourceCreds maps the configured host credentials onto source.Credentials.
-// The two types are shaped identically; the copy exists so config and source
-// stay free to diverge without either importing the other's package for a
-// shared struct.
-func toSourceCreds(creds []config.Credential) source.Credentials {
-	out := make(source.Credentials, 0, len(creds))
-	for _, c := range creds {
-		out = append(out, source.Credential{Host: c.Host, Username: c.Username, Password: c.Password})
-	}
-	return out
-}
-
-// setSpecs maps the configured install sets onto the tree builder's own
-// shape. Every configured set is built and served, enabled or not: a set
-// left out of the install stays browsable for inspection, and Enabled
-// decides only what the generated files and the operator instructions
-// offer.
-func setSpecs(cfg *config.Config) []vfs.SetSpec {
-	sets := make([]vfs.SetSpec, 0, len(cfg.InstallSets))
-	for _, set := range cfg.InstallSets {
-		layers := make([]vfs.LayerSpec, 0, len(set.Layers))
-		for _, l := range set.Layers {
-			layers = append(layers, vfs.LayerSpec{
-				Name:   l.Name,
-				Source: l.Source,
-				Base:   l.Base,
-				Dist:   l.Dist,
-				Stand:  l.Stand,
-				Boot:   l.Boot,
-			})
-		}
-		sets = append(sets, vfs.SetSpec{Name: set.Name, Layers: layers, Collisions: set.Collisions, Replacements: set.Replacements})
-	}
-	return sets
 }
 
 // profile is what the enabled sets add up to: the dist path of every set

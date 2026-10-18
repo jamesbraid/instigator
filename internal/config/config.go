@@ -121,7 +121,7 @@ type Config struct {
 	Ports          Ports
 	Credentials    []Credential
 	// CacheDir is where a fetched or extracted remote source is cached;
-	// empty means the caller (serve) supplies its own default.
+	// empty means the default chosen where sources are opened.
 	CacheDir string
 }
 
