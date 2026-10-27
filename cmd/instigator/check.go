@@ -8,7 +8,9 @@ import (
 	"github.com/jamesbraid/instigator/internal/serve"
 )
 
-func runCheck(path string) error {
+// runCheck validates a configuration. Remote media are only probed unless
+// full asks for the assembly serve performs at start.
+func runCheck(path string, full bool) error {
 	var data []byte
 	var err error
 	if path == "-" {
@@ -23,5 +25,8 @@ func runCheck(path string) error {
 	if err != nil {
 		return err
 	}
-	return serve.Check(cfg)
+	if full {
+		return serve.Check(cfg)
+	}
+	return serve.CheckShallow(cfg)
 }

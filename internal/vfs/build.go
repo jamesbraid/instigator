@@ -103,13 +103,9 @@ func (t *Tree) addLayer(set SetSpec, layer LayerSpec, r Resolver, resolved map[s
 		}
 	}
 
-	dist, err := cleanRel(layer.Dist, distDir)
+	distPath, standPath, err := layerPaths(layer)
 	if err != nil {
-		return fmt.Errorf("distribution directory: %w", err)
-	}
-	distPath, err := underBase(layer.Base, dist)
-	if err != nil {
-		return fmt.Errorf("distribution directory: %w", err)
+		return err
 	}
 	if err := t.mergeTree(set, layer, res.FS, res.Kind, distPath, path.Join(set.Name, distDir)); err != nil {
 		return err
@@ -117,18 +113,33 @@ func (t *Tree) addLayer(set SetSpec, layer LayerSpec, r Resolver, resolved map[s
 	if !layer.Boot {
 		return nil
 	}
-	stand, err := cleanRel(layer.Stand, standDir)
-	if err != nil {
-		return fmt.Errorf("stand directory: %w", err)
-	}
-	standPath, err := underBase(layer.Base, stand)
-	if err != nil {
-		return fmt.Errorf("stand directory: %w", err)
-	}
 	if _, err := fs.Stat(res.FS, standPath); err != nil {
 		return fmt.Errorf("boot layer has no %s directory: %w", standDir, err)
 	}
 	return t.mergeTree(set, layer, res.FS, res.Kind, standPath, path.Join(set.Name, standDir))
+}
+
+// layerPaths returns where a layer's distribution directory and, for a
+// boot layer, its stand directory sit within its source.
+func layerPaths(layer LayerSpec) (dist, stand string, err error) {
+	d, err := cleanRel(layer.Dist, distDir)
+	if err != nil {
+		return "", "", fmt.Errorf("distribution directory: %w", err)
+	}
+	if dist, err = underBase(layer.Base, d); err != nil {
+		return "", "", fmt.Errorf("distribution directory: %w", err)
+	}
+	if !layer.Boot {
+		return dist, "", nil
+	}
+	s, err := cleanRel(layer.Stand, standDir)
+	if err != nil {
+		return "", "", fmt.Errorf("stand directory: %w", err)
+	}
+	if stand, err = underBase(layer.Base, s); err != nil {
+		return "", "", fmt.Errorf("stand directory: %w", err)
+	}
+	return dist, stand, nil
 }
 
 // underBase joins a layer's distribution or stand directory under its base
@@ -459,6 +470,32 @@ func (t *Tree) checkCollisions(set SetSpec) error {
 		}
 		if n.origin.Source != winner {
 			return fmt.Errorf("collision winner %q: %s comes from layer %q instead", winner, p, n.origin.Source)
+		}
+	}
+	return nil
+}
+
+// Validate checks a set the way Build does before it opens any source: the
+// set and layer names, the replacement order, and that every layer's
+// distribution and stand directories stay within its source. Build still
+// finds what only the media can show, such as a missing directory or a
+// collision.
+func Validate(set SetSpec) error {
+	if set.Name == "" {
+		return fmt.Errorf("install set with no name")
+	}
+	if err := checkReplacements(set); err != nil {
+		return fmt.Errorf("install set %q: %w", set.Name, err)
+	}
+	for _, layer := range set.Layers {
+		if layer.Name == "" {
+			return fmt.Errorf("install set %q: layer with no name", set.Name)
+		}
+		if layer.Source == "" {
+			return fmt.Errorf("install set %q: layer %q: names no source", set.Name, layer.Name)
+		}
+		if _, _, err := layerPaths(layer); err != nil {
+			return fmt.Errorf("install set %q: layer %q: %w", set.Name, layer.Name, err)
 		}
 	}
 	return nil

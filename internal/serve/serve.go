@@ -309,7 +309,7 @@ func buildTree(cfg *config.Config) (*vfs.Tree, profile, error) {
 		tree.Close()
 		return nil, profile{}, err
 	}
-	if err := checkInstallSelections(cfg, tree); err != nil {
+	if err := checkInstallSelections(cfg, tree, nil); err != nil {
 		tree.Close()
 		return nil, profile{}, err
 	}
@@ -320,8 +320,9 @@ func buildTree(cfg *config.Config) (*vfs.Tree, profile, error) {
 // opens serve. An archive left as a single tar file can otherwise pass the
 // media build while inst finds no products after opening its distribution.
 // The first pass opens every enabled set except add-ons; a then pass opens
-// only its named add-on sets.
-func checkInstallSelections(cfg *config.Config, tree *vfs.Tree) error {
+// only its named add-on sets. A selection missing from a pass that includes
+// an unopened set is not an error, since that set's media were not read.
+func checkInstallSelections(cfg *config.Config, tree *vfs.Tree, unopened map[string]bool) error {
 	var enabled []string
 	for _, set := range cfg.InstallSets {
 		if set.Enabled && !set.Addon {
@@ -332,11 +333,11 @@ func checkInstallSelections(cfg *config.Config, tree *vfs.Tree) error {
 		return nil
 	}
 	for _, script := range cfg.InstallScripts {
-		if err := checkSelections(tree, script.Name, "", script.Install, enabled); err != nil {
+		if err := checkSelections(tree, script.Name, "", script.Install, enabled, unopened); err != nil {
 			return err
 		}
 		if script.Then != nil {
-			if err := checkSelections(tree, script.Name, "then ", script.Then.Install, script.Then.Sets); err != nil {
+			if err := checkSelections(tree, script.Name, "then ", script.Then.Install, script.Then.Sets, unopened); err != nil {
 				return err
 			}
 		}
@@ -344,7 +345,10 @@ func checkInstallSelections(cfg *config.Config, tree *vfs.Tree) error {
 	return nil
 }
 
-func checkSelections(tree *vfs.Tree, script, pass string, selections, sets []string) error {
+func checkSelections(tree *vfs.Tree, script, pass string, selections, sets []string, unopened map[string]bool) error {
+	if slices.ContainsFunc(sets, func(set string) bool { return unopened[set] }) {
+		return nil
+	}
 	for _, selection := range selections {
 		product := selection
 		fileSuffixes := []string{".sw", ".man"}
@@ -382,6 +386,7 @@ func checkSelections(tree *vfs.Tree, script, pass string, selections, sets []str
 
 // Check opens every source, assembles the tree and generated files, and
 // verifies named script selections before closing without binding ports.
+// CheckShallow is the cheaper check for remote media.
 func Check(cfg *config.Config) error {
 	tree, _, err := buildTree(cfg)
 	if err != nil {

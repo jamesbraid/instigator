@@ -20,10 +20,13 @@ func main() {
 		Commands: []*cli.Command{
 			{
 				Name:      "check",
-				Usage:     "validate and assemble install media without serving it",
+				Usage:     "validate install media without serving it",
 				Arguments: []cli.Argument{&cli.StringArgs{Name: "config", UsageText: "<config.yaml|->", Min: 1, Max: 1}},
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "full", Usage: "also read remote media and assemble every set, as serve does"},
+				},
 				Action: func(_ context.Context, cmd *cli.Command) error {
-					return runCheck(cmd.StringArgs("config")[0])
+					return runCheck(cmd.StringArgs("config")[0], cmd.Bool("full"))
 				},
 			},
 			{

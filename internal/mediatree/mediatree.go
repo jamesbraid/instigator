@@ -16,11 +16,16 @@ import (
 // Build opens every set in sets, fetching remote layers through cacheDir
 // (empty for the default) with the given host credentials.
 func Build(sets []config.InstallSet, cacheDir string, creds []config.Credential) (*vfs.Tree, error) {
-	res := source.New(source.Options{
+	return vfs.Build(setSpecs(sets), NewResolver(cacheDir, creds))
+}
+
+// NewResolver returns the resolver Build opens sources with, caching under
+// cacheDir (empty for the default) and offering the given host credentials.
+func NewResolver(cacheDir string, creds []config.Credential) *source.Resolver {
+	return source.New(source.Options{
 		CacheDir:    defaultCacheDir(cacheDir),
 		Credentials: credentials(creds),
 	})
-	return vfs.Build(setSpecs(sets), res)
 }
 
 // defaultCacheDir returns where fetched and extracted remote media are
@@ -56,18 +61,23 @@ func credentials(creds []config.Credential) source.Credentials {
 func setSpecs(sets []config.InstallSet) []vfs.SetSpec {
 	specs := make([]vfs.SetSpec, 0, len(sets))
 	for _, set := range sets {
-		layers := make([]vfs.LayerSpec, 0, len(set.Layers))
-		for _, l := range set.Layers {
-			layers = append(layers, vfs.LayerSpec{
-				Name:   l.Name,
-				Source: l.Source,
-				Base:   l.Base,
-				Dist:   l.Dist,
-				Stand:  l.Stand,
-				Boot:   l.Boot,
-			})
-		}
-		specs = append(specs, vfs.SetSpec{Name: set.Name, Layers: layers, Collisions: set.Collisions, Replacements: set.Replacements})
+		specs = append(specs, SetSpec(set))
 	}
 	return specs
+}
+
+// SetSpec maps one configured install set onto the tree builder's shape.
+func SetSpec(set config.InstallSet) vfs.SetSpec {
+	layers := make([]vfs.LayerSpec, 0, len(set.Layers))
+	for _, l := range set.Layers {
+		layers = append(layers, vfs.LayerSpec{
+			Name:   l.Name,
+			Source: l.Source,
+			Base:   l.Base,
+			Dist:   l.Dist,
+			Stand:  l.Stand,
+			Boot:   l.Boot,
+		})
+	}
+	return vfs.SetSpec{Name: set.Name, Layers: layers, Collisions: set.Collisions, Replacements: set.Replacements}
 }

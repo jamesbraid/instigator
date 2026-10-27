@@ -41,15 +41,28 @@ layers in install order. The example shows the tested 6.5.30 profile,
 including merged overlays, Foundations, Development Foundation/Libraries,
 Applications, Complementary Applications, and optional Freeware.
 
-Check the media tree before starting the server. This opens every source,
-checks merge collisions and named script product selections, and generates
-the installer files without binding network ports. A selected product must
-have a `.sw` or `.man` file in an enabled distribution. Archive sources may
-be extracted into the configured cache.
+Check the configuration before starting the server. No network ports are
+bound. Install sets built only from local files and directories are
+assembled in full: every source is opened, merge collisions and named script
+product selections are checked, and the installer files are generated. A
+selected product must have a `.sw` or `.man` file in an enabled
+distribution. Local archive sources may be extracted into the configured
+cache.
+
+A set with any `http://` or `https://` source is checked without reading its
+media. Its layout is validated, its local sources must exist, and each URL
+gets one HEAD request, or a one-byte ranged GET when the server refuses HEAD.
+A URL passes on a 200 or 206 that does not report an empty file. Up to eight
+probes run at once, each limited to 30 seconds, and every failure is listed
+by URL. The disc contents, collisions and product selections of such a set
+are checked when `serve` assembles it at start.
 
 ```sh
 ./instigator check instigator.yaml
 ```
+
+`check --full` assembles every set as `serve` does, downloading remote
+archives into the cache and reading every remote disc image.
 
 Start the server on the install network:
 
@@ -206,7 +219,9 @@ No first pass opens an add-on set, including `/install.cmds`. After the first
 `go` returns to `Inst>`, the script opens the `then` sets, keeps everything
 already installed, selects the named products and runs `go` again. `then.sets`
 must name enabled add-on sets, and `instigator check` requires each
-`then.install` name to have a `.sw` or `.man` file in them.
+`then.install` name to have a `.sw` or `.man` file in them. For an add-on
+set with remote sources, only `instigator check --full` reads the media to
+confirm this.
 
 ### Post-install commands
 
