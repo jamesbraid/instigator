@@ -461,9 +461,12 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 			clients = append(clients, bootp.Client{Name: c.Name, MAC: c.MAC, IP: c.IP, Hostname: c.Hostname})
 		}
 		s.bootp = &bootp.Server{
-			ServerIP:  cfg.ServerIP,
-			Netmask:   cfg.Netmask,
-			Clients:   clients,
+			ServerIP: cfg.ServerIP,
+			Netmask:  cfg.Netmask,
+			Clients:  clients,
+			// DHCP only on a segment Instigator owns: on a host network a
+			// DHCP service of the LAN must keep port 67 to itself.
+			DHCP:      o.network != nil,
 			ReplyAddr: o.bootpReplyAddr,
 			Logger:    logger,
 			Recorder:  s.rec,

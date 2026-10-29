@@ -3,7 +3,9 @@
 // PROM broadcasts a BOOTREQUEST carrying the boot path it wants in the
 // file field, and expects a reply naming its address and the server's.
 // Replies are broadcast by default because the client owns no IP address
-// yet, so it cannot be reached by unicast without ARP games.
+// yet, so it cannot be reached by unicast without ARP games. A Server with
+// DHCP set also answers DHCP from the same clients (dhcp.go), for installed
+// systems that ask for an address that way.
 package bootp
 
 import (
@@ -43,6 +45,13 @@ type Server struct {
 
 	// Clients lists the MACs answered; everything else is ignored.
 	Clients []Client
+
+	// DHCP, when set, also answers DHCP (RFC 2131) from the configured
+	// clients: DISCOVER with an OFFER, REQUEST with an ACK or NAK. Off,
+	// any request carrying message type option 53 is left unanswered so a
+	// DHCP service on the same network can own port 67. Turn it on only
+	// for a segment Instigator owns, such as the private network.
+	DHCP bool
 
 	// ReplyAddr overrides the destination of replies. Nil means the
 	// limited broadcast 255.255.255.255:68.
@@ -95,6 +104,22 @@ func (s *Server) Serve(pc net.PacketConn) error {
 		}
 		if s.Logger.Enabled(logging.LevelDebug) {
 			s.Logger.Debugf("bootp: recv %d bytes from %s\n%s", n, src, decodeReq(buf[:n]))
+		}
+		if s.DHCP {
+			if m, ok := parseDHCP(buf[:n]); ok {
+				if s.Logger.Enabled(logging.LevelDebug) {
+					s.Logger.Debugf("dhcp: payload %x", buf[:n])
+				}
+				s.serveDHCP(m, func(reply []byte, dst net.Addr) error {
+					if viaIface {
+						_, err := p.WriteTo(reply, replyVia(cm), dst)
+						return err
+					}
+					_, err := pc.WriteTo(reply, dst)
+					return err
+				})
+				continue
+			}
 		}
 		if n < packetLen {
 			if s.Logger.Enabled(logging.LevelDebug) {

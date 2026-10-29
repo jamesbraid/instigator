@@ -69,11 +69,10 @@ func parseFrameTranscript(data []byte) (frameTranscript, error) {
 				return tr, fmt.Errorf("line %d: server %q, want %q", n, rest, transcriptServer)
 			}
 		case "bootp":
-			rest = strings.TrimSpace(rest)
-			if rest != transcriptBootp && rest != transcriptBootp+" hostname="+transcriptHostname {
-				return tr, fmt.Errorf("line %d: bootp %q, want %q, optionally with hostname=%s", n, rest, transcriptBootp, transcriptHostname)
+			if _, err := parseBootpLine(rest); err != nil {
+				return tr, fmt.Errorf("line %d: %v", n, err)
 			}
-			tr.bootp = rest
+			tr.bootp = strings.TrimSpace(rest)
 		case "frame":
 			tr.exchanges = append(tr.exchanges, frameExchange{label: strings.TrimSpace(rest)})
 		case "none":
@@ -108,6 +107,33 @@ const (
 
 	transcriptHostname = "origin200"
 )
+
+// bootpLine is the "bootp" line: the one client the service answers and
+// whether it also answers DHCP.
+type bootpLine struct {
+	hostname string
+	dhcp     bool
+}
+
+// parseBootpLine accepts the fixed client, then any of hostname=NAME and dhcp.
+func parseBootpLine(rest string) (bootpLine, error) {
+	var bl bootpLine
+	f := strings.Fields(rest)
+	if len(f) < 2 || f[0]+" "+f[1] != transcriptBootp {
+		return bl, fmt.Errorf("bootp %q, want %q first", rest, transcriptBootp)
+	}
+	for _, w := range f[2:] {
+		switch {
+		case w == "dhcp":
+			bl.dhcp = true
+		case w == "hostname="+transcriptHostname:
+			bl.hostname = transcriptHostname
+		default:
+			return bl, fmt.Errorf("bootp: unknown option %q", w)
+		}
+	}
+	return bl, nil
+}
 
 func (tr frameTranscript) format(name, about string) []byte {
 	var b bytes.Buffer
@@ -148,7 +174,7 @@ func writeFrameHex(b *bytes.Buffer, prefix string, p []byte) {
 
 // replayNetwork brings up the segment a transcript describes and returns
 // the machine's end of the stream.
-func replayNetwork(t *testing.T, bootpLine string) net.Conn {
+func replayNetwork(t *testing.T, bootpSpec string) net.Conn {
 	t.Helper()
 	conn, peer := net.Pipe()
 	n, err := New(conn, Config{ServerIP: netip.AddrFrom4(testSrvIP), PrefixLen: 24, MAC: net.HardwareAddr([]byte(testSrvMAC))})
@@ -156,7 +182,7 @@ func replayNetwork(t *testing.T, bootpLine string) net.Conn {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { peer.Close(); n.Close() })
-	if bootpLine != "" {
+	if bootpSpec != "" {
 		pc, err := n.ListenPacket(67)
 		if err != nil {
 			t.Fatal(err)
@@ -167,9 +193,12 @@ func replayNetwork(t *testing.T, bootpLine string) net.Conn {
 			Netmask:  netip.MustParsePrefix("10.98.0.0/24"),
 			Clients:  []bootp.Client{{Name: "guest", MAC: net.HardwareAddr([]byte(testGstMAC)), IP: netip.AddrFrom4(testGstIP)}},
 		}
-		if _, host, ok := strings.Cut(bootpLine, " hostname="); ok {
-			bs.Clients[0].Hostname = host
+		bl, err := parseBootpLine(bootpSpec)
+		if err != nil {
+			t.Fatal(err)
 		}
+		bs.Clients[0].Hostname = bl.hostname
+		bs.DHCP = bl.dhcp
 		go bs.Serve(pc)
 	}
 	return peer
@@ -290,17 +319,82 @@ func udpDatagram(src, dst [4]byte, sport, dport uint16, payload []byte) []byte {
 	return u
 }
 
-// dhcpDiscover is a DHCPDISCOVER shaped like a 548-byte client message:
-// BOOTP header, the RFC 1048 cookie, message type 1, a parameter request
-// list, and padding.
-func dhcpDiscover(mac []byte, xid uint32) []byte {
+// Messages IRIX 6.5.30's DHCP client (proclaim, started by the
+// autoconfig_ipaddress flag) sent to this server, from the debug log, as
+// hex with the trailing zero padding of the 548-byte datagram removed. The
+// DISCOVER asks for the host name IRIS; the REQUEST that follows an OFFER
+// carrying host name origin200 asks for that. The machine's address was
+// 08:00:69:ff:da:f7; realDHCP puts the transcripts' machine in its place.
+const (
+	proclaimDiscover = "" +
+		"010106005c08b8c50000000000000000000000000000000000000000080069ff" +
+		"daf7000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"00000000000000000000000063825363350101330401e133803d0701080069ff" +
+		"daf70c0449524953370933010c280f36503251ff"
+	proclaimRequest = "" +
+		"01010600105a43790000000000000000000000000000000000000000080069ff" +
+		"daf7000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000006382536335010332040a62004136040a62000233" +
+		"0401e133803d0701080069ffdaf70c096f726967696e323030370933010c280f" +
+		"36503251ff"
+)
+
+// realDHCP decodes a captured message into its 548 bytes and swaps the
+// capturing machine's MAC, in chaddr and in the client identifier option,
+// for mac.
+func realDHCP(hexMsg string, mac []byte) []byte {
+	p, err := hex.DecodeString(hexMsg)
+	if err != nil {
+		panic(err)
+	}
+	p = append(p, make([]byte, 548-len(p))...)
+	captured := []byte{0x08, 0x00, 0x69, 0xff, 0xda, 0xf7}
+	if !bytes.Equal(p[28:34], captured) {
+		panic("chaddr is not the capturing machine")
+	}
+	copy(p[28:34], mac)
+	id := append([]byte{61, 7, 1}, captured...)
+	i := bytes.Index(p[240:], id)
+	if i < 0 {
+		panic("no client identifier option")
+	}
+	copy(p[240+i+3:], mac)
+	return p
+}
+
+// dhcpMessage is a 548-byte client message like proclaim's: BOOTP header, the
+// cookie, message type typ, then opts (each a code, length, value), a
+// parameter request list, the end option and padding.
+func dhcpMessage(mac []byte, xid uint32, typ byte, opts ...[]byte) []byte {
 	p := make([]byte, 548)
 	p[0], p[1], p[2] = 1, 1, 6
 	binary.BigEndian.PutUint32(p[4:], xid)
 	copy(p[28:], mac)
-	copy(p[236:], []byte{99, 130, 83, 99, 53, 1, 1, 55, 4, 1, 3, 6, 15, 255})
+	w := 236 + copy(p[236:], []byte{99, 130, 83, 99, 53, 1, typ})
+	for _, o := range opts {
+		w += copy(p[w:], o)
+	}
+	copy(p[w:], []byte{55, 4, 1, 3, 6, 15, 255})
 	return p
 }
+
+// dhcpOption is one option for dhcpMessage.
+func dhcpOption(code byte, v ...byte) []byte { return append([]byte{code, byte(len(v))}, v...) }
+
+var (
+	serverIDOpt  = dhcpOption(54, testSrvIP[:]...)
+	requestedOpt = dhcpOption(50, testGstIP[:]...)
+)
 
 var (
 	zeroIP  = [4]byte{}
@@ -375,12 +469,36 @@ var frameScenarios = []scenario{
 	},
 	{
 		file:  "dhcp.txt",
-		about: "DHCP: the segment has no DHCP service. A DHCPDISCOVER draws no answer, from the BOOTP service or any other,\nand so does a DHCPREQUEST. IRIX's own client sends a message like this at boot when autoconfig_ipaddress is on.",
-		bootp: transcriptBootp,
+		about: "DHCP: a configured machine gets an OFFER for its address in answer to a DISCOVER and an ACK in answer to a REQUEST that selects\nthe host and names that address. Both are broadcast from the host to port 68. The lease is a year; the reply carries the host as server\nidentifier and the subnet mask, and no router. A machine nobody configured gets nothing, and BOOTP is still answered beside DHCP.\nIRIX's own client (proclaim) sends a DISCOVER like this at boot when autoconfig_ipaddress is on.",
+		bootp: transcriptBootp + " dhcp",
 		exchanges: []frameExchange{
-			{label: "DHCPDISCOVER from the configured machine", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, dhcpDiscover(guestMAC, 0x6b9635b6))},
-			{label: "DHCPDISCOVER again, same transaction", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, dhcpDiscover(guestMAC, 0x6b9635b6))},
-			{label: "request, then BOOTP, still answered after DHCP was ignored", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, bootpRequest(testGstMAC, "bootp()sgi"))},
+			{label: "DHCPDISCOVER from the configured machine (as IRIX proclaim sends it)", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, realDHCP(proclaimDiscover, guestMAC))},
+			{label: "DHCPDISCOVER again, same transaction", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, realDHCP(proclaimDiscover, guestMAC))},
+			{label: "DHCPREQUEST selecting the host's offer", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, dhcpMessage(guestMAC, 0x6b9635b6, 3, requestedOpt, serverIDOpt))},
+			{label: "DHCPDISCOVER from a machine nobody configured", frame: ethFrame(bcastMAC, []byte{8, 0, 0x69, 0x99, 0x99, 0x99}, 0x0800, ipv4Packet(zeroIP, bcastIP, 17, 1, 64, udpDatagram(zeroIP, bcastIP, 68, 67, dhcpMessage([]byte{8, 0, 0x69, 0x99, 0x99, 0x99}, 0x11111111, 1))))},
+			{label: "BOOTP request, still answered beside DHCP", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, bootpRequest(testGstMAC, "bootp()sgi"))},
+		},
+	},
+	{
+		file:  "dhcp-hostname.txt",
+		about: "DHCP with a host name: when the client is configured with one, OFFER and ACK carry it as option 12 after the subnet mask.",
+		bootp: transcriptBootp + " hostname=" + transcriptHostname + " dhcp",
+		exchanges: []frameExchange{
+			{label: "DHCPDISCOVER from the configured machine (as IRIX proclaim sends it)", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, realDHCP(proclaimDiscover, guestMAC))},
+			{label: "DHCPREQUEST selecting the host's offer (as IRIX proclaim sends it, asking for the offered host name)", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, realDHCP(proclaimRequest, guestMAC))},
+		},
+	},
+	{
+		file:  "dhcp-nak.txt",
+		about: "DHCP NAK: a REQUEST for an address other than the machine's is refused with a broadcast NAK, whether it selects the host or\nis an init-reboot with no server identifier. A REQUEST that selected another server, a DECLINE and a REQUEST that names\nno address draw nothing. The machine's own address in an init-reboot REQUEST is acknowledged.",
+		bootp: transcriptBootp + " dhcp",
+		exchanges: []frameExchange{
+			{label: "DHCPREQUEST selecting the host, for another address", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, dhcpMessage(guestMAC, 0x22222222, 3, dhcpOption(50, 10, 98, 0, 99), serverIDOpt))},
+			{label: "DHCPREQUEST init-reboot for another address", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, dhcpMessage(guestMAC, 0x33333333, 3, dhcpOption(50, 192, 0, 2, 1)))},
+			{label: "DHCPREQUEST that selected another server", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, dhcpMessage(guestMAC, 0x44444444, 3, requestedOpt, dhcpOption(54, 10, 98, 0, 9)))},
+			{label: "DHCPREQUEST naming no address", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, dhcpMessage(guestMAC, 0x55555555, 3, serverIDOpt))},
+			{label: "DHCPDECLINE", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, dhcpMessage(guestMAC, 0x66666666, 4, requestedOpt, serverIDOpt))},
+			{label: "DHCPREQUEST init-reboot for the machine's own address", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, dhcpMessage(guestMAC, 0x77777777, 3, requestedOpt))},
 		},
 	},
 	{

@@ -258,24 +258,48 @@ nothing listens on them: UDP to 111 draws the port unreachable above.
   `{"name": "sgi", "mac": ..., "ip": "10.98.0.65"}` and does not set it;
   it must pass the machine directory's name as `hostname` for BOOTP to
   carry the name. Whether the PROM and the miniroot take option 12 from a
-  BOOTP reply has not been run against IRIX.
-- **DHCP.** There is none. A BOOTREQUEST carrying DHCP message type
-  option 53 is ignored, so a DHCP server on a shared network can own the
-  port; nothing on the private segment answers it. IRIX's DHCP client
-  (`proclaim`, started by the `autoconfig_ipaddress` flag) sends a
-  548-byte DHCPDISCOVER from `0.0.0.0:68` with the broadcast flag clear,
-  retries at about two seconds, and gets no answer. The host-name option
-  has nothing to ride on in a DHCP reply because Instigator sends no
-  DHCP reply.
-- **How the installed guest gets an address.** It does not, on this
-  network. An installed 6.5.30 system boots with `ef0` at the default
-  192.0.2.1 and the console message `IRIS's Internet address is the
-  default. Using standalone network mode`: the interface is not up. The
-  proof used
-  `ifconfig ef0 up; ifconfig ef0 alias 10.98.0.65 netmask 255.255.255.0`.
-  BOOTP is for the PROM and the miniroot during an install. The
-  installed system needs an address from its own configuration or a DHCP
-  service; the design of that is open (see below).
+  BOOTP reply has not been run against IRIX; the installed system takes it
+  from DHCP, below.
+- **DHCP.** On the private network the same service answers DHCP
+  (RFC 2131) for the same clients, by MAC, and for nobody else. Off the
+  private network, on a host's own interface, a message carrying option 53
+  is still ignored, so a DHCP service on that LAN keeps port 67.
+  - A DISCOVER is answered with an OFFER, and a REQUEST with an ACK. The
+    address is always the client entry's `ip`. A REQUEST for another
+    address draws a NAK, whether it names the host as server identifier
+    (selecting) or has none (init-reboot), and a REQUEST that carries
+    another server's identifier draws nothing, as do DECLINE, RELEASE and
+    INFORM. A renewing REQUEST, with `ciaddr` set and no option 50, is
+    answered like the others by comparing `ciaddr`.
+  - Replies are 300 bytes at least. `yiaddr` is the machine's address,
+    `siaddr` and option 54 the host's, `chaddr`, `xid` and `flags` are the
+    request's, and `ciaddr` is the request's in an ACK and zero otherwise.
+    A NAK has neither `yiaddr` nor `siaddr`. Options, in order: 53, 54,
+    then in an OFFER or ACK 51 (lease), 1 (subnet mask, when the
+    configuration has a netmask) and 12 (host name, when the client entry
+    has one), then 255. There is no router (option 3), DNS or anything
+    else.
+  - The lease is 31536000 seconds, a year, fixed: IRIX asks for exactly
+    that. Nothing in a reply is random or depends on the time, so the same
+    request always draws the same bytes.
+  - Replies go to UDP port 68 and are broadcast (255.255.255.255, MAC
+    ff:ff:ff:ff:ff:ff), because the machine has no address to unicast to
+    and the host does not ARP for it. The one exception is an ACK to a
+    renewing REQUEST, which goes to `ciaddr`.
+  - BOOTP is unchanged and still answered beside DHCP: a request without
+    option 53 is BOOTP, with the 300-byte rule above.
+- **How the installed guest gets an address.** IRIX's DHCP client
+  (`proclaim`) starts at boot when `autoconfig_ipaddress` is on, which
+  Origami's install post-commands set. It broadcasts a 548-byte DISCOVER
+  from `0.0.0.0:68` with the broadcast flag clear, naming the host name
+  `IRIS` (option 12) and asking for lease 31536000 (option 51), receives
+  the OFFER and sends a REQUEST for it. `ef0` comes up with the address,
+  the mask and the route to the segment with nothing configured by hand.
+- **Host name.** IRIX uses it. The REQUEST that follows an OFFER carrying
+  option 12 asks for that name, and the system sets its host name and
+  `/etc/sys_id` to it: a machine whose client entry has `hostname:
+  origin200` boots as `origin200`. Without the option the machine keeps
+  the name it has (`IRIS` on a fresh install).
 
 ### Transcripts
 
@@ -295,8 +319,9 @@ none
 ```
 
 - `server ADDR/PREFIX MAC` is the host and must be the one above. The
-  optional `bootp MAC IP [hostname=NAME]` starts the BOOTP service with that
-  one client; without it nothing listens on 67.
+  optional `bootp MAC IP [hostname=NAME] [dhcp]` starts the BOOTP service
+  with that one client, and `dhcp` makes it answer DHCP too; without the
+  line nothing listens on 67.
 - `frame LABEL` starts an exchange. `>` lines are the Ethernet frame the
   machine sends and `<` lines the frame the host answers, as hex, with no
   length prefix: a replay adds the 4-byte length on the way in and removes
@@ -310,8 +335,9 @@ none
 
 `go test ./internal/qemunet -run TestFrameTranscripts -update` rewrites the
 files from the stack. The files cover ARP, ICMP echo and port unreachable,
-BOOTP with and without a host name, the absence of DHCP, and ignored
-traffic. The NFS programs have the RPC transcripts in `nfs/testdata`.
+BOOTP and DHCP with and without a host name, DHCP refusals, and ignored
+traffic. The DHCP files include the DISCOVER and REQUEST IRIX's `proclaim`
+sent, with the machine's MAC replaced. The NFS programs have the RPC transcripts in `nfs/testdata`.
 
 ### Checked against IRIX 6.5.30
 
@@ -324,6 +350,10 @@ Origin 200 machine, private mode, Origami 0.4.1, `serve --share` and
 - `mount -o vers=3,proto=tcp` and `mount -o vers=2,proto=udp` both work, at
   once, from two shares on one server. ls, cat, write, append, mv,
   mkdir, symlink, chmod, rm and rmdir pass on both.
+- A fresh boot of an installed 6.5.30 system with `autoconfig_ipaddress` on
+  gets 10.98.0.65 from the DHCP service, with the mask and the segment
+  route, and pings the host with no `ifconfig` by hand. With a `hostname`
+  on the client entry it comes up under that name.
 - A 200 MB file copies from each share to the guest's disk and back with
   identical SHA-256 on the host.
 - A host filesystem with no birth time (an NFS-mounted directory, for one)
@@ -441,10 +471,5 @@ in Instigator before the port starts.
 
 ## Open questions
 
-- How does an installed guest get its address on the private network?
-  Instigator answers BOOTP to the PROM only and no DHCP at all, and an
-  installed 6.5.30 system leaves `ef0` down until told otherwise. Either
-  Instigator grows a DHCP reply for the segment, which would also carry the
-  host name, or Origami configures the guest after install.
 - Does the userspace switch slow normal guest networking? The IRIX check
   compares an internet download through it with plain user mode.
