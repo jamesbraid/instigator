@@ -80,9 +80,25 @@ func (s *Server) table() *rpcTable {
 
 func null(net.Addr, *xdrReader) []byte { return nil }
 
+// udpBuffer is the send and receive buffer ServeUDP asks for. The largest
+// reply is a 32 KiB READ plus headers, and a host refuses a datagram bigger
+// than the send buffer: macOS sizes it from net.inet.udp.maxdgram, 9216
+// bytes, and fails the send with EMSGSIZE. Linux and Windows defaults
+// already hold 64 KiB. A host may clamp the request.
+const udpBuffer = 256 * 1024
+
 // ServeUDP answers every program the server speaks - portmap, MOUNT and
-// NFS - on pc, until pc is closed. Calls are answered one at a time.
+// NFS - on pc, until pc is closed. Calls are answered one at a time. It
+// enlarges pc's socket buffers when pc allows it, as a *net.UDPConn does.
 func (s *Server) ServeUDP(pc net.PacketConn) error {
+	if b, ok := pc.(interface {
+		SetReadBuffer(int) error
+		SetWriteBuffer(int) error
+	}); ok {
+		if err := errors.Join(b.SetReadBuffer(udpBuffer), b.SetWriteBuffer(udpBuffer)); err != nil {
+			s.Logger.Warnf("nfs: raising the UDP buffers: %v; large replies may be dropped", err)
+		}
+	}
 	buf := make([]byte, 65536)
 	for {
 		n, addr, err := pc.ReadFrom(buf)
@@ -103,7 +119,9 @@ func (s *Server) ServeUDP(pc net.PacketConn) error {
 			s.drc.store(addr, pkt, reply)
 		}
 		if reply != nil {
-			pc.WriteTo(reply, addr)
+			if _, err := pc.WriteTo(reply, addr); err != nil && !errors.Is(err, net.ErrClosed) {
+				s.Logger.Warnf("nfs: %s: dropped a %d-byte reply: %v", addr, len(reply), err)
+			}
 		}
 	}
 }
