@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -547,5 +549,63 @@ func TestSharePrivateNetworkAnswersDHCPForItsClient(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("share did not stop when the machine disconnected")
+	}
+}
+
+// Stopping the command while a machine is attached must finish promptly,
+// with or without a BOOTP/DHCP client configured.
+func TestSharePrivateNetworkStopsWhileConnected(t *testing.T) {
+	for _, withClient := range []bool{false, true} {
+		t.Run(fmt.Sprint("client=", withClient), func(t *testing.T) {
+			endpoint := loopbackEndpoint(t)
+			stop := make(chan os.Signal, 1)
+			done := make(chan error, 1)
+			o := shareOptions{
+				shares:  []shareSpec{{"s", t.TempDir()}},
+				network: privateEndpoint{tcp: endpoint},
+				address: netip.MustParsePrefix("10.98.0.2/24"),
+			}
+			if withClient {
+				var err error
+				if o.clients, err = parseClients([]string{"08:00:69:12:34:56"}, o.address); err != nil {
+					t.Fatal(err)
+				}
+			}
+			go func() { done <- servePrivateShare(o, new(bytes.Buffer), stop, nil) }()
+			g := attachGuest(t, endpoint)
+			checkPrivateShares(t, g, []string{"s"})
+			stop <- os.Interrupt
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(10 * time.Second):
+				buf := make([]byte, 1<<20)
+				t.Fatalf("share did not stop with a machine attached:\n%s", buf[:runtime.Stack(buf, true)])
+			}
+		})
+	}
+}
+
+// Failures beyond the first, from any number of listeners, must not block:
+// Close waits for every listener to return.
+func TestPrivateSharesReportNeverBlocks(t *testing.T) {
+	p := &privateShares{errs: make(chan error, 1)}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 50 {
+			p.report(errors.New("listener failed"))
+		}
+		p.report(nil)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("report blocked")
+	}
+	if err := <-p.Err(); err == nil {
+		t.Fatal("first failure lost")
 	}
 }

@@ -156,7 +156,7 @@ func serveSharesOn(n shareNetwork, fsys nfs.FS, logger *logging.Logger) (*privat
 	srv := &nfs.Server{FS: fsys, Logger: logger}
 	ports := nfs.Ports{Portmap: privatePortmapPort, Mount: privateMountPort, NFS: privateNFSPort}
 	srv.SetPorts(ports, ports)
-	p := &privateShares{errs: make(chan error, 6)}
+	p := &privateShares{errs: make(chan error, 1)}
 	for _, port := range []int{privatePortmapPort, privateMountPort, privateNFSPort} {
 		pc, err := n.ListenPacket(port)
 		if err != nil {
@@ -170,10 +170,23 @@ func serveSharesOn(n shareNetwork, fsys nfs.FS, logger *logging.Logger) (*privat
 			return nil, fmt.Errorf("share: tcp %d: %w", port, err)
 		}
 		p.closers = append(p.closers, l)
-		p.wg.Go(func() { p.errs <- srv.ServeUDP(pc) })
-		p.wg.Go(func() { p.errs <- srv.ServeTCP(l) })
+		p.wg.Go(func() { p.report(srv.ServeUDP(pc)) })
+		p.wg.Go(func() { p.report(srv.ServeTCP(l)) })
 	}
 	return p, nil
+}
+
+// report records the first listener failure and drops the rest. It never
+// blocks: only the first failure is read, so a send that waited would hold
+// up Close, which waits for every listener to return.
+func (p *privateShares) report(err error) {
+	if err == nil {
+		return
+	}
+	select {
+	case p.errs <- err:
+	default:
+	}
 }
 
 // Err delivers the first listener to fail. Closing the listeners ends

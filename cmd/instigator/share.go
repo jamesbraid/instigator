@@ -232,10 +232,8 @@ func servePrivateShare(o shareOptions, output io.Writer, stop <-chan os.Signal, 
 		defer pc.Close()
 		bs := &bootp.Server{ServerIP: o.address.Addr(), Netmask: o.address.Masked(), Clients: o.clients, DHCP: true, Logger: logger}
 		go func() {
-			// Closed with the network at shutdown; any other end is logged,
-			// not fatal to the shares.
 			if err := bs.Serve(pc); err != nil && !errors.Is(err, net.ErrClosed) {
-				logger.Errorf("share: bootp: %v", err)
+				p.report(fmt.Errorf("share: bootp: %w", err))
 			}
 		}()
 		logger.Infof("share: answering BOOTP and DHCP for %d client(s)", len(o.clients))
