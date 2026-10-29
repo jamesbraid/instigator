@@ -53,6 +53,7 @@ func TestFramePumpBatchesQueuedFrames(t *testing.T) {
 						hdr[j] = byte(i + j)
 					}
 					want[i] = append(append([]byte(nil), hdr...), byte(i))
+					want[i] = append(want[i], make([]byte, 60-len(want[i]))...)
 					var list stack.PacketBufferList
 					list.PushBack(pkt)
 					n, err := ch.WritePackets(list)

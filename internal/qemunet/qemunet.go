@@ -162,7 +162,15 @@ func (n *Network) writeLoop() {
 			frame := stack.PayloadSince(pkt.LinkHeader())
 			pkt.DecRef()
 			if frame != nil {
-				w.append(frame.AsSlice())
+				data := frame.AsSlice()
+				// Stream links omit FCS but still carry Ethernet minimum frames.
+				if len(data) < 60 {
+					var padded [60]byte
+					copy(padded[:], data)
+					w.append(padded[:])
+				} else {
+					w.append(data)
+				}
 				frame.Release()
 			}
 			if count == frameBatchSize-1 {
@@ -208,6 +216,11 @@ func (n *Network) ListenPacket(port int) (net.PacketConn, error) {
 		return nil, fmt.Errorf("qemunet: udp endpoint: %s", err)
 	}
 	ep.SocketOptions().SetBroadcast(true)
+	// Some firmware rejects DF even when the datagram fits the link MTU.
+	if err := ep.SetSockOptInt(tcpip.MTUDiscoverOption, int(tcpip.PMTUDiscoveryDont)); err != nil {
+		ep.Close()
+		return nil, fmt.Errorf("qemunet: configure udp fragmentation: %s", err)
+	}
 	if err := ep.Bind(tcpip.FullAddress{NIC: nicID, Port: uint16(port)}); err != nil {
 		ep.Close()
 		return nil, fmt.Errorf("qemunet: bind udp :%d: %s", port, err)
