@@ -47,6 +47,15 @@ func openSys(dir string) (sysFS, error) {
 
 func (s sysFS) close() error { return unix.Close(s.rootfd) }
 
+// hasBirthTime reports whether the share's filesystem keeps birth times.
+// NFS mounts, for one, do not.
+func (s sysFS) hasBirthTime() bool {
+	var stx unix.Statx_t
+	return !s.noBtime.Load() &&
+		unix.Statx(s.rootfd, "", unix.AT_EMPTY_PATH, unix.STATX_BTIME, &stx) == nil &&
+		stx.Mask&unix.STATX_BTIME != 0
+}
+
 // generation is the file's birth time in nanoseconds, or 0 where the
 // kernel or filesystem has none. openat2 with RESOLVE_BENEATH confines
 // the lookup to the share as os.Root does.

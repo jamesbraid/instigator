@@ -2,6 +2,7 @@ package sharefs
 
 import (
 	"io/fs"
+	"os"
 	"syscall"
 	"time"
 )
@@ -31,9 +32,19 @@ func sameInode(fi fs.FileInfo, k key) bool {
 	return ok && uint64(s.Dev) == k.dev && s.Ino == k.ino
 }
 
-type sysFS struct{}
+type sysFS struct{ birth bool }
 
-func openSys(string) (sysFS, error) { return sysFS{}, nil }
+func openSys(dir string) (sysFS, error) {
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return sysFS{}, err
+	}
+	return sysFS{birth: fileStat(fi).gen != 0}, nil
+}
+
+// hasBirthTime reports whether the share's filesystem keeps birth times,
+// judged by its root directory.
+func (s sysFS) hasBirthTime() bool { return s.birth }
 
 func (sysFS) close() error { return nil }
 

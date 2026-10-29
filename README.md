@@ -361,8 +361,11 @@ LINK and MKNOD are refused.
 - `--udp=false` or `--tcp=false` drops a transport.
 - `--handle-table FILE` keeps filehandles in a table of paths instead of
   deriving them from inodes. Windows has no usable inode numbers, so there
-  it defaults to a file in the user cache directory. Either way a handle
-  survives a restart.
+  it defaults to a file in the user cache directory. So does a share on a
+  filesystem that keeps no file birth times, an NFS mount for one: without a
+  birth time a removed name's inode comes back for the next file, and an
+  inode handle could not tell them apart. Either way a handle survives a
+  restart.
 - `--share NAME=DIR` adds another export (repeatable), beside or instead of
   the positional `<name> <dir>`. One server answers for all of them, and a
   rename between two refuses with `XDEV`.

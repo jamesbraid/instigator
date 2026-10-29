@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net"
 	"os"
@@ -89,7 +90,7 @@ func openShares(specs []shareSpec, handleTable string) (nfs.FS, io.Closer, strin
 			}
 			table = filepath.Join(dir, "instigator", "share-"+sp.name+".handles")
 		}
-		f, err := sharefs.Open(sp.name, sp.dir, sharefs.Options{PathTable: table})
+		f, err := sharefs.Open(sp.name, sp.dir, sharefs.Options{PathTable: table, TableFallback: fallbackTable(sp)})
 		if err != nil {
 			closeAll()
 			return nil, nil, "", err
@@ -106,6 +107,25 @@ func openShares(specs []shareSpec, handleTable string) (nfs.FS, io.Closer, strin
 		return nil, nil, "", err
 	}
 	return m, m, strings.Join(desc, ", "), nil
+}
+
+// fallbackTable is where a share keeps its path table when its filesystem
+// has no birth time, as an NFS mount has none: a file in the user cache
+// directory named for the share and its directory, so two shares of one
+// name on different directories don't share numbering. Empty when there
+// is no cache directory.
+func fallbackTable(sp shareSpec) string {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	abs, err := filepath.Abs(sp.dir)
+	if err != nil {
+		return ""
+	}
+	h := fnv.New32a()
+	h.Write([]byte(abs))
+	return filepath.Join(dir, "instigator", fmt.Sprintf("share-%s-%08x.handles", sp.name, h.Sum32()))
 }
 
 // shareNetwork is the part of a private network the NFS server needs.

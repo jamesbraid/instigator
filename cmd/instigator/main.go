@@ -69,7 +69,7 @@ func newRoot() *cli.Command {
 					&cli.StringFlag{Name: "network-socket", Usage: "serve on a machine's private Ethernet segment over the QEMU stream socket at `PATH`"},
 					&cli.StringFlag{Name: "network-tcp", Usage: "serve on a machine's private Ethernet segment over a loopback TCP stream at `IP:PORT`"},
 					&cli.StringFlag{Name: "address", Value: "10.98.0.2/24", Usage: "the server's `ADDR/PREFIX` on the private network"},
-					&cli.StringFlag{Name: "handle-table", Usage: "keep filehandles in a table of paths in `FILE` instead of deriving them from inodes (default on Windows: in the user cache directory)"},
+					&cli.StringFlag{Name: "handle-table", Usage: "keep filehandles in a table of paths in `FILE` instead of deriving them from inodes (default on Windows, and for a share on a filesystem with no file birth times, such as an NFS mount: in the user cache directory)"},
 					&cli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log every RPC call"},
 				},
 				Action: func(_ context.Context, cmd *cli.Command) error {

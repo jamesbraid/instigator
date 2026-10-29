@@ -30,4 +30,6 @@ func openSys(string) (sysFS, error) { return sysFS{}, nil }
 
 func (sysFS) close() error { return nil }
 
+func (sysFS) hasBirthTime() bool { return false }
+
 func (sysFS) generation(string, stat) uint64 { return 0 }

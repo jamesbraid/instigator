@@ -522,3 +522,135 @@ func TestPathTableFile(t *testing.T) {
 		t.Fatalf("new id %d reuses one at or below %d", d, c)
 	}
 }
+
+// On a filesystem without birth times (an NFS mount) the host gives a
+// recreated file the inode of the one before it. Without a generation to
+// tell them apart the share numbers paths itself, and a name recreated
+// gets a handle the old one cannot reach.
+func TestRecreatedNameGetsANewHandleWithoutBirthTime(t *testing.T) {
+	table := filepath.Join(t.TempDir(), "handles")
+	f, _ := newShare(t, Options{NoBirthTime: true, TableFallback: table})
+	r := root(t, f)
+	if f.table == nil {
+		t.Fatal("no path table on a host without birth times")
+	}
+	recreate := func(how string, replace func()) {
+		t.Helper()
+		n, err := f.Create(r, "t", nfs.Guarded, nfs.SetAttr{}, [8]byte{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := handleOf(t, f, n)
+		replace()
+		n2, err := f.Create(r, "t", nfs.Guarded, nfs.SetAttr{}, [8]byte{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h := handleOf(t, f, n2); string(h) == string(old) {
+			t.Fatalf("%s: the recreated file has the old handle %x", how, old)
+		}
+		if _, err := f.NodeByHandle(old); !errors.Is(err, nfs.ErrStale) {
+			t.Fatalf("%s: the old handle: %v, want ErrStale", how, err)
+		}
+		if err := f.Remove(r, "t"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recreate("remove", func() {
+		if err := f.Remove(r, "t"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	recreate("rename over", func() {
+		if _, err := f.Create(r, "u", nfs.Guarded, nfs.SetAttr{}, [8]byte{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Rename(r, "u", r, "t"); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Remove(r, "t"); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// A handle to a removed file stays dead across any number of restarts,
+// even when it had the highest id the table ever gave out.
+func TestRemovedHandleStaysDeadAcrossRestarts(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "share")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{NoBirthTime: true, TableFallback: filepath.Join(base, "handles")}
+	open := func() *FS {
+		t.Helper()
+		f, err := Open("s", dir, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	f := open()
+	r := root(t, f)
+	n, err := f.Create(r, "t", nfs.Guarded, nfs.SetAttr{}, [8]byte{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := handleOf(t, f, n)
+	if err := f.Remove(r, "t"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	for range 2 { // the first restart replays the removal, the second does not
+		f = open()
+		if _, err := f.NodeByHandle(old); !errors.Is(err, nfs.ErrStale) {
+			t.Fatalf("old handle after restart: %v, want ErrStale", err)
+		}
+		n2, err := f.Create(root(t, f), "t", nfs.Guarded, nfs.SetAttr{}, [8]byte{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(handleOf(t, f, n2)) == string(old) {
+			t.Fatal("a file made after a restart reuses the removed file's handle")
+		}
+		if _, err := f.NodeByHandle(old); !errors.Is(err, nfs.ErrStale) {
+			t.Fatalf("old handle after a create: %v, want ErrStale", err)
+		}
+		if err := f.Remove(root(t, f), "t"); err != nil {
+			t.Fatal(err)
+		}
+		f.Close()
+	}
+}
+
+func TestNoBirthTimeNeedsATable(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Open("s", dir, Options{NoBirthTime: true}); err == nil {
+		t.Fatal("Open succeeded with no birth time and no table to fall back to")
+	}
+	// An explicit table wins over the fallback.
+	explicit := filepath.Join(t.TempDir(), "explicit")
+	f, err := Open("s", dir, Options{NoBirthTime: true, PathTable: explicit, TableFallback: filepath.Join(t.TempDir(), "other")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := os.Stat(explicit); err != nil {
+		t.Fatalf("explicit table not used: %v", err)
+	}
+}
+
+// The handle keeps the documented path-table layout when a share falls back.
+func TestFallbackHandleLayout(t *testing.T) {
+	f, _ := newShare(t, Options{NoBirthTime: true, TableFallback: filepath.Join(t.TempDir(), "handles")})
+	h := handleOf(t, f, lookup(t, f, root(t, f), "f"))
+	if len(h) != 32 || h[0] != fmtTable || h[1]|h[2]|h[3] != 0 {
+		t.Fatalf("handle %x is not a path-table handle", h)
+	}
+	for _, b := range append(h[8:16:16], h[24:]...) {
+		if b != 0 {
+			t.Fatalf("device and generation are not zero in %x", h)
+		}
+	}
+}

@@ -14,8 +14,11 @@ import (
 // pathTable numbers the paths of a share for filehandles on a host
 // without stable inode numbers. It lives in a file of lines, each
 // "set ID PATH" with PATH quoted as Go quotes strings, or "del ID".
-// Opening the table replays the file and rewrites it compacted; changes
-// after that are appended, so the numbering survives a restart.
+// A "next ID" line, written when the table is compacted, keeps ids above
+// ID from being handed out again: an id freed by a removal is never reused,
+// so a handle to a removed file cannot reach a later one. Opening the table
+// replays the file and rewrites it compacted; changes after that are
+// appended, so the numbering survives a restart.
 type pathTable struct {
 	mu     sync.Mutex
 	f      *os.File
@@ -41,6 +44,7 @@ func openPathTable(file string) (*pathTable, error) {
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	w := bufio.NewWriter(out)
+	fmt.Fprintf(w, "next %d\n", t.next)
 	for _, id := range ids {
 		fmt.Fprintf(w, "set %d %s\n", id, strconv.Quote(t.byID[id]))
 	}
@@ -85,6 +89,8 @@ func (t *pathTable) load(file string) error {
 			return fmt.Errorf("%s:%d: %v", file, n, err)
 		}
 		switch {
+		case f[0] == "next" && len(f) == 2:
+			t.next = max(t.next, id)
 		case f[0] == "set" && len(f) == 3:
 			p, err := strconv.Unquote(f[2])
 			if err != nil {

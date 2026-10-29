@@ -63,6 +63,13 @@ Transports: UDP and TCP with record marking, for every program.
   that no longer matches the file returns `STALE`. Handles survive a
   server restart, because they are derived from the file, not from server
   memory.
+- **No birth time.** A filesystem without birth times, such as an NFS
+  mount, hands a freed inode to the next file created, so an inode and a
+  zero generation cannot tell a recreated name from the file it replaced.
+  A share opened on one uses path-table handles instead, the same as
+  Windows, in a file in the user cache directory named for the share and
+  its directory (`--handle-table` picks another). The server probes the
+  share's root once, at start.
 - **Windows.** The host has no inode, so handles map the path through a
   persistent table in the machine directory. Windows gets the same
   owner rules.
@@ -77,10 +84,19 @@ doesn't place, such as one from before a restart, is found by walking
 the share for its device and inode.
 
 The path table is a text file of `set ID PATH` lines, with `PATH` quoted
-as Go quotes strings, and `del ID` lines. Ids count up from 1 in the
-order paths are first seen, and a rename keeps them. A path is first
+as Go quotes strings, `del ID` lines, and a `next ID` line at the start of
+a compacted table. Ids count up from 1 in the order paths are first seen,
+and a rename keeps them. An id is never handed out twice: a name removed
+or renamed over through the server loses its id, and the file made under
+that name next gets a new one, even after any number of restarts. A path is first
 seen when the server first stats it: the root at MNT, a new file when it
 is made, and a directory's entries in name order when it is listed.
+
+What path-table handles do not cover: a file the host deletes or replaces
+behind the server's back, with the server running or stopped, keeps its
+path and so its handle, and the new file answers to it. Only changes made
+through NFS retire an id. Inode handles with a birth time detect that, and
+a host with one uses them.
 
 A READDIR cookie for a share entry is FNV-1a 32 of its name with the top
 bit cleared, or 1 if that is 0, and entries are listed in cookie order,
@@ -357,9 +373,12 @@ Origin 200 machine, private mode, Origami 0.4.1, `serve --share` and
 - A 200 MB file copies from each share to the guest's disk and back with
   identical SHA-256 on the host.
 - A host filesystem with no birth time (an NFS-mounted directory, for one)
-  recycles inode numbers at once, so a name that is removed and made again
-  can get its old handle. The guest then reports `Stale NFS file handle`
-  for it. The proof's shares sit on local XFS.
+  recycles inode numbers, so a name that is removed and made again could get
+  its old handle, and the guest reported `Stale NFS file handle`. Shares on
+  such a filesystem now use path-table handles (see "No birth time"). With
+  shares on an NFS mount (`/storage/nvme` here), `touch t; rm t; touch t;
+  cat t` and the same with a two-second pause, three times on each mount,
+  pass on both v2/UDP and v3/TCP, and so do the file operations above.
 
 ## CLI
 

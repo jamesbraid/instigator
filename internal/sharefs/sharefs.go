@@ -41,6 +41,18 @@ type Options struct {
 	// setting it chooses one.
 	PathTable string
 
+	// TableFallback names the path table file to use when PathTable is
+	// empty and the share's filesystem keeps no birth time, as an NFS
+	// mount does. Without a birth time an inode handle cannot tell a
+	// recreated file from the one it replaced, since the filesystem hands
+	// the freed inode to the next create. Open fails in that case when
+	// this is empty too.
+	TableFallback string
+
+	// NoBirthTime makes Open treat the filesystem as one without birth
+	// times, for tests of the hosts that have none.
+	NoBirthTime bool
+
 	// AttrFilter, when set, sees every attribute set before the server
 	// does. The transcript tests use it to pin the times and sizes a host
 	// chooses itself.
@@ -103,8 +115,15 @@ func Open(name, dir string, opts Options) (*FS, error) {
 		f.root.Close()
 		return nil, err
 	}
-	if opts.PathTable != "" {
-		if f.table, err = openPathTable(opts.PathTable); err != nil {
+	table := opts.PathTable
+	if table == "" && (opts.NoBirthTime || !f.sys.hasBirthTime()) {
+		if table = opts.TableFallback; table == "" {
+			f.Close()
+			return nil, errors.New("sharefs: " + abs + " keeps no file birth times, so a share there needs a path table (--handle-table)")
+		}
+	}
+	if table != "" {
+		if f.table, err = openPathTable(table); err != nil {
 			f.Close()
 			return nil, err
 		}
