@@ -108,6 +108,39 @@ effect at the next `run`.
   unmount and remount. It covers NFSv3/TCP, plus NFSv2/UDP on a private
   network.
 
+## Transcript format
+
+The transcripts are `nfs/testdata/transcripts/*.txt`, plain text read
+line by line. Blank lines and lines starting with `#` are comments.
+
+```
+fixture tree
+
+call GETATTR the root
+> 00000003 00000000 00000002 000186a3 00000002 00000001 00000000 00000000
+> 00000000 00000000 01000000 00000000 01000000 00000000 00000000 00000000
+> 00000000 00000000
+< 00000003 00000001 00000000 00000000 00000000 00000000 00000000 00000002
+```
+
+- `fixture NAME` names the tree the server exports. `tree` is
+  `nfs/testdata/fixture.txt`, whose header comment gives its format and
+  the node numbering the server uses for it.
+- `call LABEL` starts an exchange. The label is for people.
+- `>` lines carry the RPC call message and `<` lines the reply, as hex.
+  Whitespace inside the hex is only for reading; the bytes concatenate.
+  The message is the RPC message alone (RFC 5531 section 9), with no
+  record mark: a TCP replay adds one and expects one.
+- Exchanges run in order against one fresh server and fixture, and the
+  reply must match exactly. The call's program number, at byte offset 12,
+  chooses the service to send it to. Portmap advertises MOUNT on port 635
+  and NFS on 2049, whatever ports the test server is really bound to.
+
+The Go scenarios in `nfs/transcripts_scenarios_test.go` generate the
+files. `go test ./nfs -run TestTranscripts -update` rewrites them from
+the current server, and a plain `go test` fails when a scenario no longer
+produces its file byte for byte, then replays each file's raw calls.
+
 ## Order of work
 
 1. **Spike.** Instigator's v2/UDP server, read-only, behind `guestfwd`

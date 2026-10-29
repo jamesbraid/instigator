@@ -1,0 +1,50 @@
+# The tree every "fixture tree" transcript is served from.
+#
+#   dir  PATH MODE MTIME
+#   file PATH MODE MTIME CONTENT
+#   link PATH MODE MTIME TARGET
+#
+# PATH is relative to the export root, "." for the root itself. MODE is
+# the octal permission bits, MTIME Unix seconds. CONTENT is hex:BYTES, or
+# pattern:LENGTH for LENGTH bytes where byte i is i mod 251. The server
+# exports the root as "/" and numbers nodes from 1 in depth-first order,
+# visiting directory entries sorted by name: "." is 1.
+dir  .              0755 915148800
+file big.bin        0644 915148801 pattern:20000
+dir  empty          0700 915148802
+file hello.txt      0644 915148803 hex:68656c6c6f2c20776f726c640a
+link link           0777 915148804 hello.txt
+dir  many           0755 915148805
+file many/file-00 0644 915148806 hex:30300a
+file many/file-01 0644 915148806 hex:30310a
+file many/file-02 0644 915148806 hex:30320a
+file many/file-03 0644 915148806 hex:30330a
+file many/file-04 0644 915148806 hex:30340a
+file many/file-05 0644 915148806 hex:30350a
+file many/file-06 0644 915148806 hex:30360a
+file many/file-07 0644 915148806 hex:30370a
+file many/file-08 0644 915148806 hex:30380a
+file many/file-09 0644 915148806 hex:30390a
+file many/file-10 0644 915148806 hex:31300a
+file many/file-11 0644 915148806 hex:31310a
+file many/file-12 0644 915148806 hex:31320a
+file many/file-13 0644 915148806 hex:31330a
+file many/file-14 0644 915148806 hex:31340a
+file many/file-15 0644 915148806 hex:31350a
+file many/file-16 0644 915148806 hex:31360a
+file many/file-17 0644 915148806 hex:31370a
+file many/file-18 0644 915148806 hex:31380a
+file many/file-19 0644 915148806 hex:31390a
+file many/file-20 0644 915148806 hex:32300a
+file many/file-21 0644 915148806 hex:32310a
+file many/file-22 0644 915148806 hex:32320a
+file many/file-23 0644 915148806 hex:32330a
+file many/file-24 0644 915148806 hex:32340a
+file many/file-25 0644 915148806 hex:32350a
+file many/file-26 0644 915148806 hex:32360a
+file many/file-27 0644 915148806 hex:32370a
+file many/file-28 0644 915148806 hex:32380a
+file many/file-29 0644 915148806 hex:32390a
+file run.sh         0755 915148807 hex:23212f62696e2f73680a
+dir  sub            0750 915148808
+file sub/nested.txt 0600 915148809 hex:6e65737465640a
