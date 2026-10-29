@@ -132,6 +132,7 @@ func (f *FS) Exports() []string { return []string{"/" + f.name} }
 
 // node is a file as last statted.
 type node struct {
+	fs   *FS    // the share it belongs to, for Multi
 	path string // slash-separated, relative to the share; "." is its root
 	raw  uint32 // host mode with type bits, setuid included
 	attr nfs.Attr
@@ -193,7 +194,7 @@ func (f *FS) describe(rel string, st stat) (*node, error) {
 		f.cache[k] = rel
 		f.mu.Unlock()
 	}
-	n := &node{path: rel, raw: st.mode, key: k, attr: nfs.Attr{
+	n := &node{fs: f, path: rel, raw: st.mode, key: k, attr: nfs.Attr{
 		Mode:   st.mode &^ 0o4000,
 		Nlink:  st.nlink,
 		Size:   st.size,
