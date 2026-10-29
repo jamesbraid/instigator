@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,8 @@ import (
 
 	"github.com/urfave/cli/v3"
 
+	"github.com/jamesbraid/instigator/internal/bootp"
+	"github.com/jamesbraid/instigator/internal/config"
 	"github.com/jamesbraid/instigator/internal/logging"
 	"github.com/jamesbraid/instigator/internal/qemunet"
 	"github.com/jamesbraid/instigator/nfs"
@@ -38,6 +41,11 @@ type shareOptions struct {
 	// do not apply there.
 	network privateEndpoint
 	address netip.Prefix
+
+	// clients are the machines the private network answers BOOTP and DHCP
+	// for, as serve does for its configuration's clients. Empty answers
+	// neither.
+	clients []bootp.Client
 }
 
 // runShare serves a share until a signal stops it.
@@ -216,6 +224,22 @@ func servePrivateShare(o shareOptions, output io.Writer, stop <-chan os.Signal, 
 		return err
 	}
 	defer p.Close()
+	if len(o.clients) > 0 {
+		pc, err := n.ListenPacket(67)
+		if err != nil {
+			return fmt.Errorf("share: bootp: %w", err)
+		}
+		defer pc.Close()
+		bs := &bootp.Server{ServerIP: o.address.Addr(), Netmask: o.address.Masked(), Clients: o.clients, DHCP: true, Logger: logger}
+		go func() {
+			// Closed with the network at shutdown; any other end is logged,
+			// not fatal to the shares.
+			if err := bs.Serve(pc); err != nil && !errors.Is(err, net.ErrClosed) {
+				logger.Errorf("share: bootp: %v", err)
+			}
+		}()
+		logger.Infof("share: answering BOOTP and DHCP for %d client(s)", len(o.clients))
+	}
 	logger.Infof("share: %s on %s over the private network, portmap, MOUNT and NFS on ports %d, %d and %d over udp and tcp",
 		desc, o.address.Addr(), privatePortmapPort, privateMountPort, privateNFSPort)
 	if connected != nil {
@@ -266,8 +290,53 @@ func shareOptionsFromCommand(cmd *cli.Command) (shareOptions, error) {
 		if o.address, err = netip.ParsePrefix(cmd.String("address")); err != nil || !o.address.Addr().Is4() {
 			return shareOptions{}, fmt.Errorf("share: --address %q is not an IPv4 ADDR/PREFIX", cmd.String("address"))
 		}
+		if o.clients, err = parseClients(cmd.StringSlice("client"), o.address); err != nil {
+			return shareOptions{}, err
+		}
 	} else if cmd.IsSet("address") {
 		return shareOptions{}, errors.New("share: --address needs --network-socket or --network-tcp")
+	} else if cmd.IsSet("client") {
+		return shareOptions{}, errors.New("share: --client needs --network-socket or --network-tcp")
 	}
 	return o, nil
+}
+
+// defaultClientIP is the machine address Origami's configuration uses, and
+// the one a lone --client gets when it names none.
+var defaultClientIP = netip.MustParseAddr("10.98.0.65")
+
+// parseClients reads --client MAC=IP[,HOSTNAME] options for a private
+// network at server. The IP may be left out (MAC, or MAC=,HOSTNAME) when
+// there is one client; it is then 10.98.0.65.
+func parseClients(args []string, server netip.Prefix) ([]bootp.Client, error) {
+	var out []bootp.Client
+	for _, a := range args {
+		macStr, rest, _ := strings.Cut(a, "=")
+		ipStr, host, _ := strings.Cut(rest, ",")
+		mac, err := net.ParseMAC(macStr)
+		if err != nil || len(mac) != 6 {
+			return nil, fmt.Errorf("share: --client %q: want MAC=IP[,HOSTNAME] with an Ethernet MAC", a)
+		}
+		ip := defaultClientIP
+		if ipStr != "" {
+			if ip, err = netip.ParseAddr(ipStr); err != nil || !ip.Is4() {
+				return nil, fmt.Errorf("share: --client %q: %q is not an IPv4 address", a, ipStr)
+			}
+		} else if len(args) > 1 {
+			return nil, fmt.Errorf("share: --client %q: with several clients each needs an IP", a)
+		}
+		if !server.Contains(ip) || ip == server.Addr() {
+			return nil, fmt.Errorf("share: --client %q: %s is not an address on %s other than the server's", a, ip, server.Masked())
+		}
+		if err := config.CheckHostname(host); err != nil {
+			return nil, fmt.Errorf("share: --client %q: %v", a, err)
+		}
+		for _, c := range out {
+			if bytes.Equal(c.MAC, mac) || c.IP == ip {
+				return nil, fmt.Errorf("share: --client %q repeats a MAC or an IP", a)
+			}
+		}
+		out = append(out, bootp.Client{Name: macStr, MAC: mac, IP: ip, Hostname: host})
+	}
+	return out, nil
 }

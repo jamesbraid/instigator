@@ -385,6 +385,9 @@ mount 10.98.0.2:/src /mnt/src
 ```
 
 `--address ADDR/PREFIX` sets the server's address (default `10.98.0.2/24`).
+`--client MAC=IP[,HOSTNAME]` (repeatable) also gives that machine its address
+by BOOTP and DHCP, so an installed IRIX that asks for one gets it with no
+`ifconfig`; the IP defaults to 10.98.0.65 for a single client.
 `--listen`, `--port`, `--portmap-port`, `--udp` and `--tcp` do not apply.
 The command exits when the machine disconnects. `serve` takes the same
 `--share NAME=DIR` beside its install services, off unless given; it needs

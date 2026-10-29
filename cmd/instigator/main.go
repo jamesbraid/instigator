@@ -54,7 +54,8 @@ func newRoot() *cli.Command {
 					"owned by the user running instigator.\n\n" +
 					"With --network-socket or --network-tcp the shares are served on a machine's\n" +
 					"private Ethernet segment instead of host sockets, at the server address on ports\n" +
-					"111, 635 and 2049, with no install services.",
+					"111, 635 and 2049, with no install services. --client MAC=IP[,HOSTNAME] also gives\n" +
+					"that machine its address by BOOTP and DHCP.",
 				Arguments: []cli.Argument{
 					&cli.StringArgs{Name: "name", Min: 0, Max: 1},
 					&cli.StringArgs{Name: "dir", Min: 0, Max: 1},
@@ -69,6 +70,7 @@ func newRoot() *cli.Command {
 					&cli.StringFlag{Name: "network-socket", Usage: "serve on a machine's private Ethernet segment over the QEMU stream socket at `PATH`"},
 					&cli.StringFlag{Name: "network-tcp", Usage: "serve on a machine's private Ethernet segment over a loopback TCP stream at `IP:PORT`"},
 					&cli.StringFlag{Name: "address", Value: "10.98.0.2/24", Usage: "the server's `ADDR/PREFIX` on the private network"},
+					&cli.StringSliceFlag{Name: "client", Usage: "answer BOOTP and DHCP on the private network for the machine `MAC=IP[,HOSTNAME]` (repeatable; the IP defaults to 10.98.0.65 for a single client; needs --network-socket or --network-tcp)"},
 					&cli.StringFlag{Name: "handle-table", Usage: "keep filehandles in a table of paths in `FILE` instead of deriving them from inodes (default on Windows, and for a share on a filesystem with no file birth times, such as an NFS mount: in the user cache directory)"},
 					&cli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log every RPC call"},
 				},

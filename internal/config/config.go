@@ -523,6 +523,10 @@ func expandEnv(v string) string {
 // the cookie, the subnet mask and the end marker.
 const maxHostname = 40
 
+// CheckHostname reports why h cannot go in a DHCP or BOOTP reply as a host
+// name; nil for an acceptable one, the empty name included.
+func CheckHostname(h string) error { return checkHostname(h) }
+
 // checkHostname accepts an empty name, or letters, digits, hyphens and dots
 // that fit the vendor area.
 func checkHostname(h string) error {

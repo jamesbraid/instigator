@@ -304,6 +304,16 @@ nothing listens on them: UDP to 111 draws the port unreachable above.
     renewing REQUEST, which goes to `ciaddr`.
   - BOOTP is unchanged and still answered beside DHCP: a request without
     option 53 is BOOTP, with the 300-byte rule above.
+- **Share-only mode.** `instigator share --network-socket|--network-tcp`
+  has no configuration and so no client list. `--client MAC=IP[,HOSTNAME]`
+  (repeatable, private network only) names the machines it answers, and
+  with it the host answers BOOTP and DHCP exactly as `serve` does, from
+  the host address and `--address` prefix as the subnet mask. The IP may be
+  left out for a single client and is then 10.98.0.65 (`MAC` alone, or
+  `MAC=,HOSTNAME`). It must lie in the segment and not be the host's own,
+  and no two clients share a MAC or an IP. With several clients each
+  needs an IP. Without `--client` nothing listens on 67, as before. The
+  hostname rules are the client entry's.
 - **How the installed guest gets an address.** IRIX's DHCP client
   (`proclaim`) starts at boot when `autoconfig_ipaddress` is on, which
   Origami's install post-commands set. It broadcasts a 548-byte DISCOVER

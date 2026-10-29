@@ -457,3 +457,95 @@ func TestOpenSharesOneOrMany(t *testing.T) {
 		t.Error("no shares accepted")
 	}
 }
+
+func TestParseClients(t *testing.T) {
+	srv := netip.MustParsePrefix("10.98.0.2/24")
+	ok, err := parseClients([]string{"08:00:69:ff:da:f7"}, srv)
+	if err != nil || len(ok) != 1 || ok[0].IP != netip.MustParseAddr("10.98.0.65") || ok[0].Hostname != "" {
+		t.Fatalf("lone MAC: %+v, %v", ok, err)
+	}
+	ok, err = parseClients([]string{"08:00:69:ff:da:f7=,origin200"}, srv)
+	if err != nil || ok[0].IP != netip.MustParseAddr("10.98.0.65") || ok[0].Hostname != "origin200" {
+		t.Fatalf("MAC=,HOST: %+v, %v", ok, err)
+	}
+	ok, err = parseClients([]string{"08:00:69:00:00:01=10.98.0.70,a", "08:00:69:00:00:02=10.98.0.71"}, srv)
+	if err != nil || len(ok) != 2 || ok[0].IP.String() != "10.98.0.70" || ok[1].Hostname != "" {
+		t.Fatalf("two clients: %+v, %v", ok, err)
+	}
+	for _, bad := range [][]string{
+		{"nonsense"},
+		{"08:00:69:00:00:01=notip"},
+		{"08:00:69:00:00:01=10.98.0.2"},                       // the server's own
+		{"08:00:69:00:00:01=192.0.2.5"},                       // off the segment
+		{"08:00:69:00:00:01=10.98.0.70,bad_name"},             // host name
+		{"08:00:69:00:00:01", "08:00:69:00:00:02=10.98.0.71"}, // no IP among several
+		{"08:00:69:00:00:01=10.98.0.70", "08:00:69:00:00:01=10.98.0.71"},
+	} {
+		if _, err := parseClients(bad, srv); err == nil {
+			t.Errorf("%v accepted", bad)
+		}
+	}
+	if err := shareRoot(t, "share", "src", t.TempDir(), "--client", "08:00:69:00:00:01"); err == nil || !strings.Contains(err.Error(), "--client needs") {
+		t.Errorf("--client on a host network: %v", err)
+	}
+}
+
+func TestSharePrivateNetworkAnswersDHCPForItsClient(t *testing.T) {
+	endpoint := loopbackEndpoint(t)
+	stop := make(chan os.Signal, 1)
+	done := make(chan error, 1)
+	var output lockedBuffer
+	clients, err := parseClients([]string{"08:00:69:12:34:56=,origin200"}, netip.MustParsePrefix("10.98.0.2/24"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		done <- servePrivateShare(shareOptions{
+			shares:  []shareSpec{{"s", t.TempDir()}},
+			network: privateEndpoint{tcp: endpoint},
+			address: netip.MustParsePrefix("10.98.0.2/24"),
+			clients: clients,
+		}, &output, stop, nil)
+	}()
+	g := attachGuest(t, endpoint)
+	client, err := g.net.ListenPacket(68)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	req := make([]byte, 548)
+	req[0], req[1], req[2] = 1, 1, 6
+	copy(req[28:], []byte{0x08, 0x00, 0x69, 0x12, 0x34, 0x56})
+	copy(req[236:], []byte{99, 130, 83, 99, 53, 1, 1, 255})
+	reply := make([]byte, 600)
+	var n int
+	for range 20 {
+		if _, err := client.WriteTo(req, &net.UDPAddr{IP: net.IPv4bcast, Port: 67}); err != nil {
+			t.Fatal(err)
+		}
+		client.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+		if n, _, err = client.ReadFrom(reply); err == nil {
+			break
+		}
+	}
+	if err != nil {
+		t.Fatalf("no OFFER: %v; log: %s", err, output.String())
+	}
+	if got := net.IP(reply[16:20]).String(); got != "10.98.0.65" {
+		t.Errorf("yiaddr %s", got)
+	}
+	if !bytes.Contains(reply[:n], append([]byte{12, 9}, "origin200"...)) {
+		t.Errorf("OFFER lacks the host name: %x", reply[240:n])
+	}
+	// End it the way the other private-network tests do, by the machine
+	// going away.
+	g.net.Close()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "private network disconnected") {
+			t.Fatalf("share returned %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("share did not stop when the machine disconnected")
+	}
+}
