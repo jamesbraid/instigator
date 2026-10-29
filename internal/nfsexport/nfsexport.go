@@ -125,15 +125,19 @@ func realIno(statter fs.StatFS, hasStat bool, p string) (uint64, bool) {
 }
 
 // unixMode converts an fs.FileMode to the Unix mode-with-type-bits
-// nfs.Node.Mode documents: 0o040000|perm for a directory, 0o100000|perm
-// for a regular file. The tree materializes only these two kinds.
+// nfs.Node.Mode documents. An install tree materializes only directories
+// and regular files; a symlink appears only in an fs.FS that can report
+// one, such as an fstest.MapFS fixture.
 func unixMode(info fs.FileInfo) uint32 {
 	// The tree stores the full twelve permission bits numerically in its
 	// Mode; Perm() would drop setuid/setgid/sticky, which NFS attributes
 	// carry to the client.
 	perm := uint32(info.Mode() & 0o7777)
-	if info.IsDir() {
+	switch {
+	case info.IsDir():
 		return 0o040000 | perm
+	case info.Mode()&fs.ModeSymlink != 0:
+		return 0o120000 | perm
 	}
 	return 0o100000 | perm
 }
@@ -260,6 +264,12 @@ func (e *export) ReadAt(n nfs.Node, p []byte, off int64) (int, error) {
 	if !ok {
 		return 0, nfs.ErrIO
 	}
+	// A read at or past the end is an empty read, not an error, whatever
+	// the underlying ReaderAt makes of the offset: fstest.MapFS refuses
+	// one past the end outright.
+	if off >= rec.size {
+		return 0, nil
+	}
 	f, err := e.fsys.Open(rec.path)
 	if err != nil {
 		return 0, nfs.ErrIO
@@ -279,10 +289,17 @@ func (e *export) ReadAt(n nfs.Node, p []byte, off int64) (int, error) {
 	return got, nil
 }
 
-// Readlink always refuses: the assembled tree materializes files, never
-// symlinks (build.go resolves every symlink it walks and fails the build
-// on any that can't be followed to a regular file), so there is never a
-// link target to report.
-func (e *export) Readlink(nfs.Node) (string, error) {
-	return "", nfs.ErrIO
+// Readlink reports a symlink's target when fsys can read links. The
+// assembled install tree never can: build.go resolves every symlink it
+// walks, so there it always refuses.
+func (e *export) Readlink(n nfs.Node) (string, error) {
+	rec, ok := recordOf(n)
+	if !ok || rec.mode&0o170000 != 0o120000 {
+		return "", nfs.ErrIO
+	}
+	target, err := fs.ReadLink(e.fsys, rec.path)
+	if err != nil {
+		return "", nfs.ErrIO
+	}
+	return target, nil
 }

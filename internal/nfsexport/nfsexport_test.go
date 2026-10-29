@@ -1,6 +1,7 @@
 package nfsexport_test
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -309,6 +310,45 @@ func TestExportReadlinkRefused(t *testing.T) {
 
 	if _, err := fsys.Readlink(sa); err != nfs.ErrIO {
 		t.Fatalf("Readlink(sa) = %v, want ErrIO", err)
+	}
+}
+
+// TestExportReadlinkOverMapFS: an fs.FS that can read links exports them
+// as symlinks, so a fixture tree can exercise READLINK.
+func TestExportReadlinkOverMapFS(t *testing.T) {
+	fsys := nfsexport.Export(fstest.MapFS{
+		"target.txt": {Data: []byte("x"), Mode: 0o644},
+		"link":       {Data: []byte("target.txt"), Mode: fs.ModeSymlink | 0o777},
+	})
+	root, err := fsys.MountRoot("/")
+	if err != nil {
+		t.Fatalf("MountRoot: %v", err)
+	}
+	link := lookup(t, fsys, root, "link")
+	if got := link.Mode(); got != 0o120777 {
+		t.Fatalf("link mode = %#o, want 0o120777", got)
+	}
+	if got, err := fsys.Readlink(link); err != nil || got != "target.txt" {
+		t.Fatalf("Readlink(link) = %q, %v, want target.txt", got, err)
+	}
+	if _, err := fsys.Readlink(lookup(t, fsys, root, "target.txt")); err != nfs.ErrIO {
+		t.Fatalf("Readlink(regular file) = %v, want ErrIO", err)
+	}
+}
+
+// TestExportReadAtPastEOF: a read starting past the end is empty, even
+// from an fs.FS whose ReaderAt rejects the offset.
+func TestExportReadAtPastEOF(t *testing.T) {
+	fsys := nfsexport.Export(fstest.MapFS{"f": {Data: []byte("abc"), Mode: 0o644}})
+	root, err := fsys.MountRoot("/")
+	if err != nil {
+		t.Fatalf("MountRoot: %v", err)
+	}
+	f := lookup(t, fsys, root, "f")
+	for _, off := range []int64{3, 100} {
+		if got, err := fsys.ReadAt(f, make([]byte, 8), off); got != 0 || err != nil {
+			t.Fatalf("ReadAt(off %d) = %d, %v, want 0, nil", off, got, err)
+		}
 	}
 }
 
