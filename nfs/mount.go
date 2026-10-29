@@ -34,10 +34,10 @@ func (s *Server) mountMnt(caller net.Addr, r *xdrReader, vers uint32) []byte {
 	s.Logger.Infof("nfs: mount %q v%d from %s", path, vers, caller)
 	w.uint32(nfsOK)
 	if vers == 1 {
-		w.fixed(encodeFH(root.ID()))
+		w.fixed(s.handle(root))
 		return w.b
 	}
-	w.opaque(encodeFH(root.ID()))
+	w.opaque(s.handle(root))
 	w.uint32(1) // one auth flavor:
 	w.uint32(1) // AUTH_UNIX
 	return w.b

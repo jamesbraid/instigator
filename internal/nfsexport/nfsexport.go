@@ -1,7 +1,7 @@
-// Package nfsexport adapts a standard io/fs filesystem to nfs.FS. It exists
-// to keep the nfs package's protocol implementation testable against a real
-// tree without pulling nfs into cmd/instigator's dependency graph: this
-// package is imported only by tests, not by serve or cmd.
+// Package nfsexport adapts a standard io/fs filesystem to nfs.FS, served
+// read-only. It keeps the nfs package's protocol implementation testable
+// against a real tree; it is imported only by tests, since serve doesn't
+// use NFS.
 package nfsexport
 
 import (

@@ -19,10 +19,12 @@ Instigator's `nfs` package, BSD-3-Clause, owned by us:
 - NFSv2 and NFSv3 over UDP and TCP, with portmap and MOUNT beside them.
   Every listener answers all three programs, so a client that knows the
   port needs no portmap call.
-- Read-only: every write returns `NFSERR_ROFS`.
-- 32-byte filehandles carrying a stable node id.
-- An `FS` interface that `internal/nfsexport` adapts to any `io/fs` tree.
-- Tested directly, but not linked into the `instigator` binary.
+- An `FS` interface that `internal/nfsexport` adapts to any `io/fs` tree,
+  served read-only: every write returns `ROFS`.
+- A `WriteFS` extension that `internal/sharefs` implements for a host
+  directory, under the rules in "Files, owners and handles" below.
+- `instigator share` serves one host directory, apart from the install
+  path.
 
 IRIX 6.5.30's client mounts NFSv3 over TCP and NFSv2 over UDP. The
 development tooling's `--share` (unfsd, NFSv3/TCP) already mounts and
@@ -63,6 +65,32 @@ Transports: UDP and TCP with record marking, for every program.
 - **Windows.** The host has no inode, so handles map the path through a
   persistent table in the machine directory. Windows gets the same
   owner rules.
+
+The handle is 32 bytes: a format byte (2 for inodes, 3 for a path
+table), three zero bytes, the share id (FNV-1a 32 of the share name),
+then the device, inode and generation as 64-bit big-endian numbers. With
+a path table, the inode is the table id and the other two are zero. On
+Linux the generation is the birth time from `statx` in nanoseconds, on
+macOS the birth time `stat` reports, elsewhere zero. A handle the cache
+doesn't place, such as one from before a restart, is found by walking
+the share for its device and inode.
+
+The path table is a text file of `set ID PATH` lines, with `PATH` quoted
+as Go quotes strings, and `del ID` lines. Ids count up from 1 in the
+order paths are first seen, and a rename keeps them. A path is first
+seen when the server first stats it: the root at MNT, a new file when it
+is made, and a directory's entries in name order when it is listed.
+
+A READDIR cookie for a share entry is FNV-1a 32 of its name with the top
+bit cleared, or 1 if that is 0, and entries are listed in cookie order,
+then by name. A listing resumes after the cookie the client last saw, so
+removing entries already listed, as `rm -r` does, skips nothing. The
+read-only tree numbers entries by position instead. Neither lists `.`
+or `..`. `LOOKUP ".."` of a share's root is the root.
+
+A UDP reply to a call that changes the share, other than WRITE, is kept
+and resent for an identical retransmission, so a REMOVE retried after a
+lost reply doesn't come back NOENT.
 
 ## Networking
 
@@ -125,9 +153,19 @@ call GETATTR the root
 < 00000003 00000001 00000000 00000000 00000000 00000000 00000000 00000002
 ```
 
-- `fixture NAME` names the tree the server exports. `tree` is
-  `nfs/testdata/fixture.txt`, whose header comment gives its format and
-  the node numbering the server uses for it.
+- `fixture NAME` names the tree the server exports, both built from
+  `nfs/testdata/fixture.txt`, whose header comment gives its format.
+  - `tree` serves it read-only, as `/`, numbered as that comment says.
+  - `share` writes it to a temporary directory, with the listed modes and
+    modification times, and serves that as the share `/share` with a path
+    table, so handles and fileids follow the path table's numbering. The
+    server's write verifier is the eight bytes `verifier`. Attributes
+    the host decides are pinned before they are encoded: any
+    modification time after 2010-01-01 (1262304000), and every change
+    time, becomes 2000000000 seconds; the access time is shown as the
+    modification time; a directory has size 4096 and two links; and
+    storage used is the size rounded up to 4096. A SETATTR asking for
+    server time is sent as the `SET_TO_SERVER_TIME` it is.
 - `call LABEL` starts an exchange. The label is for people.
 - `>` lines carry the RPC call message and `<` lines the reply, as hex.
   Whitespace inside the hex is only for reading; the bytes concatenate.

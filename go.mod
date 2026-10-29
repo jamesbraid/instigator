@@ -9,6 +9,7 @@ require (
 	github.com/snabb/httpreaderat v1.0.4
 	github.com/urfave/cli/v3 v3.11.0
 	golang.org/x/net v0.58.0
+	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 	gvisor.dev/gvisor v0.0.0-20260916072518-be2bc9cda014
 	mvdan.cc/sh/v3 v3.13.1
@@ -28,7 +29,6 @@ require (
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	go4.org v0.0.0-20200411211856-f5505b9728dd // indirect
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.16.0 // indirect

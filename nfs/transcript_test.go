@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/jamesbraid/instigator/internal/nfsexport"
+	"github.com/jamesbraid/instigator/internal/sharefs"
 	"github.com/jamesbraid/instigator/nfs"
 )
 
@@ -185,6 +186,89 @@ func fixtureContent(t *testing.T, spec string) []byte {
 	return nil
 }
 
+// transcriptVerifier is the write verifier of the share fixture's
+// server.
+var transcriptVerifier = [8]byte{'v', 'e', 'r', 'i', 'f', 'i', 'e', 'r'}
+
+// hostTime stands in, in share transcripts, for every time the host
+// chose rather than the fixture or a client.
+var hostTime = time.Unix(2000000000, 0)
+
+// hostEpoch divides times: the fixture's are in 1999 and a client's in
+// 2001, so anything after it came from the host's clock. A fixed line,
+// rather than the test's start, because a file's times come from the
+// kernel's coarse clock, which can read earlier than time.Now.
+var hostEpoch = time.Unix(1262304000, 0) // 2010-01-01
+
+// pinHostAttrs makes a share's attributes the same on every host. A
+// modification time after hostEpoch becomes hostTime, as every change
+// time does. The access time is shown as the modification time, since
+// whether a read updates it depends on how the host mounts its disk. A
+// directory's size and link count, and every file's storage use, depend
+// on the host filesystem and are replaced.
+func pinHostAttrs(a *nfs.Attr) {
+	if a.Mtime.After(hostEpoch) {
+		a.Mtime = hostTime
+	}
+	a.Atime = a.Mtime
+	a.Ctime = hostTime
+	if a.Mode&0o170000 == 0o040000 {
+		a.Size = 4096
+		a.Nlink = 2
+	}
+	a.Used = (a.Size + 4095) &^ 4095
+}
+
+// shareFixture writes testdata/fixture.txt to a temporary directory and
+// exports it as the share "share", with a path table so its handles and
+// fileids don't depend on the host's inode numbers.
+func shareFixture(t *testing.T) *sharefs.FS {
+	t.Helper()
+	base := t.TempDir()
+	dir := filepath.Join(base, "share")
+	tree := fixtureFS(t)
+	paths := make([]string, 0, len(tree))
+	for p := range tree {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths) // parents before children
+	for _, p := range paths {
+		mf, host := tree[p], filepath.Join(dir, filepath.FromSlash(p))
+		var err error
+		switch {
+		case mf.Mode.IsDir():
+			err = os.MkdirAll(host, 0o755)
+		case mf.Mode&fs.ModeSymlink != 0:
+			err = os.Symlink(string(mf.Data), host)
+		default:
+			err = os.WriteFile(host, mf.Data, 0o644)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Modes and times last, deepest first, since adding an entry to a
+	// directory changes its modification time.
+	for i := len(paths) - 1; i >= 0; i-- {
+		mf, host := tree[paths[i]], filepath.Join(dir, filepath.FromSlash(paths[i]))
+		if mf.Mode&fs.ModeSymlink != 0 {
+			continue
+		}
+		if err := errors.Join(os.Chmod(host, mf.Mode), os.Chtimes(host, mf.ModTime, mf.ModTime)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, err := sharefs.Open("share", dir, sharefs.Options{
+		PathTable:  filepath.Join(base, "handles"),
+		AttrFilter: pinHostAttrs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return f
+}
+
 // transcriptServer is one server for one transcript, listening on UDP
 // and TCP.
 type transcriptServer struct {
@@ -194,10 +278,15 @@ type transcriptServer struct {
 
 func startTranscriptServer(t *testing.T, fixture string) *transcriptServer {
 	t.Helper()
-	if fixture != "tree" {
+	var s *nfs.Server
+	switch fixture {
+	case "tree":
+		s = &nfs.Server{FS: nfsexport.Export(fixtureFS(t))}
+	case "share":
+		s = &nfs.Server{FS: shareFixture(t), Verifier: transcriptVerifier}
+	default:
 		t.Fatalf("unknown fixture %q", fixture)
 	}
-	s := &nfs.Server{FS: nfsexport.Export(fixtureFS(t))}
 	s.SetPorts(transcriptPorts, transcriptPorts)
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {

@@ -2,12 +2,14 @@ package nfs
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"io"
 	"net"
 	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/jamesbraid/instigator/internal/logging"
 )
@@ -52,6 +54,9 @@ type rpcTable struct {
 
 func (s *Server) table() *rpcTable {
 	s.tableOnce.Do(func() {
+		if s.Verifier == ([8]byte{}) {
+			binary.BigEndian.PutUint64(s.Verifier[:], uint64(time.Now().UnixNano()))
+		}
 		t := &rpcTable{procs: map[procKey]handlerFunc{}, versions: map[uint32][2]uint32{}}
 		add := func(prog, vers uint32, procs map[uint32]handlerFunc) {
 			for proc, h := range procs {
@@ -92,10 +97,72 @@ func (s *Server) ServeUDP(pc net.PacketConn) error {
 		}
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
-		if reply := s.dispatch(addr, pkt); reply != nil {
+		reply, ok := s.drc.lookup(addr, pkt)
+		if !ok {
+			reply = s.dispatch(addr, pkt)
+			s.drc.store(addr, pkt, reply)
+		}
+		if reply != nil {
 			pc.WriteTo(reply, addr)
 		}
 	}
+}
+
+// drc is a duplicate request cache for UDP. A client that times out
+// resends the same call, and a second REMOVE or RENAME would fail
+// although the first succeeded, so the replies to those calls are kept
+// and resent instead. Idempotent calls - reads, and WRITE of the same
+// bytes to the same place - just run again.
+type drc struct {
+	mu   sync.Mutex
+	ent  [64]drcEntry
+	next int
+}
+
+type drcEntry struct {
+	addr        string
+	call, reply []byte
+}
+
+// nonIdempotent reports whether pkt is a call drc should keep: an NFS
+// SETATTR, CREATE, REMOVE, RENAME, LINK, SYMLINK, MKDIR, RMDIR or MKNOD.
+func nonIdempotent(pkt []byte) bool {
+	if len(pkt) < 24 || binary.BigEndian.Uint32(pkt[12:]) != progNFS {
+		return false
+	}
+	proc := binary.BigEndian.Uint32(pkt[20:])
+	switch binary.BigEndian.Uint32(pkt[16:]) {
+	case 2:
+		return proc == 2 || proc >= 9 && proc <= 15
+	case 3:
+		return proc == 2 || proc >= 8 && proc <= 15
+	}
+	return false
+}
+
+func (d *drc) lookup(addr net.Addr, call []byte) ([]byte, bool) {
+	if !nonIdempotent(call) {
+		return nil, false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	a := addr.String()
+	for _, e := range d.ent {
+		if e.addr == a && bytes.Equal(e.call, call) {
+			return e.reply, true
+		}
+	}
+	return nil, false
+}
+
+func (d *drc) store(addr net.Addr, call, reply []byte) {
+	if !nonIdempotent(call) {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.ent[d.next] = drcEntry{addr: addr.String(), call: call, reply: reply}
+	d.next = (d.next + 1) % len(d.ent)
 }
 
 // maxRecord bounds one TCP call. The largest legitimate call is a WRITE
@@ -107,9 +174,23 @@ const maxRecord = 1 << 20
 // accepted from l, until l is closed. Each connection has its own
 // goroutine and is answered one call at a time, with RFC 5531 record
 // marking.
+//
+// When l closes, ServeTCP closes the connections it accepted and returns
+// once they are done.
 func (s *Server) ServeTCP(l net.Listener) error {
-	var wg sync.WaitGroup
-	defer wg.Wait()
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		conns = map[net.Conn]bool{}
+	)
+	defer func() {
+		mu.Lock()
+		for c := range conns {
+			c.Close()
+		}
+		mu.Unlock()
+		wg.Wait()
+	}()
 	for {
 		c, err := l.Accept()
 		if err != nil {
@@ -122,12 +203,16 @@ func (s *Server) ServeTCP(l net.Listener) error {
 			c.Close()
 			continue
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			defer c.Close()
+		mu.Lock()
+		conns[c] = true
+		mu.Unlock()
+		wg.Go(func() {
 			s.serveConn(c)
-		}()
+			c.Close()
+			mu.Lock()
+			delete(conns, c)
+			mu.Unlock()
+		})
 	}
 }
 

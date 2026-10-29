@@ -1,5 +1,10 @@
 package nfs_test
 
+import (
+	"strings"
+	"time"
+)
+
 // Scenarios that generate testdata/transcripts. Each runs calls in order
 // against a fresh server and fixture; a call that needs a filehandle
 // takes it from an earlier reply, as a client would.
@@ -25,6 +30,9 @@ var scenarios = map[string]scenario{
 	"mount3":  {"tree", mount3Scenario},
 	"nfs2":    {"tree", nfs2Scenario},
 	"nfs3":    {"tree", nfs3Scenario},
+
+	"share-nfs2": {"share", shareNFS2Scenario},
+	"share-nfs3": {"share", shareNFS3Scenario},
 }
 
 // rpcScenario covers the RPC layer's own refusals (RFC 5531 section 9).
@@ -295,4 +303,260 @@ func nfs3Scenario(r *recorder) {
 	} {
 		call(p.name+" is ROFS", p.proc, fh(hello))
 	}
+}
+
+// sattr3 builds an NFSv3 sattr3. A nil field is left unset; a time of
+// hostTime asks for the server's clock.
+type sattr3 struct {
+	mode, uid, gid *uint32
+	size           *uint64
+	atime, mtime   *time.Time
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func (a sattr3) xdr(x *xdr) *xdr {
+	opt32 := func(v *uint32) {
+		if v == nil {
+			x.u32(0)
+		} else {
+			x.u32(1).u32(*v)
+		}
+	}
+	opt32(a.mode)
+	opt32(a.uid)
+	opt32(a.gid)
+	if a.size == nil {
+		x.u32(0)
+	} else {
+		x.u32(1).u64(*a.size)
+	}
+	for _, t := range []*time.Time{a.atime, a.mtime} {
+		switch {
+		case t == nil:
+			x.u32(0) // DONT_CHANGE
+		case t.Equal(hostTime):
+			x.u32(1) // SET_TO_SERVER_TIME
+		default:
+			x.u32(2).u32(uint32(t.Unix())).u32(uint32(t.Nanosecond()))
+		}
+	}
+	return x
+}
+
+// clientTime is a time a client sets, before any the host clock gives.
+var clientTime = time.Unix(1000000000, 500)
+
+func shareNFS3Scenario(r *recorder) {
+	m := r.callWith(authUnix, "MNT the share", progMount, 3, 1, (&xdr{}).str("/share").b)
+	root := m[8 : 8+32]
+	call := func(label string, proc uint32, args []byte) []byte {
+		return r.callWith(authUnix, label, progNFS, 3, proc, args)
+	}
+	fh := func(h []byte) []byte { return (&xdr{}).opaque(h).b }
+	where := func(dir []byte, name string) *xdr { return (&xdr{}).opaque(dir).str(name) }
+	lookup := func(label string, dir []byte, name string) []byte {
+		rep := call("LOOKUP "+label, nfs3Lookup, where(dir, name).b)
+		if len(rep) < 40 || rep[3] != 0 {
+			return nil
+		}
+		return rep[8:40]
+	}
+	// made takes the handle from a CREATE, MKDIR or SYMLINK reply.
+	made := func(rep []byte) []byte {
+		if len(rep) < 44 || rep[3] != 0 {
+			return nil
+		}
+		return rep[12:44]
+	}
+	create := func(label string, dir []byte, name string, how uint32, tail *xdr) []byte {
+		args := where(dir, name).u32(how).fixed(tail.b)
+		return made(call("CREATE "+label, nfs3Create, args.b))
+	}
+	unchecked, guarded, exclusive := uint32(0), uint32(1), uint32(2)
+
+	call("GETATTR the share root", nfs3Getattr, fh(root))
+	call("FSINFO of a writable share", nfs3Fsinfo, fh(root))
+	call("ACCESS a writable directory", nfs3Access, (&xdr{}).opaque(root).u32(0x3f).b)
+	lookup(`"." is the directory itself`, root, ".")
+	lookup(`".." of the share root is the root`, root, "..")
+	hello := lookup("a fixture file", root, "hello.txt")
+	call("ACCESS a writable file", nfs3Access, (&xdr{}).opaque(hello).u32(0x3f).b)
+
+	nf := create("UNCHECKED makes a file", root, "new.txt", unchecked, sattr3{mode: ptr(uint32(0o644))}.xdr(&xdr{}))
+	write := func(label string, h []byte, off uint64, data string) {
+		call("WRITE "+label, nfs3Write, (&xdr{}).opaque(h).u64(off).u32(uint32(len(data))).u32(0).opaque([]byte(data)).b)
+	}
+	write("UNSTABLE is answered FILE_SYNC", nf, 0, "hello, share\n")
+	write("past the end leaves a hole", nf, 100, "tail")
+	call("READ it back", nfs3Read, (&xdr{}).opaque(nf).u64(0).u32(200).b)
+	call("COMMIT returns the verifier", nfs3Commit, (&xdr{}).opaque(nf).u64(0).u32(0).b)
+
+	setattr := func(label string, h []byte, a sattr3, guard *time.Time) {
+		x := a.xdr((&xdr{}).opaque(h))
+		if guard == nil {
+			x.u32(0)
+		} else {
+			x.u32(1).u32(uint32(guard.Unix())).u32(uint32(guard.Nanosecond()))
+		}
+		call("SETATTR "+label, nfs3Setattr, x.b)
+	}
+	setattr("truncates", nf, sattr3{size: ptr(uint64(5))}, nil)
+	setattr("drops setuid from the mode", nf, sattr3{mode: ptr(uint32(0o4755))}, nil)
+	setattr("chown succeeds and changes nothing", nf, sattr3{uid: ptr(uint32(1000)), gid: ptr(uint32(1000))}, nil)
+	setattr("sets client times", nf, sattr3{atime: &clientTime, mtime: &clientTime}, nil)
+	setattr("sets server times", nf, sattr3{atime: &hostTime, mtime: &hostTime}, nil)
+	setattr("with a matching guard", nf, sattr3{mode: ptr(uint32(0o600))}, &hostTime)
+	setattr("with a stale guard is NOT_SYNC", nf, sattr3{mode: ptr(uint32(0o644))}, &clientTime)
+	setattr("of a directory's size is ISDIR", root, sattr3{size: ptr(uint64(0))}, nil)
+
+	create("GUARDED of an existing name is EXIST", root, "new.txt", guarded, sattr3{}.xdr(&xdr{}))
+	g := create("GUARDED makes a file", root, "g.txt", guarded, sattr3{mode: ptr(uint32(0o600))}.xdr(&xdr{}))
+	create("UNCHECKED of an existing file applies its size", root, "hello.txt", unchecked, sattr3{size: ptr(uint64(0))}.xdr(&xdr{}))
+	verf := (&xdr{}).u32(0x12345678).u32(0x00abcdef)
+	x := create("EXCLUSIVE makes a file", root, "x.txt", exclusive, verf)
+	create("EXCLUSIVE retransmitted finds the same file", root, "x.txt", exclusive, verf)
+	create("EXCLUSIVE with another verifier is EXIST", root, "x.txt", exclusive, (&xdr{}).u32(1).u32(2))
+	setattr("after EXCLUSIVE sets the real attributes", x, sattr3{mode: ptr(uint32(0o644)), mtime: &clientTime}, nil)
+	create("in a file is NOTDIR", hello, "y", guarded, sattr3{}.xdr(&xdr{}))
+	create(`named ".." is INVAL`, root, "..", guarded, sattr3{}.xdr(&xdr{}))
+	create("named with a slash is INVAL", root, "a/b", guarded, sattr3{}.xdr(&xdr{}))
+	create("with a 256-byte name is NAMETOOLONG", root, strings.Repeat("n", 256), guarded, sattr3{}.xdr(&xdr{}))
+	// The root's handle with a table id the share never issued.
+	stale := append([]byte(nil), root...)
+	stale[16] = 0x7f
+	call("CREATE in a stale directory is STALE", nfs3Create, where(stale, "z").u32(guarded).fixed(sattr3{}.xdr(&xdr{}).b).b)
+	call("CREATE in a handle of another format is BADHANDLE", nfs3Create, where(staleFH, "z").u32(guarded).fixed(sattr3{}.xdr(&xdr{}).b).b)
+
+	mkdir := func(label string, dir []byte, name string) []byte {
+		return made(call("MKDIR "+label, nfs3Mkdir, sattr3{mode: ptr(uint32(0o755))}.xdr(where(dir, name)).b))
+	}
+	d := mkdir("makes a directory", root, "d")
+	mkdir("of an existing name is EXIST", root, "d")
+	sym := func(label string, dir []byte, name, target string) []byte {
+		return made(call("SYMLINK "+label, nfs3Symlink, sattr3{}.xdr(where(dir, name)).str(target).b))
+	}
+	l := sym("stores a target out of the share as text", root, "l", "../../etc/passwd")
+	call("READLINK the new link", nfs3Readlink, fh(l))
+	lookup("through a link is NOTDIR", l, "passwd")
+	write("to a symlink is INVAL", l, 0, "x")
+	write("to a directory is ISDIR", d, 0, "x")
+	call("LINK is NOTSUPP", nfs3Link, (&xdr{}).opaque(g).fixed(where(root, "hard").b).b)
+	call("MKNOD is NOTSUPP", nfs3Mknod, where(root, "fifo").u32(7).b)
+
+	rename := func(label string, from []byte, fromName string, to []byte, toName string) {
+		call("RENAME "+label, nfs3Rename, where(from, fromName).fixed(where(to, toName).b).b)
+	}
+	rename("moves a file into a directory", root, "new.txt", d, "moved.txt")
+	call("GETATTR by the old handle still finds it", nfs3Getattr, fh(nf))
+	rename("over an existing file replaces it", root, "g.txt", root, "x.txt")
+	call("GETATTR the replaced file's handle is STALE", nfs3Getattr, fh(x))
+	rename("of a missing name is NOENT", root, "nope", root, "nope2")
+	rename("of a directory into itself is INVAL", root, "d", d, "sub")
+	rename(`to ".." is INVAL`, root, "x.txt", root, "..")
+
+	remove := func(label string, proc uint32, dir []byte, name string) {
+		call(label, proc, where(dir, name).b)
+	}
+	remove("RMDIR of a non-empty directory is NOTEMPTY", nfs3Rmdir, root, "d")
+	remove("REMOVE of a directory is ISDIR", nfs3Remove, root, "d")
+	remove("RMDIR of a file is NOTDIR", nfs3Rmdir, root, "x.txt")
+	remove("REMOVE a file", nfs3Remove, d, "moved.txt")
+	remove("REMOVE of a missing name is NOENT", nfs3Remove, d, "moved.txt")
+	remove("RMDIR an empty directory", nfs3Rmdir, root, "d")
+	call("GETATTR a removed file's handle is STALE", nfs3Getattr, fh(nf))
+	remove("REMOVE a symlink", nfs3Remove, root, "l")
+
+	verf0 := make([]byte, 8)
+	call("READDIR the share root, in cookie order", nfs3Readdir, (&xdr{}).opaque(root).u64(0).fixed(verf0).u32(4096).b)
+	call("READDIRPLUS the share root", nfs3Readdirplus, (&xdr{}).opaque(root).u64(0).fixed(verf0).u32(4096).u32(16384).b)
+	many := lookup("a large directory", root, "many")
+	page := call("READDIR a large directory, first page", nfs3Readdir, (&xdr{}).opaque(many).u64(0).fixed(verf0).u32(300).b)
+	// Remove the entries the first page listed, as rm -r does, and
+	// carry on from the last cookie: nothing is skipped.
+	last, names := lastCookie3(page)
+	for _, name := range names {
+		remove("REMOVE "+name+" from the first page", nfs3Remove, many, name)
+	}
+	call("READDIR a large directory, after removing the first page", nfs3Readdir, (&xdr{}).opaque(many).u64(last).fixed(verf0).u32(4096).b)
+}
+
+// lastCookie3 walks a READDIR3 reply body for its names and last cookie.
+func lastCookie3(rep []byte) (uint64, []string) {
+	if len(rep) < 4 || rep[3] != 0 {
+		return 0, nil
+	}
+	off := 4 + 4 + 84 + 8 // status, dir_attributes, cookieverf
+	var last uint64
+	var names []string
+	for u32be(rep[off:]) == 1 {
+		off += 4 + 8 // value follows, fileid
+		n := int(u32be(rep[off:]))
+		names = append(names, string(rep[off+4:off+4+n]))
+		off += 4 + (n+3)&^3
+		last = uint64(u32be(rep[off:]))<<32 | uint64(u32be(rep[off+4:]))
+		off += 8
+	}
+	return last, names
+}
+
+func u32be(b []byte) uint32 {
+	return uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3])
+}
+
+// sattr2 builds an NFSv2 sattr, all ones for each field left unset.
+func sattr2(mode, size uint32, atime, mtime [2]uint32) *xdr {
+	return (&xdr{}).u32(mode).u32(^uint32(0)).u32(^uint32(0)).u32(size).
+		u32(atime[0]).u32(atime[1]).u32(mtime[0]).u32(mtime[1])
+}
+
+var (
+	unset2      = [2]uint32{^uint32(0), ^uint32(0)}
+	serverTime2 = [2]uint32{0, 1000000}
+	clientTime2 = [2]uint32{1000000000, 7}
+)
+
+func shareNFS2Scenario(r *recorder) {
+	m := r.callWith(authUnix, "MNT the share", progMount, 1, 1, (&xdr{}).str("/share").b)
+	root := m[4:36]
+	call := func(label string, proc uint32, args []byte) []byte {
+		return r.callWith(authUnix, label, progNFS, 2, proc, args)
+	}
+	where := func(dir []byte, name string) *xdr { return (&xdr{}).fixed(dir).str(name) }
+	// handle takes the handle from a CREATE, MKDIR or LOOKUP reply.
+	handle := func(rep []byte) []byte {
+		if len(rep) < 36 || rep[3] != 0 {
+			return nil
+		}
+		return rep[4:36]
+	}
+	none := ^uint32(0)
+
+	f := handle(call("CREATE makes a file", 9, where(root, "new.txt").fixed(sattr2(0o644, none, unset2, unset2).b).b))
+	call("WRITE", 8, (&xdr{}).fixed(f).u32(0).u32(0).u32(0).opaque([]byte("hello, v2\n")).b)
+	call("READ it back", 6, (&xdr{}).fixed(f).u32(0).u32(100).u32(0).b)
+	call("SETATTR truncates", 2, (&xdr{}).fixed(f).fixed(sattr2(none, 5, unset2, unset2).b).b)
+	call("SETATTR drops setuid from the mode", 2, (&xdr{}).fixed(f).fixed(sattr2(0o4755, none, unset2, unset2).b).b)
+	call("SETATTR sets client times", 2, (&xdr{}).fixed(f).fixed(sattr2(none, none, clientTime2, clientTime2).b).b)
+	call("SETATTR with a microsecond of one million takes server time", 2, (&xdr{}).fixed(f).fixed(sattr2(none, none, serverTime2, serverTime2).b).b)
+	call("CREATE of an existing file truncates it", 9, where(root, "hello.txt").fixed(sattr2(none, 0, unset2, unset2).b).b)
+	call(`CREATE named ".." is INVAL`, 9, where(root, "..").fixed(sattr2(0o644, none, unset2, unset2).b).b)
+
+	d := handle(call("MKDIR makes a directory", 14, where(root, "d").fixed(sattr2(0o755, none, unset2, unset2).b).b))
+	call("MKDIR of an existing name is EXIST", 14, where(root, "d").fixed(sattr2(0o755, none, unset2, unset2).b).b)
+	call("SYMLINK stores the target", 13, where(root, "l").str("/etc/motd").fixed(sattr2(0o777, none, unset2, unset2).b).b)
+	l := handle(call("LOOKUP the new link", 4, where(root, "l").b))
+	call("READLINK it", 5, l)
+	call("LINK is PERM", 12, (&xdr{}).fixed(f).fixed(where(root, "hard").b).b)
+	call("WRITE to a directory is ISDIR", 8, (&xdr{}).fixed(d).u32(0).u32(0).u32(0).opaque([]byte("x")).b)
+
+	call("RENAME moves a file into a directory", 11, where(root, "new.txt").fixed(where(d, "moved.txt").b).b)
+	call("GETATTR by the old handle still finds it", 1, f)
+	call("RMDIR of a non-empty directory is NOTEMPTY", 15, where(root, "d").b)
+	call("REMOVE of a directory is ISDIR", 10, where(root, "d").b)
+	call("REMOVE a file", 10, where(d, "moved.txt").b)
+	call("REMOVE of a missing name is NOENT", 10, where(d, "moved.txt").b)
+	call("RMDIR an empty directory", 15, where(root, "d").b)
+	call("GETATTR a removed file's handle is STALE", 1, f)
+	call("READDIR the share root, in cookie order", 16, (&xdr{}).fixed(root).u32(0).u32(4096).b)
 }
