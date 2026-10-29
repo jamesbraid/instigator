@@ -45,8 +45,9 @@ Transports: UDP and TCP with record marking, for every program.
 
 - Writes are synchronous to the host file. WRITE replies `FILE_SYNC`, and
   COMMIT is a no-op that returns the server's boot verifier.
-- No locking (NLM) and no NFSv4. IRIX mounts with `nolock`, or local
-  locking, and that is enough for copying files in and out.
+- No locking (NLM) and no NFSv4. IRIX ignores `nolock`; mounting with
+  `private` keeps locking local, and plain copies in and out work
+  without it.
 
 ## Files, owners and handles
 
@@ -94,18 +95,61 @@ lost reply doesn't come back NOENT.
 
 ## Networking
 
-Each running machine gets its own server inside the `origami run`
-process, listening on loopback ports Origami chooses.
+Each running machine gets an in-process network stack, a host of its own
+on the machine's network that serves portmap, MOUNT and NFS, and a small
+Ethernet switch that puts it beside whatever network the machine uses.
 
-- **User mode.** The guest reaches the host as 192.0.2.2. QEMU's
-  `guestfwd` forwards guest TCP to 192.0.2.2:111 and :2049 into the
-  server's loopback ports. `guestfwd` is TCP-only, so shares in user mode
-  use NFSv3 over TCP. The guest-side mount names the ports explicitly.
-- **Private and tap modes.** The server binds the host-side address of
-  that network on 111 and 2049. When it can't, because the ports are
-  privileged or taken, it binds high ports and the mount names them.
-- **Mount command.** IRIX must be able to mount with explicit `port=`
-  options and no portmap call. That is the first thing the spike settles.
+IRIX's `mount` always asks portmap, over UDP port 111 of the server
+address, before it contacts MOUNT or NFS, whatever `port=` says. QEMU's
+`guestfwd` is TCP-only, so it can't carry that call. The server has to
+be a host on the guest's network, answering on UDP 111 itself.
+
+The wiring uses a hub and two QEMU stream netdevs. The machine's own
+network, whatever its mode, joins hub 1; the guest NIC is a stream
+client of the switch instead:
+
+```
+-netdev user,id=net0,net=192.0.2.0/24,host=192.0.2.2,dhcpstart=192.0.2.15,...
+-netdev hubport,id=hu,hubid=1,netdev=net0
+-netdev stream,id=sB,addr.type=inet,addr.host=127.0.0.1,addr.port=PB,server=off,reconnect-ms=1000
+-netdev hubport,id=hsb,hubid=1,netdev=sB
+-netdev stream,id=sA,addr.type=inet,addr.host=127.0.0.1,addr.port=PA,server=off,reconnect-ms=1000
+-net nic,model=<NIC>,netdev=sA
+```
+
+Stream A carries the guest's frames and stream B everything on the
+machine's network. QEMU frames each Ethernet frame with a 4-byte
+big-endian length. The switch knows nothing of what is upstream:
+
+- From the guest: a frame for the stack's MAC or IP goes to the stack
+  only. A broadcast goes to the stack and to the network. Everything
+  else goes to the network.
+- From the network and from the stack: to the guest only.
+
+Without the switch, a hub alone floods every frame to the upstream
+network as well as the stack, which answers for frames meant for the
+stack and races its replies.
+
+The stack takes a spare address on the network, with a fixed MAC in the
+08:00:69 prefix. It answers ARP and ICMP echo and serves portmap, MOUNT
+and NFS on UDP and TCP ports 111, 635 and 2049. The streams reconnect
+every second, so a restarted `origami run` picks the guest back up.
+
+| Mode | `net0` behind the hub | Stack address |
+|---|---|---|
+| user | slirp | 192.0.2.4 (slirp is 192.0.2.2) |
+| private | the install network's stream client | 10.98.0.4 (Instigator is 10.98.0.2) |
+| tap, vmnet | the tap device or socket_vmnet | set by the user, with its prefix length |
+
+Facts the spikes established against IRIX 6.5.30:
+
+- The mount is `mount ADDRESS:/NAME /mnt/x`. IRIX negotiates NFSv3 over
+  TCP; `-o vers=2,proto=udp` also works, as do v2/v3 over either
+  transport.
+- `nolock` is ignored on IRIX. `private` is the option that makes
+  locking local.
+- READDIR doesn't list `.` or `..`, and IRIX accepts that.
+- A read-only export fails every write immediately with `ROFS`.
 
 ## CLI
 
@@ -118,8 +162,11 @@ IRIX side, printed by `origami share` and given once in the guide:
 
 ```sh
 mkdir -p /mnt/src
-mount -o vers=3,proto=tcp,port=2049,nolock 192.0.2.2:/src /mnt/src
+mount 192.0.2.4:/src /mnt/src
 ```
+
+The address is the stack's on the machine's network; `origami share`
+prints the line for the machine's current mode.
 
 `origami show` lists shares. Adding one to a running machine takes
 effect at the next `run`.
@@ -193,9 +240,9 @@ produces its file byte for byte, then replays each file's raw calls.
 
 ## Order of work
 
-1. **Spike.** Instigator's v2/UDP server, read-only, behind `guestfwd`
-   on a private network. Mount it from a 6.5.30 guest with explicit
-   ports. This settles the mount options IRIX accepts with no portmap.
+1. **Spike.** Instigator's v2/UDP server, read-only, mounted from a
+   6.5.30 guest. It found that `mount` always asks portmap over UDP, which
+   led to the stack-and-switch wiring in "Networking".
 2. **Instigator: transcripts.** The transcript harness and the fixture,
    recorded from the current v2 read-only server.
 3. **Instigator: v3 and TCP,** read-only, with transcripts.
@@ -203,16 +250,13 @@ produces its file byte for byte, then replays each file's raw calls.
    above and their transcripts.
 5. **Origami: Rust crate** (`origami-nfs`) ported from the Go server,
    passing every transcript.
-6. **Origami: `share` command,** networking and the guide, plus the
-   IRIX check against both servers.
+6. **Origami: userspace stack and switch,** then the `share` command and
+   the guide, plus the IRIX check against both servers.
 
 Each step is its own PR with its tests. Steps 2–4 can land and release
 in Instigator before the port starts.
 
 ## Open questions
 
-- Does IRIX 6.5.30's `mount` accept `port=` and a MOUNT-protocol port
-  without asking portmap? If it can't, user mode needs a portmap that
-  answers over TCP through `guestfwd`. The spike decides.
-- Does QEMU's `guestfwd` keep up with sustained NFS traffic? The 3 GB copy
-  in the IRIX check measures it.
+- Does the userspace switch slow normal guest networking? The IRIX check
+  compares an internet download through it with plain user mode.
