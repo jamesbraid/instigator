@@ -63,7 +63,7 @@ func TestShareServesTheDirectory(t *testing.T) {
 	var log bytes.Buffer
 	go func() {
 		done <- serveShare(shareOptions{
-			name: "src", dir: dir, listen: []string{"127.0.0.1"},
+			shares: []shareSpec{{"src", dir}}, listen: []string{"127.0.0.1"},
 			udp: true, tcp: true, handleTable: filepath.Join(t.TempDir(), "handles"),
 		}, &log, stop, func(udp, tcp []net.Addr) { up <- addrs{udp, tcp} })
 	}()
@@ -126,7 +126,7 @@ func TestShareServesTheDirectory(t *testing.T) {
 }
 
 func TestShareNeedsATransport(t *testing.T) {
-	err := serveShare(shareOptions{name: "s", dir: t.TempDir(), listen: []string{"127.0.0.1"}}, io.Discard, nil, nil)
+	err := serveShare(shareOptions{shares: []shareSpec{{"s", t.TempDir()}}, listen: []string{"127.0.0.1"}}, io.Discard, nil, nil)
 	if err == nil {
 		t.Fatal("share with no transport started")
 	}

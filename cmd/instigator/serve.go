@@ -14,21 +14,30 @@ import (
 	"github.com/jamesbraid/instigator/internal/logging"
 	"github.com/jamesbraid/instigator/internal/qemunet"
 	"github.com/jamesbraid/instigator/internal/serve"
+	"github.com/jamesbraid/instigator/nfs"
 )
 
 // run serves until a signal stops it. The log goes to stderr because a
 // caller waiting on readiness may have closed stdout, as
 // systemd-notify --fork does.
-func run(configPath string, verbose bool, captureDir, networkSocket, networkTCP string) error {
+func run(configPath string, verbose bool, captureDir, networkSocket, networkTCP string, shares []string) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
-	return runUntilSignal(configPath, verbose, captureDir, networkSocket, networkTCP, os.Stderr, sig)
+	return runUntilSignal(configPath, verbose, captureDir, networkSocket, networkTCP, shares, os.Stderr, sig)
 }
 
-func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, networkTCP string, output io.Writer, stop <-chan os.Signal) error {
-	if networkSocket != "" && networkTCP != "" {
-		return fmt.Errorf("--network-socket and --network-tcp cannot be used together")
+func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, networkTCP string, shares []string, output io.Writer, stop <-chan os.Signal) error {
+	endpoint := privateEndpoint{socket: networkSocket, tcp: networkTCP}
+	if err := endpoint.check(); err != nil {
+		return err
+	}
+	shareSpecs, err := parseShareSpecs(shares)
+	if err != nil {
+		return err
+	}
+	if len(shareSpecs) > 0 && !endpoint.enabled() {
+		return fmt.Errorf("--share needs --network-socket or --network-tcp: shares are served on the private network (instigator share serves host sockets)")
 	}
 	b, err := os.ReadFile(configPath)
 	if err != nil {
@@ -60,18 +69,26 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 	// then can serving begin.
 	readinessSent := false
 	var privateNet *qemunet.Network
-	if networkSocket != "" || networkTCP != "" {
+	var shareErr <-chan error // nil, and so never ready, without shares
+	if endpoint.enabled() {
 		networkCfg := qemunet.Config{
 			ServerIP:  cfg.ServerIP,
 			PrefixLen: cfg.Netmask.Bits(),
 			MAC:       qemunet.DefaultServerMAC,
 		}
-		var l *qemunet.Listener
-		if networkTCP != "" {
-			l, err = qemunet.ListenTCP(networkTCP, networkCfg)
-		} else {
-			l, err = qemunet.Listen(networkSocket, networkCfg)
+		// Open the shares before announcing readiness, so a bad directory
+		// fails before the machine is started.
+		var shareFS nfs.FS
+		var shareDesc string
+		if len(shareSpecs) > 0 {
+			var closer io.Closer
+			shareFS, closer, shareDesc, err = openShares(shareSpecs, "")
+			if err != nil {
+				return err
+			}
+			defer closer.Close()
 		}
+		l, err := endpoint.listen(networkCfg)
 		if err != nil {
 			return err
 		}
@@ -82,26 +99,26 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 		}
 		readinessSent = true
 
-		type accepted struct {
-			net *qemunet.Network
-			err error
+		n, err := acceptNetwork(l, stop)
+		if err != nil {
+			return err
 		}
-		ch := make(chan accepted, 1)
-		go func() {
-			n, err := l.Accept()
-			ch <- accepted{n, err}
-		}()
-		select {
-		case <-stop:
+		if n == nil {
 			logger.Infof("shutting down before the machine connected")
 			return nil
-		case a := <-ch:
-			if a.err != nil {
-				return fmt.Errorf("accepting the machine: %w", a.err)
+		}
+		defer n.Close()
+		privateNet = n
+		opts = append(opts, serve.WithNetwork(n))
+		if shareFS != nil {
+			p, err := serveSharesOn(n, shareFS, logger)
+			if err != nil {
+				return err
 			}
-			defer a.net.Close()
-			privateNet = a.net
-			opts = append(opts, serve.WithNetwork(a.net))
+			defer p.Close()
+			shareErr = p.Err()
+			logger.Infof("share: %s on %s over the private network, portmap, MOUNT and NFS on ports %d, %d and %d over udp and tcp",
+				shareDesc, cfg.ServerIP, privatePortmapPort, privateMountPort, privateNFSPort)
 		}
 	}
 
@@ -125,6 +142,8 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 			logger.Infof("shutting down")
 		case <-privateNet.Done():
 			return errors.Join(fmt.Errorf("private network disconnected: %w", privateNet.Err()), s.CloseWithReason("disconnected"))
+		case err := <-shareErr:
+			return errors.Join(err, s.Close())
 		}
 	} else {
 		<-stop

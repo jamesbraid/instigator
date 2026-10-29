@@ -132,6 +132,14 @@ and commands entered at `Inst>` have no markers.
 Chaining and the newline-only marker were tested with installed IRIX 6.5
 `inst` 4.1. A full successful miniroot install with these markers remains untested.
 
+### Shares on the private network
+
+`serve --share NAME=DIR` (repeatable) also exports a host directory to the
+machine over NFS on the same private network, at the server address on
+ports 111, 635 and 2049. Without `--share` nothing listens there. It needs
+`--network-socket` or `--network-tcp`; see [Host folder shares over
+NFS](nfs-shares.md).
+
 ### Private network disconnects
 
 With `--network-socket` or `--network-tcp`, an emulator network disconnect stops

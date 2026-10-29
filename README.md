@@ -339,7 +339,8 @@ overwritten.
 `instigator share` exports a host directory to IRIX, read-write, over NFSv2
 and NFSv3 on UDP and TCP, with MOUNT and portmap beside them. It runs until
 interrupted and is separate from `serve`: nothing on the install path uses
-it.
+it. To give a machine on a private network shares, see "On a private
+network" below.
 
 ```sh
 instigator share --listen 192.168.0.1 src ~/code
@@ -362,6 +363,30 @@ LINK and MKNOD are refused.
   deriving them from inodes. Windows has no usable inode numbers, so there
   it defaults to a file in the user cache directory. Either way a handle
   survives a restart.
+- `--share NAME=DIR` adds another export (repeatable), beside or instead of
+  the positional `<name> <dir>`. One server answers for all of them, and a
+  rename between two refuses with `XDEV`.
+
+### On a private network
+
+With `--network-socket PATH` or `--network-tcp IP:PORT` the shares are
+served on the private Ethernet segment a QEMU machine connects to, the one
+`serve` uses for installs, and nothing is bound on the host. The machine
+reaches them at the server's address on ports 111, 635 and 2049, over UDP
+and TCP, so IRIX's `mount` finds them through portmap:
+
+```sh
+instigator share --network-tcp 127.0.0.1:45031 --share src=~/code --share out=/tmp/out
+# on the guest, with ef0 up and an address on 10.98.0.0/24
+mount 10.98.0.2:/src /mnt/src
+```
+
+`--address ADDR/PREFIX` sets the server's address (default `10.98.0.2/24`).
+`--listen`, `--port`, `--portmap-port`, `--udp` and `--tcp` do not apply.
+The command exits when the machine disconnects. `serve` takes the same
+`--share NAME=DIR` beside its install services, off unless given; it needs
+`--network-socket` or `--network-tcp`. See the "Private network" section of
+[docs/nfs-shares.md](docs/nfs-shares.md) for the segment.
 
 ## Development
 

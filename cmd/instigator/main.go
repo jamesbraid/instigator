@@ -13,7 +13,8 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-func main() {
+// newRoot builds the command tree.
+func newRoot() *cli.Command {
 	root := &cli.Command{
 		Name:  "instigator",
 		Usage: "network install server for SGI IRIX systems",
@@ -38,38 +39,45 @@ func main() {
 					&cli.StringFlag{Name: "capture-dir", Usage: "record the run to `DIR`"},
 					&cli.StringFlag{Name: "network-socket", Usage: "serve a machine's private Ethernet segment over the QEMU stream socket at `PATH` instead of the host network"},
 					&cli.StringFlag{Name: "network-tcp", Usage: "serve a machine's private Ethernet segment over a loopback TCP stream at `IP:PORT`"},
+					&cli.StringSliceFlag{Name: "share", Usage: "also export a host directory over NFS on the private network, as `NAME=DIR` (repeatable; needs --network-socket or --network-tcp)"},
 				},
 				Action: func(_ context.Context, cmd *cli.Command) error {
-					return run(cmd.StringArgs("config")[0], cmd.Bool("verbose"), cmd.String("capture-dir"), cmd.String("network-socket"), cmd.String("network-tcp"))
+					return run(cmd.StringArgs("config")[0], cmd.Bool("verbose"), cmd.String("capture-dir"), cmd.String("network-socket"), cmd.String("network-tcp"), cmd.StringSlice("share"))
 				},
 			},
 			{
 				Name:      "share",
-				Usage:     "export a host directory, read-write, to IRIX over NFS",
-				UsageText: "instigator share [flags] <name> <dir>",
-				Description: "Serves <dir> as the export /<name> over NFSv2 and NFSv3, with MOUNT and portmap,\n" +
-					"until interrupted. Every file shows as owned by root, and changes land owned by\n" +
-					"the user running instigator.",
+				Usage:     "export host directories, read-write, to IRIX over NFS",
+				UsageText: "instigator share [flags] <name> <dir>\n   instigator share [flags] --share NAME=DIR...",
+				Description: "Serves each directory as the export /<name> over NFSv2 and NFSv3, with MOUNT and\n" +
+					"portmap, until interrupted. Every file shows as owned by root, and changes land\n" +
+					"owned by the user running instigator.\n\n" +
+					"With --network-socket or --network-tcp the shares are served on a machine's\n" +
+					"private Ethernet segment instead of host sockets, at the server address on ports\n" +
+					"111, 635 and 2049, with no install services.",
 				Arguments: []cli.Argument{
-					&cli.StringArgs{Name: "name", Min: 1, Max: 1},
-					&cli.StringArgs{Name: "dir", Min: 1, Max: 1},
+					&cli.StringArgs{Name: "name", Min: 0, Max: 1},
+					&cli.StringArgs{Name: "dir", Min: 0, Max: 1},
 				},
 				Flags: []cli.Flag{
+					&cli.StringSliceFlag{Name: "share", Usage: "export a host directory as /NAME, as `NAME=DIR` (repeatable; instead of or beside <name> <dir>)"},
 					&cli.StringSliceFlag{Name: "listen", Value: []string{"127.0.0.1"}, Usage: "listen on `ADDR` (repeatable)"},
 					&cli.IntFlag{Name: "port", Value: 2049, Usage: "serve NFS and MOUNT on `PORT`; 0 picks a free one"},
 					&cli.IntFlag{Name: "portmap-port", Value: 111, Usage: "serve portmap on `PORT`; 0 serves none"},
 					&cli.BoolFlag{Name: "udp", Value: true, Usage: "serve over UDP (--udp=false turns it off)"},
 					&cli.BoolFlag{Name: "tcp", Value: true, Usage: "serve over TCP (--tcp=false turns it off)"},
+					&cli.StringFlag{Name: "network-socket", Usage: "serve on a machine's private Ethernet segment over the QEMU stream socket at `PATH`"},
+					&cli.StringFlag{Name: "network-tcp", Usage: "serve on a machine's private Ethernet segment over a loopback TCP stream at `IP:PORT`"},
+					&cli.StringFlag{Name: "address", Value: "10.98.0.2/24", Usage: "the server's `ADDR/PREFIX` on the private network"},
 					&cli.StringFlag{Name: "handle-table", Usage: "keep filehandles in a table of paths in `FILE` instead of deriving them from inodes (default on Windows: in the user cache directory)"},
 					&cli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log every RPC call"},
 				},
 				Action: func(_ context.Context, cmd *cli.Command) error {
-					return runShare(shareOptions{
-						name: cmd.StringArgs("name")[0], dir: cmd.StringArgs("dir")[0],
-						listen: cmd.StringSlice("listen"), port: int(cmd.Int("port")), portmapPort: int(cmd.Int("portmap-port")),
-						udp: cmd.Bool("udp"), tcp: cmd.Bool("tcp"),
-						handleTable: cmd.String("handle-table"), verbose: cmd.Bool("verbose"),
-					}, cmd.Root().Writer)
+					o, err := shareOptionsFromCommand(cmd)
+					if err != nil {
+						return err
+					}
+					return runShare(o, cmd.Root().Writer)
 				},
 			},
 			{
@@ -145,7 +153,11 @@ func main() {
 		root.Version = info.Main.Version
 	}
 
-	if err := root.Run(context.Background(), os.Args); err != nil {
+	return root
+}
+
+func main() {
+	if err := newRoot().Run(context.Background(), os.Args); err != nil {
 		logging.New(os.Stderr, logging.LevelError).Errorf("instigator: %v", err)
 		os.Exit(1)
 	}

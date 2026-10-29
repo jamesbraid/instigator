@@ -116,7 +116,7 @@ services:
 		networkSocket = endpoint
 	}
 	go func() {
-		errCh <- runUntilSignal(configPath, false, captureDir, networkSocket, networkTCP, &output, stop)
+		errCh <- runUntilSignal(configPath, false, captureDir, networkSocket, networkTCP, nil, &output, stop)
 	}()
 
 	// Act as the machine: connect once the socket is up, attach a guest stack.
