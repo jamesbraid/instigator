@@ -25,8 +25,8 @@ install or a focused test, not by speculative infrastructure.
 
 ## Deferred transport and tooling
 
-- NFS remains implementation code with direct tests, but it is not linked into
-  the supported server binary.
+- NFS is not linked into the supported server binary. It is being extended
+  for host folder shares; see [Host folder shares over NFS](nfs-shares.md).
 - A VFS browser or interactive shell is not part of the install path. Add one
   only if a real debugging task needs it.
 - Performance work should start with the existing capture timings and a
