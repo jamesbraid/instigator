@@ -44,6 +44,35 @@ func main() {
 				},
 			},
 			{
+				Name:      "share",
+				Usage:     "export a host directory, read-write, to IRIX over NFS",
+				UsageText: "instigator share [flags] <name> <dir>",
+				Description: "Serves <dir> as the export /<name> over NFSv2 and NFSv3, with MOUNT and portmap,\n" +
+					"until interrupted. Every file shows as owned by root, and changes land owned by\n" +
+					"the user running instigator.",
+				Arguments: []cli.Argument{
+					&cli.StringArgs{Name: "name", Min: 1, Max: 1},
+					&cli.StringArgs{Name: "dir", Min: 1, Max: 1},
+				},
+				Flags: []cli.Flag{
+					&cli.StringSliceFlag{Name: "listen", Value: []string{"127.0.0.1"}, Usage: "listen on `ADDR` (repeatable)"},
+					&cli.IntFlag{Name: "port", Value: 2049, Usage: "serve NFS and MOUNT on `PORT`; 0 picks a free one"},
+					&cli.IntFlag{Name: "portmap-port", Value: 111, Usage: "serve portmap on `PORT`; 0 serves none"},
+					&cli.BoolFlag{Name: "udp", Value: true, Usage: "serve over UDP (--udp=false turns it off)"},
+					&cli.BoolFlag{Name: "tcp", Value: true, Usage: "serve over TCP (--tcp=false turns it off)"},
+					&cli.StringFlag{Name: "handle-table", Usage: "keep filehandles in a table of paths in `FILE` instead of deriving them from inodes (default on Windows: in the user cache directory)"},
+					&cli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "log every RPC call"},
+				},
+				Action: func(_ context.Context, cmd *cli.Command) error {
+					return runShare(shareOptions{
+						name: cmd.StringArgs("name")[0], dir: cmd.StringArgs("dir")[0],
+						listen: cmd.StringSlice("listen"), port: int(cmd.Int("port")), portmapPort: int(cmd.Int("portmap-port")),
+						udp: cmd.Bool("udp"), tcp: cmd.Bool("tcp"),
+						handleTable: cmd.String("handle-table"), verbose: cmd.Bool("verbose"),
+					}, cmd.Root().Writer)
+				},
+			},
+			{
 				Name:  "trace",
 				Usage: "inspect a recorded run",
 				Commands: []*cli.Command{

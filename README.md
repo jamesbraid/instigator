@@ -334,6 +334,35 @@ extracted, for example because its archive's disc is not in the set, is an
 `error`; the run carries on and exits non-zero. Existing output is never
 overwritten.
 
+## Sharing a host directory
+
+`instigator share` exports a host directory to IRIX, read-write, over NFSv2
+and NFSv3 on UDP and TCP, with MOUNT and portmap beside them. It runs until
+interrupted and is separate from `serve`: nothing on the install path uses
+it.
+
+```sh
+instigator share --listen 192.168.0.1 src ~/code
+```
+
+exports `~/code` as `/src`. The guest sees every file owned by root;
+changes land owned by the user running `instigator`, and a chown changes
+nothing. The setuid bit is never shown or set, and a write clears it. The
+server never reaches outside the directory, through `..` or a symlink.
+LINK and MKNOD are refused.
+
+- `--listen ADDR` listens on `ADDR` (default `127.0.0.1`). Repeat it for
+  several.
+- `--port PORT` serves NFS and MOUNT on one port (default 2049). Every port
+  answers all three programs, so a client told the port needs no portmap.
+- `--portmap-port PORT` serves portmap (default 111, which needs privilege
+  on most hosts); 0 serves none.
+- `--udp=false` or `--tcp=false` drops a transport.
+- `--handle-table FILE` keeps filehandles in a table of paths instead of
+  deriving them from inodes. Windows has no usable inode numbers, so there
+  it defaults to a file in the user cache directory. Either way a handle
+  survives a restart.
+
 ## Development
 
 Run the test suite with:
