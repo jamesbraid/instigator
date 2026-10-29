@@ -25,6 +25,30 @@ const (
 
 const fhSize = 32
 
+// nfs2Procs is the v2 procedure table (RFC 1094 section 2.2).
+func (s *Server) nfs2Procs() map[uint32]handlerFunc {
+	return map[uint32]handlerFunc{
+		0:  null,
+		1:  s.nfsGetattr,
+		2:  nfsROFS, // SETATTR
+		3:  null,    // ROOT, obsolete
+		4:  s.nfsLookup,
+		5:  s.nfsReadlink,
+		6:  s.nfsRead,
+		7:  null,    // WRITECACHE, obsolete
+		8:  nfsROFS, // WRITE
+		9:  nfsROFS, // CREATE
+		10: nfsROFS, // REMOVE
+		11: nfsROFS, // RENAME
+		12: nfsROFS, // LINK
+		13: nfsROFS, // SYMLINK
+		14: nfsROFS, // MKDIR
+		15: nfsROFS, // RMDIR
+		16: s.nfsReaddir,
+		17: s.nfsStatfs,
+	}
+}
+
 // encodeFH packs a node id into the 32-byte filehandle: a version byte,
 // then the id, zero-padded.
 func encodeFH(id uint64) []byte {
@@ -108,26 +132,6 @@ func (s *Server) node(fh []byte) (Node, uint32) {
 	return n, nfsOK
 }
 
-func (s *Server) mountMnt(caller net.Addr, r *xdrReader) []byte {
-	path := r.str()
-	w := &xdrWriter{}
-	root, err := s.FS.MountRoot(path)
-	if err != nil {
-		s.Logger.Warnf("nfs: mount %q from %s: %v", path, caller, err)
-		w.uint32(statusFor(err))
-		return w.b
-	}
-	s.Logger.Infof("nfs: mount %q from %s", path, caller)
-	w.uint32(nfsOK)
-	w.fixed(encodeFH(root.ID()))
-	return w.b
-}
-
-func (s *Server) mountUmnt(_ net.Addr, r *xdrReader) []byte {
-	r.str()
-	return nil
-}
-
 func (s *Server) nfsGetattr(_ net.Addr, r *xdrReader) []byte {
 	fh := r.bytes(fhSize)
 	w := &xdrWriter{}
@@ -155,20 +159,24 @@ func (s *Server) nfsLookup(_ net.Addr, r *xdrReader) []byte {
 		w.uint32(statusFor(err))
 		return w.b
 	}
-	// Log once, here, for a regular file - the NFSv2 equivalent of an
-	// open, since a client LOOKUPs a file once and READs the handle it
-	// gets back rather than reopening it. A directory component on the
-	// way there doesn't log: this is a manifest of files served, not a
-	// trace of every path element walked.
-	if ftype(child.Mode()) == nfREG {
-		if d, ok := child.(Describer); ok {
-			s.Logger.Infof("nfs: opened %s", d.Describe())
-		}
-	}
+	s.logOpen(child)
 	w.uint32(nfsOK)
 	w.fixed(encodeFH(child.ID()))
 	writeFattr(w, child)
 	return w.b
+}
+
+// logOpen logs a regular file LOOKUP resolved to - the NFS equivalent
+// of an open, since a client LOOKUPs a file once and READs the handle it
+// gets back rather than reopening it. A directory component on the way
+// there doesn't log: this is a manifest of files served, not a trace of
+// every path element walked.
+func (s *Server) logOpen(n Node) {
+	if ftype(n.Mode()) == nfREG {
+		if d, ok := n.(Describer); ok {
+			s.Logger.Infof("nfs: opened %s", d.Describe())
+		}
+	}
 }
 
 func (s *Server) nfsReadlink(_ net.Addr, r *xdrReader) []byte {
@@ -218,8 +226,9 @@ func (s *Server) nfsRead(_ net.Addr, r *xdrReader) []byte {
 	return w.b
 }
 
-func (s *Server) nfsWrite(_ net.Addr, r *xdrReader) []byte {
-	// read-only export: refuse without decoding the payload
+// nfsROFS refuses a v2 procedure that would change the export, without
+// decoding its arguments: every such reply is a bare status on failure.
+func nfsROFS(net.Addr, *xdrReader) []byte {
 	w := &xdrWriter{}
 	w.uint32(nfsErrROFS)
 	return w.b

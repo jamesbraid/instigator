@@ -14,9 +14,11 @@ shares only.
 
 ## What exists
 
-Instigator's `nfs` package, about 620 lines, BSD-3-Clause, owned by us:
+Instigator's `nfs` package, BSD-3-Clause, owned by us:
 
-- NFSv2 over UDP, with portmap and MOUNT beside it.
+- NFSv2 and NFSv3 over UDP and TCP, with portmap and MOUNT beside them.
+  Every listener answers all three programs, so a client that knows the
+  port needs no portmap call.
 - Read-only: every write returns `NFSERR_ROFS`.
 - 32-byte filehandles carrying a stable node id.
 - An `FS` interface that `internal/nfsexport` adapts to any `io/fs` tree.
@@ -132,9 +134,10 @@ call GETATTR the root
   The message is the RPC message alone (RFC 5531 section 9), with no
   record mark: a TCP replay adds one and expects one.
 - Exchanges run in order against one fresh server and fixture, and the
-  reply must match exactly. The call's program number, at byte offset 12,
-  chooses the service to send it to. Portmap advertises MOUNT on port 635
-  and NFS on 2049, whatever ports the test server is really bound to.
+  reply must match exactly. A replay sends every exchange to one UDP
+  socket, then again on one TCP connection to a second fresh server.
+  Portmap advertises itself on port 111, MOUNT on 635 and NFS on 2049 for
+  both transports, whatever ports the test server is really bound to.
 
 The Go scenarios in `nfs/transcripts_scenarios_test.go` generate the
 files. `go test ./nfs -run TestTranscripts -update` rewrites them from

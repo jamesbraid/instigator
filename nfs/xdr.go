@@ -2,7 +2,9 @@ package nfs
 
 import "encoding/binary"
 
-// xdrReader decodes XDR-encoded values from a request body.
+// xdrReader decodes XDR-encoded values (RFC 4506) from a request body.
+// A short or malformed body sets err, which the dispatcher turns into
+// GARBAGE_ARGS; the values read after that are zero.
 type xdrReader struct {
 	b   []byte
 	off int
@@ -19,6 +21,13 @@ func (r *xdrReader) uint32() uint32 {
 	return v
 }
 
+func (r *xdrReader) uint64() uint64 {
+	hi := r.uint32()
+	return uint64(hi)<<32 | uint64(r.uint32())
+}
+
+func (r *xdrReader) bool() bool { return r.uint32() != 0 }
+
 // bytes reads a fixed-length opaque of exactly n bytes (no length prefix,
 // no padding), used for the 32-byte NFSv2 filehandle.
 func (r *xdrReader) bytes(n int) []byte {
@@ -31,25 +40,40 @@ func (r *xdrReader) bytes(n int) []byte {
 	return v
 }
 
+// opaque reads a length-prefixed, 4-byte-padded opaque of at most max
+// bytes.
+func (r *xdrReader) opaque(max int) []byte {
+	n := r.uint32()
+	if r.err || n > uint32(max) || r.off+int(n) > len(r.b) {
+		r.err = true
+		return nil
+	}
+	v := r.b[r.off : r.off+int(n)]
+	r.off += (int(n) + 3) &^ 3
+	if r.off > len(r.b) {
+		r.err = true
+	}
+	return v
+}
+
 // str reads a length-prefixed, 4-byte-padded string.
 func (r *xdrReader) str() string {
-	n := int(r.uint32())
-	if n < 0 || r.off+n > len(r.b) {
-		r.err = true
-		return ""
-	}
-	s := string(r.b[r.off : r.off+n])
-	r.off += (n + 3) &^ 3
-	return s
+	return string(r.opaque(len(r.b)))
 }
 
 // xdrWriter encodes XDR-encoded values into a reply body.
 type xdrWriter struct{ b []byte }
 
-func (w *xdrWriter) uint32(v uint32) {
-	var t [4]byte
-	binary.BigEndian.PutUint32(t[:], v)
-	w.b = append(w.b, t[:]...)
+func (w *xdrWriter) uint32(v uint32) { w.b = binary.BigEndian.AppendUint32(w.b, v) }
+
+func (w *xdrWriter) uint64(v uint64) { w.b = binary.BigEndian.AppendUint64(w.b, v) }
+
+func (w *xdrWriter) bool(v bool) {
+	if v {
+		w.uint32(1)
+	} else {
+		w.uint32(0)
+	}
 }
 
 // fixed appends raw bytes with no length prefix or padding.

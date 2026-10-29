@@ -1,15 +1,16 @@
-// Package nfs is a read-only NFSv2 server over UDP with the portmap and
-// mount protocols beside it, aimed at clients no modern server still
-// speaks to: an SGI PROM miniroot mounts its install distribution over
-// NFSv2/UDP. No memory-safe userspace NFS-over-UDP server exists, so
+// Package nfs is a read-only NFS server, versions 2 and 3 over UDP and
+// TCP, with the portmap and MOUNT protocols beside it. It is aimed at
+// clients no modern server still speaks to: an SGI PROM miniroot mounts
+// its install distribution over NFSv2/UDP, and IRIX 6.5 mounts NFSv3
+// over TCP. No memory-safe userspace NFS-over-UDP server exists, so
 // this is written from the RPCs up. Read only - every write path is
 // refused - which makes it stateless and small.
 package nfs
 
 import (
 	"errors"
-	"net"
 	"net/netip"
+	"sync"
 	"sync/atomic"
 
 	"github.com/jamesbraid/instigator/internal/logging"
@@ -61,7 +62,16 @@ type FS interface {
 	Readlink(n Node) (string, error)
 }
 
-// Server serves the portmap, mount, and NFS protocols over one FS.
+// Exporter is optionally implemented by an FS that can list the paths a
+// client may mount, for MOUNT's EXPORT procedure. Without it the server
+// lists "/".
+type Exporter interface {
+	Exports() []string
+}
+
+// Server serves the portmap, MOUNT and NFS protocols over one FS. Every
+// listener answers all three, so a client that knows the port can skip
+// portmap entirely.
 type Server struct {
 	FS FS
 
@@ -75,63 +85,22 @@ type Server struct {
 	// call refused by the client filter. A nil Logger is silent.
 	Logger *logging.Logger
 
-	// Ports portmap hands out. Atomic because SetPorts can race the
-	// serve goroutines when tests bind ephemeral ports after Serve.
-	mountPort, nfsPort atomic.Uint32
+	// ports is what portmap advertises. Atomic because tests bind
+	// ephemeral ports and set them after Serve has started.
+	ports atomic.Pointer[[2]Ports]
+
+	tableOnce sync.Once
+	rpc       *rpcTable
 }
 
-// SetPorts records the mount and nfs UDP ports portmap hands out. In
-// production these are the well-known 635/2049; tests use ephemeral
-// ports and set them after binding.
-func (s *Server) SetPorts(mount, nfs uint32) {
-	s.mountPort.Store(mount)
-	s.nfsPort.Store(nfs)
+// Ports are the ports portmap advertises on one transport. A zero port
+// leaves that program unregistered there.
+type Ports struct {
+	Portmap, Mount, NFS uint32
 }
 
-// ServePortmap answers portmap GETPORT so a client can find mountd and
-// nfsd. Conventionally bound to UDP 111.
-func (s *Server) ServePortmap(pc net.PacketConn) error {
-	return s.serveRPC(pc, progPortmap, map[uint32]handlerFunc{
-		3: s.pmapGetport, // PMAPPROC_GETPORT
-	})
-}
-
-// ServeMount answers the mount protocol. Conventionally bound to UDP 635.
-func (s *Server) ServeMount(pc net.PacketConn) error {
-	return s.serveRPC(pc, progMount, map[uint32]handlerFunc{
-		1: s.mountMnt, // MOUNTPROC_MNT
-		3: s.mountUmnt,
-		0: func(net.Addr, *xdrReader) []byte { return nil }, // NULL
-	})
-}
-
-// ServeNFS answers NFSv2. Conventionally bound to UDP 2049.
-func (s *Server) ServeNFS(pc net.PacketConn) error {
-	return s.serveRPC(pc, progNFS, map[uint32]handlerFunc{
-		0:  func(net.Addr, *xdrReader) []byte { return nil }, // NULL
-		1:  s.nfsGetattr,
-		4:  s.nfsLookup,
-		5:  s.nfsReadlink,
-		6:  s.nfsRead,
-		8:  s.nfsWrite, // refused
-		16: s.nfsReaddir,
-		17: s.nfsStatfs,
-	})
-}
-
-func (s *Server) pmapGetport(_ net.Addr, r *xdrReader) []byte {
-	prog := r.uint32()
-	r.uint32() // vers
-	r.uint32() // proto
-	r.uint32() // port (0)
-	w := &xdrWriter{}
-	switch prog {
-	case progMount:
-		w.uint32(s.mountPort.Load())
-	case progNFS:
-		w.uint32(s.nfsPort.Load())
-	default:
-		w.uint32(0)
-	}
-	return w.b
+// SetPorts records what portmap GETPORT and DUMP report for UDP and TCP.
+// In production these are the ports the listeners are bound to.
+func (s *Server) SetPorts(udp, tcp Ports) {
+	s.ports.Store(&[2]Ports{udp, tcp})
 }

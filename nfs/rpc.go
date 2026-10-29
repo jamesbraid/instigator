@@ -1,9 +1,13 @@
 package nfs
 
 import (
+	"bufio"
+	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
+	"sync"
 
 	"github.com/jamesbraid/instigator/internal/logging"
 )
@@ -14,12 +18,17 @@ const (
 	replyMsg = 1
 
 	msgAccepted = 0
+	msgDenied   = 1
 
 	// accept_stat
-	success     = 0
-	progUnavail = 1
-	procUnavail = 3
-	garbageArgs = 4
+	success      = 0
+	progUnavail  = 1
+	progMismatch = 2
+	procUnavail  = 3
+	garbageArgs  = 4
+
+	// reject_stat
+	rpcMismatch = 0
 )
 
 // program numbers.
@@ -32,9 +41,43 @@ const (
 // handlerFunc decodes a call's arguments and returns the reply body.
 type handlerFunc func(caller net.Addr, args *xdrReader) []byte
 
-// serveRPC reads ONC-RPC calls on pc and dispatches by procedure. prog
-// identifies this service; dispatch maps procedure to handler.
-func (s *Server) serveRPC(pc net.PacketConn, prog uint32, dispatch map[uint32]handlerFunc) error {
+type procKey struct{ prog, vers, proc uint32 }
+
+// rpcTable is every procedure the server answers, and the version range
+// of each program for PROG_MISMATCH replies.
+type rpcTable struct {
+	procs    map[procKey]handlerFunc
+	versions map[uint32][2]uint32
+}
+
+func (s *Server) table() *rpcTable {
+	s.tableOnce.Do(func() {
+		t := &rpcTable{procs: map[procKey]handlerFunc{}, versions: map[uint32][2]uint32{}}
+		add := func(prog, vers uint32, procs map[uint32]handlerFunc) {
+			for proc, h := range procs {
+				t.procs[procKey{prog, vers, proc}] = h
+			}
+			r, ok := t.versions[prog]
+			if !ok {
+				r = [2]uint32{vers, vers}
+			}
+			t.versions[prog] = [2]uint32{min(r[0], vers), max(r[1], vers)}
+		}
+		add(progPortmap, 2, s.portmapProcs())
+		add(progMount, 1, s.mountProcs(1))
+		add(progMount, 3, s.mountProcs(3))
+		add(progNFS, 2, s.nfs2Procs())
+		add(progNFS, 3, s.nfs3Procs())
+		s.rpc = t
+	})
+	return s.rpc
+}
+
+func null(net.Addr, *xdrReader) []byte { return nil }
+
+// ServeUDP answers every program the server speaks - portmap, MOUNT and
+// NFS - on pc, until pc is closed. Calls are answered one at a time.
+func (s *Server) ServeUDP(pc net.PacketConn) error {
 	buf := make([]byte, 65536)
 	for {
 		n, addr, err := pc.ReadFrom(buf)
@@ -44,27 +87,143 @@ func (s *Server) serveRPC(pc net.PacketConn, prog uint32, dispatch map[uint32]ha
 			}
 			return err
 		}
+		if !s.allowed(addr) {
+			continue
+		}
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
-		if reply := s.dispatch(addr, pkt, prog, dispatch); reply != nil {
+		if reply := s.dispatch(addr, pkt); reply != nil {
 			pc.WriteTo(reply, addr)
 		}
 	}
 }
 
-func (s *Server) dispatch(addr net.Addr, pkt []byte, prog uint32, dispatch map[uint32]handlerFunc) []byte {
+// maxRecord bounds one TCP call. The largest legitimate call is a WRITE
+// of wtmax bytes plus its header; anything far beyond that is a broken
+// or hostile client, and the connection is dropped.
+const maxRecord = 1 << 20
+
+// ServeTCP answers every program the server speaks on connections
+// accepted from l, until l is closed. Each connection has its own
+// goroutine and is answered one call at a time, with RFC 5531 record
+// marking.
+func (s *Server) ServeTCP(l net.Listener) error {
+	var wg sync.WaitGroup
+	defer wg.Wait()
+	for {
+		c, err := l.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		}
+		if !s.allowed(c.RemoteAddr()) {
+			c.Close()
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer c.Close()
+			s.serveConn(c)
+		}()
+	}
+}
+
+func (s *Server) serveConn(c net.Conn) {
+	r := bufio.NewReader(c)
+	for {
+		call, err := readRecord(r)
+		if err != nil {
+			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
+				s.Logger.Warnf("nfs: %s: %v", c.RemoteAddr(), err)
+			}
+			return
+		}
+		reply := s.dispatch(c.RemoteAddr(), call)
+		if reply == nil {
+			continue
+		}
+		if _, err := c.Write(recordMark(reply)); err != nil {
+			return
+		}
+	}
+}
+
+var errRecordTooLarge = errors.New("rpc record too large")
+
+// readRecord reads one record: fragments, each behind a 4-byte header
+// whose top bit marks the last and whose low 31 bits are its length
+// (RFC 5531 section 11).
+func readRecord(r io.Reader) ([]byte, error) {
+	var rec []byte
+	for {
+		var hdr [4]byte
+		if _, err := io.ReadFull(r, hdr[:]); err != nil {
+			if len(rec) > 0 && errors.Is(err, io.EOF) {
+				err = io.ErrUnexpectedEOF
+			}
+			return nil, err
+		}
+		h := binary.BigEndian.Uint32(hdr[:])
+		n := int(h & 0x7fffffff)
+		if len(rec)+n > maxRecord {
+			return nil, errRecordTooLarge
+		}
+		start := len(rec)
+		rec = append(rec, make([]byte, n)...)
+		if _, err := io.ReadFull(r, rec[start:]); err != nil {
+			return nil, io.ErrUnexpectedEOF
+		}
+		if h&0x80000000 != 0 {
+			return rec, nil
+		}
+	}
+}
+
+// recordMark frames msg as a single last fragment.
+func recordMark(msg []byte) []byte {
+	out := binary.BigEndian.AppendUint32(make([]byte, 0, 4+len(msg)), 0x80000000|uint32(len(msg)))
+	return append(out, msg...)
+}
+
+func (s *Server) allowed(addr net.Addr) bool {
+	if s.AllowIP == nil {
+		return true
+	}
+	var ip netip.Addr
+	switch a := addr.(type) {
+	case *net.UDPAddr:
+		ip, _ = netip.AddrFromSlice(a.IP)
+	case *net.TCPAddr:
+		ip, _ = netip.AddrFromSlice(a.IP)
+	default:
+		return false
+	}
+	if !s.AllowIP(ip.Unmap()) {
+		s.Logger.Warnf("nfs: %s: denied by client filter", addr)
+		return false
+	}
+	return true
+}
+
+// dispatch decodes one call message and returns the reply message, or
+// nil when the message is not a call.
+func (s *Server) dispatch(addr net.Addr, pkt []byte) []byte {
 	r := &xdrReader{b: pkt}
 	xid := r.uint32()
-	if r.uint32() != callMsg {
+	if r.uint32() != callMsg || r.err {
 		return nil
 	}
 	if r.uint32() != 2 { // RPC version
-		return nil
+		return replyDenied(xid)
 	}
-	cprog := r.uint32()
-	cvers := r.uint32()
-	cproc := r.uint32()
-	// AUTH: flavor+opaque for cred and verf
+	prog := r.uint32()
+	vers := r.uint32()
+	proc := r.uint32()
+	// Credential and verifier, each a flavor and an opaque body. Every
+	// caller is treated alike, so neither is examined.
 	r.uint32()
 	skipOpaque(r)
 	r.uint32()
@@ -73,29 +232,28 @@ func (s *Server) dispatch(addr net.Addr, pkt []byte, prog uint32, dispatch map[u
 		return replyAccepted(xid, garbageArgs, nil)
 	}
 
-	if s.AllowIP != nil {
-		if udp, ok := addr.(*net.UDPAddr); ok {
-			ip, _ := netip.AddrFromSlice(udp.IP)
-			if !s.AllowIP(ip.Unmap()) {
-				s.Logger.Warnf("nfs: %s: denied by client filter", addr)
-				return nil
-			}
-		}
-	}
-
-	if cprog != prog {
+	t := s.table()
+	vr, ok := t.versions[prog]
+	if !ok {
 		return replyAccepted(xid, progUnavail, nil)
 	}
-	_ = cvers
-	h, ok := dispatch[cproc]
+	// Every served version answers NULL, so a missing NULL is a missing
+	// version.
+	if _, ok := t.procs[procKey{prog, vers, 0}]; !ok {
+		w := &xdrWriter{}
+		w.uint32(vr[0])
+		w.uint32(vr[1])
+		return replyAccepted(xid, progMismatch, w.b)
+	}
+	h, ok := t.procs[procKey{prog, vers, proc}]
 	if !ok {
 		if s.Logger.Enabled(logging.LevelDebug) {
-			s.Logger.Debugf("nfs: %s: prog=%d proc=%d unavailable", addr, cprog, cproc)
+			s.Logger.Debugf("nfs: %s: prog=%d vers=%d proc=%d unavailable", addr, prog, vers, proc)
 		}
 		return replyAccepted(xid, procUnavail, nil)
 	}
 	if s.Logger.Enabled(logging.LevelDebug) {
-		s.Logger.Debugf("nfs: %s: prog=%d vers=%d proc=%d", addr, cprog, cvers, cproc)
+		s.Logger.Debugf("nfs: %s: prog=%d vers=%d proc=%d", addr, prog, vers, proc)
 	}
 	body := h(addr, r)
 	if r.err {
@@ -105,12 +263,12 @@ func (s *Server) dispatch(addr net.Addr, pkt []byte, prog uint32, dispatch map[u
 }
 
 func skipOpaque(r *xdrReader) {
-	n := int(r.uint32())
-	if n < 0 {
+	n := r.uint32()
+	if n > uint32(len(r.b)) {
 		r.err = true
 		return
 	}
-	r.off += (n + 3) &^ 3
+	r.off += (int(n) + 3) &^ 3
 	if r.off > len(r.b) {
 		r.err = true
 	}
@@ -127,5 +285,18 @@ func replyAccepted(xid, acceptStat uint32, body []byte) []byte {
 	w.uint32(0) // verf length
 	w.uint32(acceptStat)
 	w.fixed(body)
+	return w.b
+}
+
+// replyDenied refuses a call for an RPC version other than 2, naming the
+// one version served.
+func replyDenied(xid uint32) []byte {
+	w := &xdrWriter{}
+	w.uint32(xid)
+	w.uint32(replyMsg)
+	w.uint32(msgDenied)
+	w.uint32(rpcMismatch)
+	w.uint32(2)
+	w.uint32(2)
 	return w.b
 }

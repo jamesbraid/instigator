@@ -10,8 +10,7 @@ package nfs_test
 //
 // rewrites every file from the current server. Without -update the test
 // fails when a scenario no longer produces its file byte for byte, and
-// replays each file's raw call bytes on every transport the server
-// speaks.
+// replays each file's raw call bytes over UDP and over TCP.
 
 import (
 	"bufio"
@@ -21,6 +20,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"os"
@@ -40,13 +40,10 @@ var update = flag.Bool("update", false, "rewrite testdata/transcripts from the s
 
 const transcriptDir = "testdata/transcripts"
 
-// The ports portmap advertises in every transcript. The harness binds
-// ephemeral ports and routes each call by program number, so these are
-// only the values the replies carry.
-const (
-	transcriptMountPort = 635
-	transcriptNFSPort   = 2049
-)
+// The ports portmap advertises in every transcript, on both transports.
+// The harness binds ephemeral ports, so these are only the values the
+// replies carry.
+var transcriptPorts = nfs.Ports{Portmap: 111, Mount: 635, NFS: 2049}
 
 type exchange struct {
 	label       string
@@ -188,10 +185,11 @@ func fixtureContent(t *testing.T, spec string) []byte {
 	return nil
 }
 
-// transcriptServer is one server for one transcript, with a listener per
-// program.
+// transcriptServer is one server for one transcript, listening on UDP
+// and TCP.
 type transcriptServer struct {
-	udp map[uint32]net.Addr // program -> address
+	udp, tcp net.Addr
+	conn     net.Conn // the TCP connection, opened on first use
 }
 
 func startTranscriptServer(t *testing.T, fixture string) *transcriptServer {
@@ -200,36 +198,34 @@ func startTranscriptServer(t *testing.T, fixture string) *transcriptServer {
 		t.Fatalf("unknown fixture %q", fixture)
 	}
 	s := &nfs.Server{FS: nfsexport.Export(fixtureFS(t))}
-	s.SetPorts(transcriptMountPort, transcriptNFSPort)
-	ts := &transcriptServer{udp: map[uint32]net.Addr{}}
-	for prog, serve := range map[uint32]func(net.PacketConn) error{
-		100000: s.ServePortmap,
-		100005: s.ServeMount,
-		100003: s.ServeNFS,
-	} {
-		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { pc.Close() })
-		go serve(pc)
-		ts.udp[prog] = pc.LocalAddr()
+	s.SetPorts(transcriptPorts, transcriptPorts)
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
 	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := &transcriptServer{udp: pc.LocalAddr(), tcp: l.Addr()}
+	done := make(chan struct{})
+	go func() { s.ServeTCP(l); close(done) }()
+	go s.ServeUDP(pc)
+	t.Cleanup(func() {
+		pc.Close()
+		l.Close()
+		if ts.conn != nil {
+			ts.conn.Close()
+		}
+		<-done
+	})
 	return ts
 }
 
-// roundTrip sends one call and returns the reply. The program number at
-// offset 12 of the call chooses the listener.
+// roundTrip sends one call over UDP and returns the reply.
 func (ts *transcriptServer) roundTrip(t *testing.T, call []byte) []byte {
 	t.Helper()
-	if len(call) < 16 {
-		t.Fatalf("call too short: %x", call)
-	}
-	addr, ok := ts.udp[binary.BigEndian.Uint32(call[12:])]
-	if !ok {
-		t.Fatalf("no listener for program %d", binary.BigEndian.Uint32(call[12:]))
-	}
-	c, err := net.Dial("udp", addr.String())
+	c, err := net.Dial("udp", ts.udp.String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,6 +240,39 @@ func (ts *transcriptServer) roundTrip(t *testing.T, call []byte) []byte {
 		t.Fatalf("no reply: %v", err)
 	}
 	return buf[:n]
+}
+
+// roundTripTCP sends one call on the transcript's TCP connection, record
+// marked, and returns the reply with its mark checked and removed.
+func (ts *transcriptServer) roundTripTCP(t *testing.T, call []byte) []byte {
+	t.Helper()
+	if ts.conn == nil {
+		c, err := net.Dial("tcp", ts.tcp.String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ts.conn = c
+	}
+	ts.conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if _, err := ts.conn.Write(binary.BigEndian.AppendUint32(nil, 0x80000000|uint32(len(call)))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.conn.Write(call); err != nil {
+		t.Fatal(err)
+	}
+	var hdr [4]byte
+	if _, err := io.ReadFull(ts.conn, hdr[:]); err != nil {
+		t.Fatalf("no reply: %v", err)
+	}
+	h := binary.BigEndian.Uint32(hdr[:])
+	if h&0x80000000 == 0 {
+		t.Fatalf("reply fragment not marked last: %#x", h)
+	}
+	reply := make([]byte, h&0x7fffffff)
+	if _, err := io.ReadFull(ts.conn, reply); err != nil {
+		t.Fatalf("short reply: %v", err)
+	}
+	return reply
 }
 
 // recorder runs a scenario against a live server, keeping every exchange.
@@ -274,6 +303,14 @@ func (r *recorder) callWith(cred []byte, label string, prog, vers, proc uint32, 
 		return nil
 	}
 	return reply[24:]
+}
+
+// raw sends call bytes as they are, for calls the helpers can't build.
+func (r *recorder) raw(label string, call []byte) {
+	r.t.Helper()
+	r.xid++
+	reply := r.ts.roundTrip(r.t, call)
+	r.tr.exchanges = append(r.tr.exchanges, exchange{label: label, call: call, reply: reply})
 }
 
 func (r *recorder) call(label string, prog, vers, proc uint32, args []byte) []byte {
@@ -347,14 +384,22 @@ func TestTranscripts(t *testing.T) {
 	}
 }
 
-// replay sends a transcript's raw call bytes to a fresh server, as
-// another implementation's test would.
+// replay sends a transcript's raw call bytes to a fresh server on each
+// transport, as another implementation's test would.
 func replay(t *testing.T, tr transcript) {
 	t.Helper()
-	ts := startTranscriptServer(t, tr.fixture)
-	for _, ex := range tr.exchanges {
-		if got := ts.roundTrip(t, ex.call); !bytes.Equal(got, ex.reply) {
-			t.Fatalf("replay %q:\n got %x\nwant %x", ex.label, got, ex.reply)
+	for _, transport := range []string{"udp", "tcp"} {
+		ts := startTranscriptServer(t, tr.fixture)
+		for _, ex := range tr.exchanges {
+			var got []byte
+			if transport == "udp" {
+				got = ts.roundTrip(t, ex.call)
+			} else {
+				got = ts.roundTripTCP(t, ex.call)
+			}
+			if !bytes.Equal(got, ex.reply) {
+				t.Fatalf("%s replay %q:\n got %x\nwant %x", transport, ex.label, got, ex.reply)
+			}
 		}
 	}
 }

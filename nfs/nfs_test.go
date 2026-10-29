@@ -108,30 +108,20 @@ func startNFS(t *testing.T) (*nfs.Server, *net.UDPAddr) {
 }
 
 // startNFSServer is startNFS for a caller that needs its own FS or
-// Logger on the Server, e.g. to capture the per-open log line.
+// Logger on the Server, e.g. to capture the per-open log line. One UDP
+// socket answers every program, and portmap advertises it for all of
+// them.
 func startNFSServer(t *testing.T, s *nfs.Server) (*nfs.Server, *net.UDPAddr) {
 	t.Helper()
-	pm, err := net.ListenPacket("udp", "127.0.0.1:0")
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	mnt, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	nf, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { pm.Close(); mnt.Close(); nf.Close() })
-	go s.ServePortmap(pm)
-	go s.ServeMount(mnt)
-	go s.ServeNFS(nf)
-	s.SetPorts(
-		uint32(mnt.LocalAddr().(*net.UDPAddr).Port),
-		uint32(nf.LocalAddr().(*net.UDPAddr).Port),
-	)
-	return s, pm.LocalAddr().(*net.UDPAddr)
+	t.Cleanup(func() { pc.Close() })
+	go s.ServeUDP(pc)
+	port := uint32(pc.LocalAddr().(*net.UDPAddr).Port)
+	s.SetPorts(nfs.Ports{Portmap: port, Mount: port, NFS: port}, nfs.Ports{})
+	return s, pc.LocalAddr().(*net.UDPAddr)
 }
 
 // rpcCall sends one ONC-RPC call over UDP and returns the reply body

@@ -48,3 +48,4 @@ file many/file-29 0644 915148806 hex:32390a
 file run.sh         0755 915148807 hex:23212f62696e2f73680a
 dir  sub            0750 915148808
 file sub/nested.txt 0600 915148809 hex:6e65737465640a
+file xl.bin         0644 915148810 pattern:40000
