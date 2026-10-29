@@ -458,7 +458,7 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 	if cfg.Services.BOOTP {
 		var clients []bootp.Client
 		for _, c := range cfg.Clients {
-			clients = append(clients, bootp.Client{Name: c.Name, MAC: c.MAC, IP: c.IP})
+			clients = append(clients, bootp.Client{Name: c.Name, MAC: c.MAC, IP: c.IP, Hostname: c.Hostname})
 		}
 		s.bootp = &bootp.Server{
 			ServerIP:  cfg.ServerIP,

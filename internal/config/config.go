@@ -20,6 +20,9 @@ type Client struct {
 	Name string
 	MAC  net.HardwareAddr
 	IP   netip.Addr
+	// Hostname, when set, is offered to the machine in the BOOTP reply
+	// (RFC 2132 option 12) as the name it should take. Empty offers none.
+	Hostname string
 }
 
 // Layer is one ordered source (local path or http(s) URL) contributing
@@ -137,6 +140,7 @@ type raw struct {
 		Name string `yaml:"name"`
 		MAC  string `yaml:"mac"`
 		IP   string `yaml:"ip"`
+		Host string `yaml:"hostname"`
 	} `yaml:"clients"`
 	Credentials []struct {
 		Host     string `yaml:"host"`
@@ -235,7 +239,10 @@ func Parse(b []byte) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("config: clients[%d] (%s): ip: %w", i, rc.Name, err)
 		}
-		c.Clients = append(c.Clients, Client{Name: rc.Name, MAC: mac, IP: cip})
+		if err := checkHostname(rc.Host); err != nil {
+			return nil, fmt.Errorf("config: clients[%d] (%s): hostname: %w", i, rc.Name, err)
+		}
+		c.Clients = append(c.Clients, Client{Name: rc.Name, MAC: mac, IP: cip, Hostname: rc.Host})
 	}
 
 	addonSets := make(map[string]bool)
@@ -510,4 +517,27 @@ func expandEnv(v string) string {
 		return v
 	}
 	return os.Getenv(v[2 : len(v)-1])
+}
+
+// maxHostname keeps option 12 inside the 64-byte BOOTP vendor area beside
+// the cookie, the subnet mask and the end marker.
+const maxHostname = 40
+
+// checkHostname accepts an empty name, or letters, digits, hyphens and dots
+// that fit the vendor area.
+func checkHostname(h string) error {
+	if len(h) > maxHostname {
+		return fmt.Errorf("%q is longer than %d bytes", h, maxHostname)
+	}
+	for _, r := range h {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '.':
+		default:
+			return fmt.Errorf("%q has %q, which a host name cannot", h, r)
+		}
+	}
+	if strings.HasPrefix(h, "-") || strings.HasPrefix(h, ".") || strings.HasSuffix(h, ".") {
+		return fmt.Errorf("%q starts or ends with a hyphen or dot", h)
+	}
+	return nil
 }

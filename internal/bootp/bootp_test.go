@@ -203,3 +203,33 @@ func TestReplyGoesBackOutTheIngressInterface(t *testing.T) {
 		}
 	}
 }
+
+func TestVendorAreaCarriesHostname(t *testing.T) {
+	s := testServer()
+	s.Clients[0].Hostname = "origin200"
+	vend := handle(s, request(octaneMAC, 1, ""))[236:300]
+	// cookie, subnet mask, then option 12, then the end marker
+	if vend[10] != 12 || vend[11] != 9 || string(vend[12:21]) != "origin200" {
+		t.Fatalf("host name option = %v", vend[10:21])
+	}
+	if vend[21] != 255 {
+		t.Fatalf("vendor area not terminated: %v", vend[21])
+	}
+}
+
+func TestVendorAreaWithoutHostnameIsUnchanged(t *testing.T) {
+	vend := handle(testServer(), request(octaneMAC, 1, ""))[236:300]
+	if vend[10] != 255 {
+		t.Fatalf("an option follows the subnet mask: %v", vend[10:14])
+	}
+}
+
+func TestHostnameWithoutNetmask(t *testing.T) {
+	s := testServer()
+	s.Netmask = netip.Prefix{}
+	s.Clients[0].Hostname = "x"
+	vend := handle(s, request(octaneMAC, 1, ""))[236:300]
+	if vend[4] != 12 || vend[5] != 1 || vend[6] != 'x' || vend[7] != 255 {
+		t.Fatalf("vendor area = %v", vend[4:8])
+	}
+}

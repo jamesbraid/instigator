@@ -2,6 +2,7 @@ package config
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -146,6 +147,12 @@ func TestRejects(t *testing.T) {
 		"bad ip": "server_ip: 192.0.2.10\nclients: [{name: o, mac: \"08:00:69:00:00:01\", ip: banana}]\n" +
 			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]",
 		"no serverip": "clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]",
+		"hostname with a space": "server_ip: 192.0.2.10\nclients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30, hostname: \"my box\"}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]",
+		"hostname too long": "server_ip: 192.0.2.10\nclients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30, hostname: " + strings.Repeat("a", 41) + "}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]",
+		"hostname with a leading hyphen": "server_ip: 192.0.2.10\nclients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30, hostname: -x}]\n" +
 			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]",
 		"no install sets": "server_ip: 192.0.2.10\n" +
 			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]",
@@ -565,5 +572,18 @@ func TestInstallOrder(t *testing.T) {
 	}
 	if _, err := cfg.InstallOrder("absent"); err == nil {
 		t.Error("an unknown install set has an order")
+	}
+}
+
+func TestClientHostname(t *testing.T) {
+	cfg, err := Parse([]byte("server_ip: 192.0.2.10\nclients:\n" +
+		"  - {name: a, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30, hostname: origin200}\n" +
+		"  - {name: b, mac: \"08:00:69:00:00:02\", ip: 192.0.2.31}\n" +
+		"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Clients[0].Hostname != "origin200" || cfg.Clients[1].Hostname != "" {
+		t.Errorf("hostnames %q and %q", cfg.Clients[0].Hostname, cfg.Clients[1].Hostname)
 	}
 }

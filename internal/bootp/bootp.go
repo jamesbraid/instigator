@@ -29,6 +29,8 @@ type Client struct {
 	Name string
 	MAC  net.HardwareAddr
 	IP   netip.Addr
+	// Hostname, when set, goes in the reply as option 12. Empty sends none.
+	Hostname string
 }
 
 // Server answers BOOTP requests.
@@ -232,7 +234,8 @@ func (s *Server) buildReply(req []byte, client *Client) []byte {
 	copy(rep[20:24], s.ServerIP.AsSlice()) // siaddr
 	clear(rep[44:108])                     // sname
 	// file: echo the request's path (the PROM chose it)
-	// vendor area: RFC 1048 magic, subnet mask when configured, end
+	// vendor area: RFC 1048 magic, subnet mask when configured, host name
+	// when the client has one, end
 	vend := rep[236:packetLen]
 	clear(vend)
 	copy(vend[0:4], []byte{99, 130, 83, 99})
@@ -243,6 +246,12 @@ func (s *Server) buildReply(req []byte, client *Client) []byte {
 		vend[w+1] = 4
 		copy(vend[w+2:w+6], mask)
 		w += 6
+	}
+	if h := client.Hostname; h != "" && w+2+len(h)+1 <= len(vend) {
+		vend[w] = 12
+		vend[w+1] = byte(len(h))
+		copy(vend[w+2:], h)
+		w += 2 + len(h)
 	}
 	vend[w] = 255
 	return rep
