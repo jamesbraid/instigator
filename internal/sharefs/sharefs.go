@@ -203,6 +203,11 @@ func (f *FS) describe(rel string, st stat) (*node, error) {
 		Mtime:  st.mtime,
 		Ctime:  st.ctime,
 	}}
+	if n.isLink() {
+		// Hosts differ: Linux gives every symlink 0777, macOS applies the
+		// umask. The bits mean nothing for a link, so report Linux's.
+		n.attr.Mode |= 0o777
+	}
 	if f.filter != nil {
 		f.filter(&n.attr)
 	}
