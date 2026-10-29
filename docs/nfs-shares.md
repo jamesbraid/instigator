@@ -138,6 +138,15 @@ effect at the next `run`.
   unmount and remount. It covers NFSv3/TCP, plus NFSv2/UDP on a private
   network.
 
+The Rust port is the `origami-nfs` crate, at `crates/origami-nfs` in the
+sgi-emulator repository (the Origami product CLI) and a member of its
+Cargo workspace. Its test `tests/transcripts.rs` reads `nfs/testdata` from
+the `instigator` submodule and replays every transcript over UDP and TCP,
+requiring identical bytes. The CLI tests workflow runs it with
+`cargo test --workspace`, so moving the submodule pin to a newer Instigator
+replays that Instigator's transcripts. A Windows host skips the share
+transcripts, which need Unix modes and symlinks.
+
 ## Transcript format
 
 The transcripts are `nfs/testdata/transcripts/*.txt`, plain text read
