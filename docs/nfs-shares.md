@@ -151,6 +151,186 @@ Facts the spikes established against IRIX 6.5.30:
 - READDIR doesn't list `.` or `..`, and IRIX accepts that.
 - A read-only export fails every write immediately with `ROFS`.
 
+## Private network
+
+The private network is the Ethernet segment Instigator builds for one QEMU
+machine, with no host privileges: a user-space IPv4 stack (gVisor's
+netstack, in `internal/qemunet`) attached to the machine's NIC over a byte
+stream. `serve` runs the install services on it, `serve --share` and
+`share --network-socket` or `--network-tcp` add portmap, MOUNT and NFS,
+and the Rust port in Origami builds the same segment. This section is
+what the two must agree on. The frame transcripts under
+`internal/qemunet/testdata/transcripts` pin the parts a test can pin; the
+rest is stated here.
+
+### The link
+
+- **Attachment.** Instigator listens on a loopback TCP address
+  (`--network-tcp IP:PORT`; a non-loopback address or port 0 is refused)
+  or a Unix socket (`--network-socket PATH`) and accepts the machine's
+  one connection. QEMU is the client:
+  `-netdev stream,id=net0,server=off,addr.type=inet,addr.host=127.0.0.1,addr.port=PORT,reconnect-ms=1000`
+  with `-net nic,model=sgi-ioc3-eth,netdev=net0`. A restarted Instigator
+  picks the machine back up, because QEMU retries every second.
+- **Stream framing.** Each Ethernet frame is a 4-byte big-endian length,
+  then that many bytes: the frame from the destination MAC through the
+  payload, with no preamble and no FCS. A length over 65535 is a protocol
+  error and closes the stream. The two directions are independent. A
+  stream that ends between frames is a disconnect; one that ends inside a
+  frame is a truncated read. Either ends the network, and `serve` and
+  `share` exit with `private network disconnected`. They do not wait for a
+  second connection.
+- **Padding.** Frames the host sends are padded with zeros to 60 bytes,
+  the Ethernet minimum without FCS. Longer frames are sent as built.
+- **MTU.** 1500. IPv4 only: IPv6, and any ethertype but ARP (0x0806) and
+  IPv4 (0x0800), is dropped without a reply.
+
+### Addresses
+
+| | |
+|---|---|
+| Subnet | 10.98.0.0/24 |
+| Host (Instigator) | 10.98.0.2, MAC 08:00:69:00:00:02 |
+| Machine | 10.98.0.65 in Origami's install configuration; the address is the `ip` of the client entry whose `mac` is the machine's |
+| Machine MAC | the machine's own (an IRIX machine's is in the 08:00:69 prefix); it is the `mac` of the client entry |
+| Gateway, DNS | none: the segment has no router and no name service |
+
+The host's address and prefix come from the configuration (`server_ip`,
+`netmask`) or `share --address ADDR/PREFIX`; the MAC is fixed. The
+defaults above are what Origami uses.
+
+### ARP and ICMP
+
+- **ARP.** The host answers a request whose target is its own address
+  with a reply carrying its MAC, whatever the sender address is, a
+  `0.0.0.0` probe included. It answers no other target and sends no
+  announcement, on connecting or otherwise. A reply goes to the MAC of the frame it
+  answers. When the host must send first, as the rsh callback does, it
+  broadcasts a who-has with its own address as sender and waits.
+- **ICMP.** An echo request to the host address is answered with an echo
+  reply that copies the identifier, sequence number and data; so is one to
+  the subnet broadcast address 10.98.0.255 (sent from the host address).
+  An echo to any other address draws nothing. A UDP datagram to a port
+  nobody serves draws an ICMP destination unreachable, port unreachable,
+  quoting the offending datagram; one to a broadcast address draws
+  nothing.
+- **IPv4 header.** Replies the host originates carry TTL 64 and no DF. The
+  identification field is random, so the transcripts compare replies with it
+  set to zero and the header checksum recomputed.
+
+### UDP, TCP and fragmentation
+
+UDP datagrams up to 65507 bytes are sent and received; the host
+fragments at the 1500-byte MTU, sets no DF, and reassembles what the
+machine fragments. NFSv2 over UDP with 8 KiB READs depends on this. TCP is
+ordinary TCP over that MTU; the transcripts do not pin sequence numbers
+or segment boundaries.
+
+| Service | Transport and port | When |
+|---|---|---|
+| BOOTP | UDP 67 | `serve` with `services.bootp` |
+| TFTP | UDP 69, then a port per transfer | `serve` with `services.tftp` |
+| rsh | TCP 514; the host dials back to the machine's stderr port from a source port in 512 to 1023 | `serve` with `services.rsh` |
+| portmap, MOUNT, NFS | UDP and TCP 111, 635, 2049 | `--share` given |
+
+Every one of the three NFS ports answers all three programs, and portmap
+advertises 111, 635 and 2049 for both transports. With no `--share`
+nothing listens on them: UDP to 111 draws the port unreachable above.
+
+### Addressing the machine: BOOTP, DHCP and the guest
+
+- **BOOTP.** Instigator answers legacy BOOTP (RFC 951) for the machines
+  named in its configuration, and for nobody else. A request is a UDP
+  datagram to port 67 of at least 300 bytes with op 1, hardware type 1 and
+  length 6; shorter ones are ignored. The reply is 300 bytes: op 2, the
+  machine's configured address in `yiaddr`, the host's address in
+  `siaddr`, `sname` cleared, the request's `file` echoed, and a vendor area
+  of the RFC 1048 cookie (99 130 83 99), option 1 subnet mask when the
+  configuration has a netmask, option 12 host name when the client has one,
+  and the end option. Anything else in the request is copied back. The
+  reply goes to the request's source port, not port 68: broadcast
+  (255.255.255.255, MAC ff:ff:ff:ff:ff:ff) when the request's source
+  address is `0.0.0.0`, otherwise unicast to that source address.
+- **Host name.** A client entry's optional `hostname` (letters, digits,
+  hyphens and dots, 40 bytes at most) is sent as option 12. Without it the
+  option is absent and the reply is byte for byte what it was before the
+  option existed. Origami's `install-serve` writes the client as
+  `{"name": "sgi", "mac": ..., "ip": "10.98.0.65"}` and does not set it;
+  it must pass the machine directory's name as `hostname` for BOOTP to
+  carry the name. Whether the PROM and the miniroot take option 12 from a
+  BOOTP reply has not been run against IRIX.
+- **DHCP.** There is none. A BOOTREQUEST carrying DHCP message type
+  option 53 is ignored, so a DHCP server on a shared network can own the
+  port; nothing on the private segment answers it. IRIX's DHCP client
+  (`proclaim`, started by the `autoconfig_ipaddress` flag) sends a
+  548-byte DHCPDISCOVER from `0.0.0.0:68` with the broadcast flag clear,
+  retries at about two seconds, and gets no answer. The host-name option
+  has nothing to ride on in a DHCP reply because Instigator sends no
+  DHCP reply.
+- **How the installed guest gets an address.** It does not, on this
+  network. An installed 6.5.30 system boots with `ef0` at the default
+  192.0.2.1 and the console message `IRIS's Internet address is the
+  default. Using standalone network mode`: the interface is not up. The
+  proof used
+  `ifconfig ef0 up; ifconfig ef0 alias 10.98.0.65 netmask 255.255.255.0`.
+  BOOTP is for the PROM and the miniroot during an install. The
+  installed system needs an address from its own configuration or a DHCP
+  service; the design of that is open (see below).
+
+### Transcripts
+
+`internal/qemunet/testdata/transcripts/*.txt` hold one segment each,
+configured by their header, and replay the same way as the RPC transcripts:
+
+```
+server 10.98.0.2/24 08:00:69:00:00:02
+bootp 08:00:69:12:34:56 10.98.0.65 hostname=origin200
+
+frame request from the configured machine
+> ffffffff ffff0800 69123456 08004500 01480001 00004011 79a50000 0000ffff
+< ffffffff ffff0800 69000002 08004500 01480000 00004011 6f420a62 0002ffff
+frame an address nobody owns
+> ...
+none
+```
+
+- `server ADDR/PREFIX MAC` is the host and must be the one above. The
+  optional `bootp MAC IP [hostname=NAME]` starts the BOOTP service with that
+  one client; without it nothing listens on 67.
+- `frame LABEL` starts an exchange. `>` lines are the Ethernet frame the
+  machine sends and `<` lines the frame the host answers, as hex, with no
+  length prefix: a replay adds the 4-byte length on the way in and removes
+  it on the way out. `none` means the host sends nothing, which a replay
+  establishes by waiting 400 ms.
+- Exchanges run in order on one fresh segment. A reply is compared after
+  its IPv4 identification is zeroed and the header checksum recomputed.
+- An exchange has at most one reply frame. A scenario that makes the host
+  send more, or ask on its own (ARP for an address it must resolve), is
+  not in the files, because the extra frames' timing is the netstack's.
+
+`go test ./internal/qemunet -run TestFrameTranscripts -update` rewrites the
+files from the stack. The files cover ARP, ICMP echo and port unreachable,
+BOOTP with and without a host name, the absence of DHCP, and ignored
+traffic. The NFS programs have the RPC transcripts in `nfs/testdata`.
+
+### Checked against IRIX 6.5.30
+
+Origin 200 machine, private mode, Origami 0.4.1, `serve --share` and
+`share --network-tcp`:
+
+- The guest pings the host, `showmount -e` lists every share, and
+  `rpcinfo -p` shows portmap, MOUNT v1 and v3, and NFS v2 and v3 on UDP and
+  TCP at 111, 635 and 2049.
+- `mount -o vers=3,proto=tcp` and `mount -o vers=2,proto=udp` both work, at
+  once, from two shares on one server. ls, cat, write, append, mv,
+  mkdir, symlink, chmod, rm and rmdir pass on both.
+- A 200 MB file copies from each share to the guest's disk and back with
+  identical SHA-256 on the host.
+- A host filesystem with no birth time (an NFS-mounted directory, for one)
+  recycles inode numbers at once, so a name that is removed and made again
+  can get its old handle. The guest then reports `Stale NFS file handle`
+  for it. The proof's shares sit on local XFS.
+
 ## CLI
 
 ```sh
@@ -178,6 +358,9 @@ effect at the next `run`.
   against a fixed fixture tree. The fixture and transcripts live in
   Instigator. Origami's crate test-imports them through the existing
   submodule.
+- **Frame transcripts.** The private network's frames have their own
+  transcripts, under `internal/qemunet/testdata/transcripts`, read the
+  same way through the submodule. See "Private network".
 - **A change to either server** lands with a transcript, and CI in both
   repos replays every transcript.
 - **The IRIX check** runs against each server before a release that
@@ -258,5 +441,10 @@ in Instigator before the port starts.
 
 ## Open questions
 
+- How does an installed guest get its address on the private network?
+  Instigator answers BOOTP to the PROM only and no DHCP at all, and an
+  installed 6.5.30 system leaves `ef0` down until told otherwise. Either
+  Instigator grows a DHCP reply for the segment, which would also carry the
+  host name, or Origami configures the guest after install.
 - Does the userspace switch slow normal guest networking? The IRIX check
   compares an internet download through it with plain user mode.
