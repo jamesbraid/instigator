@@ -1,36 +1,33 @@
 # Roadmap
 
-This is a hobby project. Keep the next step small and driven by another real
-install or a focused test, not by speculative infrastructure.
+This is a hobby project. New work should answer a problem found during an
+install or a focused test.
 
-## Near term
+## Installation coverage
 
-- Repeat the proven 6.5.30 install from a fresh capture and keep the trace and
-  serial log with the test result.
-- Turn the captured install facts into a small synthetic regression fixture.
-- Named install scripts now carry explicit package selection (extra
-  `install`/`keep`/`remove` lines) and a feature/maintenance stream choice. The
-  emitted commands are unit-tested; the next step is to prove a non-standard
-  selection end to end on real hardware — an added product such as `dbx`, and a
-  maintenance-stream install — and keep the trace with the test result.
+- Repeat the Octane2 6.5.30 install with a fresh capture and serial log.
+- Test the 6.5.22 config and 32-bit ARCS boot path on an Indy or Indigo2.
+  The config and boot-file support are present. Hardware acceptance is pending.
+- Verify extra package selections, such as `dbx`, and a maintenance-stream
+  install end to end. Keep the guest output with each result.
+- Validate the shipped MIPSpro add-on on the target configurations. Having a
+  media config is separate from a completed compiler installation.
+- Turn captured install behavior into small synthetic regression fixtures.
 
-## Possible future configurations
+## File sharing and networking
 
-- A second 6.5.30 media arrangement can be documented after it is proven by a
-  separate install.
-- MIPSpro/compiler media can be added after the base installation is
-  repeatable.
-- An older 6.5.22 installation needs matching media and its own boot
-  validation.
+NFSv2/v3 shares, private-network DHCP, and the shared RPC and Ethernet frame
+transcripts are implemented. See the [sharing guide](sharing.md) for usage and
+the [protocol reference](nfs-shares.md) for behavior and recorded checks.
 
-## Deferred transport and tooling
+The DHCP server identifier is configurable so an installed IRIX guest can
+move between private and QEMU user networks. The
+[sharing guide](sharing.md#moving-between-networks) explains the setting and
+the remaining lease-renewal limitation.
 
-- NFS is not linked into the supported server binary. It is being extended
-  for host folder shares; see [Host folder shares over NFS](nfs-shares.md).
-- A VFS browser or interactive shell is not part of the install path. Add one
-  only if a real debugging task needs it.
-- Performance work should start with the existing capture timings and a
-  reproducible media fixture. Do not add tracing systems before a measurement
-  shows a bottleneck.
-- 32-bit boot artifacts and other hardware-specific arrangements need their own
-  media and hardware evidence.
+## Further work
+
+Performance changes should start with capture timings and reproducible media.
+The [QEMU measurements](qemu-network-performance.md) document one comparison
+and its limits. An interactive media browser can wait until a debugging task
+needs one.

@@ -1,35 +1,96 @@
 # IRIX network install
 
-This is the operator guide for the tested install configuration. Keep it with
-the checkout used to start the server.
+The documented hardware install is an Octane2 running IRIX 6.5.30. It
+netbooted, installed from merged media, booted from disk, and reached the
+console login. Other machines and releases need their own boot files and
+validation.
 
-## Server host setup
+Use the docs from the same release as your binary. The steps below cover
+serving the media and loading installer selections. Disk partitioning depends
+on your target machine and is not covered here.
 
-The server binds privileged ports (67 for BOOTP, 69 for TFTP), so start it with
-`sudo` on Linux and macOS, or as Administrator on Windows. On Windows, also
-allow UDP 67/69 and TCP 514 through the firewall, or the PROM's requests never
-reach it.
+## Before you start
 
-The BOOTP reply is broadcast, and the OS routing table picks the interface it
-leaves by. On a multi-homed host the reply can exit the wrong interface and the
-SGI never sees it. Run the server where the install network is the active route,
-or disable the other interfaces while installing.
+You need:
 
-Capture directories rely on Unix permission bits (0700/0600) to stay private.
-On Windows those bits are near no-ops, so point `--capture-dir` somewhere the
-filesystem already protects.
+- An Instigator binary for your host, or Go 1.27.1 or newer to build it.
+- Your IRIX install images, including the matching boot and foundation media.
+- The server's IPv4 address on the install network and the client's MAC and IP
+  addresses. At the PROM, `printenv eaddr` shows the client MAC.
+- Console access to the SGI and a network connection to the server.
 
-## Boot the miniroot
+IRIX media is read from your local files or the URLs in the config. The
+Instigator binary contains no IRIX images.
 
-At the Octane PROM command monitor:
+## Configure and start the server
+
+For a ready-made media layout, start with the [shipped
+configs](real-hardware.md). To configure your own media, copy the example from
+your release archive or checkout:
+
+```sh
+cp instigator.example.yaml instigator.yaml
+```
+
+Edit `server_ip`, `netmask`, the client entry, and the media sources. The
+example uses documentation addresses and a placeholder Freeware URL. Replace
+those values and remove sets you will not use. `enabled: false` only keeps a
+set out of generated installer selections. The server still opens its media.
+
+Keep the install sets in the order [listed
+below](#tested-6530-install-set-ordering). The first enabled set that is not
+an add-on is the primary release. For the example, `<primary-set>` is
+`6.5.30`. Replace `<client-ip>` and `<server-ip>` in the console commands with
+your configured addresses.
+
+Validate the configuration and media before binding network ports:
+
+```sh
+./instigator check instigator.yaml
+```
+
+For sets made entirely from local media, this opens the sources, checks
+collisions and named product selections, and generates installer files. For a
+set with remote sources, it validates the layout and probes the URLs without
+reading the media. To assemble remote sets too, run:
+
+```sh
+./instigator check --full instigator.yaml
+```
+
+A full check can download archives and read remote images. Neither mode runs
+an installation or proves the media will boot your machine.
+
+Start the server on Linux or macOS:
+
+```sh
+sudo ./instigator serve instigator.yaml
+```
+
+On Windows, run `instigator.exe serve instigator.yaml` as Administrator. Allow
+UDP 67/69, the configured TFTP transfer-port range, and TCP 514 through the
+firewall. If your host has several network interfaces, check that BOOTP
+broadcast replies leave through the install network. See [network
+setup](operations.md#network-setup) for details.
+
+Leave the server running while you install. It prints the boot path and remote
+distribution directory for your configuration.
+
+## Prepare the disk and boot the installer
+
+If you need to prepare the disk, boot the `fx` partitioner from the Octane
+PROM command monitor (for IP22, use the [32-bit boot
+instructions](real-hardware.md#indy-and-indigo2-ip22-irix-6522)):
 
 ```text
 setenv netaddr <client-ip>
 boot -f bootp():/<primary-set>/stand/fx.64
 ```
 
-At the `Remote Directory` prompt, enter the primary distribution without a
-trailing slash:
+After preparing the disk, quit `fx` and return to the System Maintenance
+Menu. If the disk is already prepared, start at that menu. Choose the
+software installation option, then Remote Directory. Enter the server IP
+and the primary distribution without a trailing slash:
 
 ```text
 /<primary-set>/dist
@@ -37,26 +98,32 @@ trailing slash:
 
 ## Load the install selections
 
-At `Inst>` load the command file from the server:
+With the example configuration, load the baseline command file at `Inst>`:
 
 ```text
 admin source <server-ip>:/install.cmds
 ```
 
-The command file opens every enabled supplemental set and reopens the primary
-release last. If `inst` opens an `Install software from` menu, enter the number
-beside `done`. The command file then selects the standard product set, applies
-the known package choice for this install, and starts the install. It does not
-use positional `conflicts` choices.
+The shipped configs use `/irix.cmds` instead. That script includes their
+package choices and any files listed under `addons:`. The baseline
+`/install.cmds` does not install those add-ons.
 
-For a dry run, type the selection commands from the file manually and omit the
-final `admin source` command, which starts `go`.
+The command file opens every enabled supplemental set and reopens the primary
+release last. If `inst` opens an `Install software from` menu, enter the
+number beside `done`. The command file then selects the standard product set
+and starts the install. It keeps `java_dev.sw.base` deselected so the Java
+runtime can be installed without that conflict.
+
+For a selection-only check in `inst`, enter the selection commands manually
+and stop before the final `admin source` handoff, which starts `go`.
+`instigator check` validates the server configuration. It does not resolve
+installer dependencies.
 
 ### Named install scripts
 
 If the configuration defines `install_scripts`, each one is served next to the
-default at `/<name>.cmds`. Load a named script instead of the default to get its
-extra selections — for example a `debug` script that also installs `dbx`:
+default at `/<name>.cmds`. Load a named script instead of the default to get
+its extra selections. For example, a `debug` script can also install `dbx`:
 
 ```text
 admin source <server-ip>:/debug.cmds
@@ -64,8 +131,8 @@ admin source <server-ip>:/debug.cmds
 
 The default `/install.cmds` remains available, so choose a script by sourcing
 its path. The named script opens the same sets in the same order, then applies
-the standard selection plus that script's own
-`install`/`keep`/`remove` lines and release stream.
+the standard selection plus that script's own `install`/`keep`/`remove` lines
+and release stream.
 
 ### Add-on second pass
 
@@ -73,80 +140,26 @@ A script with a `then:` pass installs add-on sets after the operating system.
 Its first `go` installs from every enabled set that is not an add-on. When
 that `go` returns to `Inst>`, the script opens the add-on distributions, runs
 `keep *`, selects the configured add-on products and runs `go` again. Opening
-an add-on distribution at this point does not show the `Install software
-from` menu. After the second `go` returns, `quit` and answer the restart
-prompt as usual. An IRIX 6.5.30 install of the PsiTech RAD4 driver this way
-relinked the kernel with the driver during `quit`'s automatic
-reconfiguration, and the first boot loaded it.
+an add-on distribution at this point does not show the `Install software from`
+menu. After the second `go` returns, `quit` and answer the restart prompt as
+usual. An IRIX 6.5.30 install of the PsiTech RAD4 driver this way relinked the
+kernel with the driver during `quit`'s automatic reconfiguration, and the
+first boot loaded it.
 
 ### Post-install commands
 
 A script with `post_install` commands sources them after its last `go`
-returns, after the second pass when it has one. The file sets `inst`'s
-`shell` preference to `/bin/sh` and runs each command with `shroot`, which
-runs it in a chroot of the installed system. `shroot` fails before `go`
-because the target does not exist yet. The first failing command prints
-`(command failed)` and returns to `Inst>` without running the rest. When
-every command succeeds, the file sets `shell` back to the default
-`/bin/csh` and the console shows
+returns, after the second pass when it has one. The file sets `inst`'s `shell`
+preference to `/bin/sh` and runs each command with `shroot`, which runs it
+inside the installed system. `shroot` fails before `go` because the target
+does not exist yet. The first failing command prints `(command failed)` and
+returns to `Inst>` without running the rest. When every command succeeds, the
+file sets `shell` back to the default `/bin/csh` and the console shows
 `instigator: post-install commands finished` before `Inst>`.
 
 `inst` saves preferences in the installed system's `/var/inst/.swmgrrc`, so
-after a failed command later `inst` sessions there keep `shell` at
-`/bin/sh` until it is set back.
-
-### Install timing
-
-Every generated script uses native `admin source` handoffs to time `go`.
-Each execution gets a separate token to identify its start and return. A
-script with a second pass records two attempts: `NAME.cmds` for the first
-`go` and `NAME.cmds then` for the second.
-
-Timestamped INFO logs identify the script, client, and attempt. Return records
-include elapsed time. Capture and `-v` are optional. Example with token abbreviated:
-
-```text
-2026-10-03T12:00:00Z INFO  install_start: install.cmds (o200), attempt <token>: go dispatched
-2026-10-03T12:22:50Z INFO  install_returned: install.cmds (o200), attempt <token>: go returned after 22m50.81s (success not verified)
-```
-
-To retain the timing events and transfer statistics, give each server run a
-fresh capture directory:
-
-```sh
-instigator serve --capture-dir RUN config.yaml
-instigator trace summary RUN
-```
-
-`events.jsonl` retains these events. The `installs` array in `summary.json`
-adds timestamps and `duration_ms` to each attempt. Missing return markers
-leave attempts `incomplete` with no finished duration. Regenerate the summary
-after a crash with `trace summary`.
-
-Timing includes marker fetch overhead and prompts during `go`. Earlier commands
-and reboot are outside the interval. A return means execution reached the
-command after `go`. Verify success from guest output and first boot. Errors
-that abort the command file leave the attempt incomplete. Handwritten scripts
-and commands entered at `Inst>` have no markers.
-
-Chaining and the newline-only marker were tested with installed IRIX 6.5
-`inst` 4.1. A full successful miniroot install with these markers remains untested.
-
-### Shares on the private network
-
-`serve --share NAME=DIR` (repeatable) also exports a host directory to the
-machine over NFS on the same private network, at the server address on
-ports 111, 635 and 2049. Without `--share` nothing listens there. It needs
-`--network-socket` or `--network-tcp`; see [Host folder shares over
-NFS](nfs-shares.md).
-
-### Private network disconnects
-
-With `--network-socket` or `--network-tcp`, an emulator network disconnect stops
-Instigator with a timestamped error and exit status 1. For example,
-`private network disconnected: read frame: EOF` reports the connection closing.
-It does not establish installation completion. Capture ends with
-`server_stop` / `disconnected`. Attempts without return markers stay incomplete.
+after a failed command later `inst` sessions there keep `shell` at `/bin/sh`
+until it is set back.
 
 ## Tested 6.5.30 install-set ordering
 
@@ -163,13 +176,18 @@ The generated command file opens the supplemental sets in that order and
 reopens `6.5.30` last. That ordering is based on the successful Octane run.
 
 Applications and Complementary Applications remain separate sets. Multiple
-discs within a set are merged into one logical `/<set>/dist` tree; disc names
+discs within a set are merged into one logical `/<set>/dist` tree. Disc names
 are never exposed to `inst`.
 
-## First-boot checks
+## Finish and check the installation
 
-After installation, use the restart prompt's shell before rebooting if you
-want to inspect the target root mounted at `/root`:
+When the final `go` returns, check the console for errors, then enter `quit`.
+Allow automatic reconfiguration to complete before restarting. A timed return
+from `go` only means the command returned. Check the installed system and its
+first boot to confirm success.
+
+At the restart prompt, use its shell before rebooting if you want to inspect
+the target root mounted at `/root`:
 
 ```sh
 ls -l /root/unix /root/usr/stand/ide
@@ -180,43 +198,6 @@ The volume header should contain `sash`, `ide`, and the machine PROM. The
 installed root should contain `/unix`. The PROM normally loads `sash` from the
 volume header, not from `/stand` in the root filesystem.
 
-## Running it as a service
-
-Once the install sets are assembled and the listeners are bound,
-`instigator serve` reports itself ready over `sd_notify`. A `Type=notify`
-unit's `systemctl start` therefore returns when the server is serving
-rather than when the process spawned, which is what a caller wants when it
-is about to boot a machine at it.
-
-Install this unit as `/etc/systemd/system/instigator.service`:
-
-```ini
-[Unit]
-Description=instigator IRIX install server
-After=network-online.target
-
-[Service]
-Type=notify
-# Assembling the sets reads each image over the network; allow for a slow
-# store rather than systemd's default start timeout.
-TimeoutStartSec=600
-ExecStart=/usr/local/bin/instigator serve /etc/instigator.yaml
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
-
-To start the server from a script and wait until it is serving:
-
-```sh
-systemd-notify --fork -- instigator serve /etc/instigator.yaml
-```
-
-It returns 0 once the server is serving and leaves it running, or non-zero
-with the server's own error.
-
-On macOS the same shape as a launchd plist, with `ProgramArguments` set to
-the binary, `serve`, and the configuration path. launchd has no readiness
-protocol, so `launchctl` reports the job started once the process runs,
-not once it is serving.
+ For capture logs, install timing, emulator disconnects, and service setup,
+see the [operations guide](operations.md). For script settings, see the
+[configuration guide](configuration.md).

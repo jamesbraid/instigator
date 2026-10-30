@@ -40,6 +40,10 @@ archives:
       - THIRD_PARTY_NOTICES
       - README.md
       - instigator.example.yaml
+      - configs/*.yaml
+      - configs/addons/*.yaml
+      - docs/*.md
+      - assets/logo.png
 
 checksum:
   name_template: checksums.txt

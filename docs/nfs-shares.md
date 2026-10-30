@@ -1,34 +1,20 @@
-# Host folder shares over NFS
+# NFS protocol and Origami integration
 
-## Goal
+For commands to share a host folder with IRIX, start with the
+[sharing guide](sharing.md). This reference covers protocol behavior, file
+handles, private networking, and the transcripts shared by the Go server
+and Origami's Rust port.
 
-`origami share` makes a host directory appear inside an IRIX guest,
-read-write, through NFS. That needs no root, no host NFS server and no
-privileged port. We own both server implementations:
+Instigator's `nfs` package implements NFSv2 and NFSv3 over UDP and TCP,
+with portmap and MOUNT. `internal/sharefs` adapts host directories for
+writable shares; `internal/nfsexport` adapts `io/fs` trees for read-only
+exports. The `share` command serves host folders on its own, and
+`serve --share` adds them to the private install network. Install media
+continues to use BOOTP, TFTP, and rsh.
 
-- Instigator (Go) keeps its NFS package as the reference server.
-- Origami (Rust) embeds a port of it and runs it for each running machine.
-
-Install media stays on Instigator's HTTP and rcmd paths. NFS here is for
-shares only.
-
-## What exists
-
-Instigator's `nfs` package, BSD-3-Clause, owned by us:
-
-- NFSv2 and NFSv3 over UDP and TCP, with portmap and MOUNT beside them.
-  Every listener answers all three programs, so a client that knows the
-  port needs no portmap call.
-- An `FS` interface that `internal/nfsexport` adapts to any `io/fs` tree,
-  served read-only: every write returns `ROFS`.
-- A `WriteFS` extension that `internal/sharefs` implements for a host
-  directory, under the rules in "Files, owners and handles" below.
-- `instigator share` serves one host directory, apart from the install
-  path.
-
-IRIX 6.5.30's client mounts NFSv3 over TCP and NFSv2 over UDP. The
-development tooling's `--share` (unfsd, NFSv3/TCP) already mounts and
-writes from a 6.5.30 guest, and the installs now include `nfs.sw.nfs`.
+The Rust port is embedded in Origami. Sections describing `origami share`
+and its network switch concern that integration, rather than Instigator's
+standalone command.
 
 ## Protocol coverage
 
@@ -55,7 +41,7 @@ Transports: UDP and TCP with record marking, for every program.
   server never resolves a path outside it, including through symlinks.
 - **Owners.** Every file the guest sees is owned by uid 0 and gid 0, so
   root in the guest can do anything. Every host operation runs as the
-  user who started Origami, so files land owned by that user. Guest chown
+  user who started the server, so files land owned by that user. Guest chown
   and chgrp succeed without changing the host file. Mode bits pass through
   from the host, except the setuid bit.
 - **Handles.** They carry the share id, the host inode and device, and a
@@ -71,7 +57,7 @@ Transports: UDP and TCP with record marking, for every program.
   its directory (`--handle-table` picks another). The server probes the
   share's root once, at start.
 - **Windows.** The host has no inode, so handles map the path through a
-  persistent table in the machine directory. Windows gets the same
+  persistent path table. Windows gets the same
   owner rules.
 
 The handle is 32 bytes: a format byte (2 for inodes, 3 for a path
@@ -511,25 +497,7 @@ files. `go test ./nfs -run TestTranscripts -update` rewrites them from
 the current server, and a plain `go test` fails when a scenario no longer
 produces its file byte for byte, then replays each file's raw calls.
 
-## Order of work
+## Network performance to check
 
-1. **Spike.** Instigator's v2/UDP server, read-only, mounted from a
-   6.5.30 guest. It found that `mount` always asks portmap over UDP, which
-   led to the stack-and-switch wiring in "Networking".
-2. **Instigator: transcripts.** The transcript harness and the fixture,
-   recorded from the current v2 read-only server.
-3. **Instigator: v3 and TCP,** read-only, with transcripts.
-4. **Instigator: writes** for v2 and v3, with the owner and handle rules
-   above and their transcripts.
-5. **Origami: Rust crate** (`origami-nfs`) ported from the Go server,
-   passing every transcript.
-6. **Origami: userspace stack and switch,** then the `share` command and
-   the guide, plus the IRIX check against both servers.
-
-Each step is its own PR with its tests. Steps 2–4 can land and release
-in Instigator before the port starts.
-
-## Open questions
-
-- Does the userspace switch slow normal guest networking? The IRIX check
-  compares an internet download through it with plain user mode.
+Compare an internet download through Origami's userspace switch with plain
+QEMU user networking before claiming the switch has no throughput cost.
