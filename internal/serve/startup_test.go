@@ -18,7 +18,7 @@ import (
 // primaryImage writes the image the first set's first layer draws from.
 // It carries the stock dist/.related_dists a real Installation Tools
 // disc ships - which the generated menu aid has to shadow - and
-// stand/fx.64 only when withStand, so a test can cover both the set that
+// stand/fx.64 and fx.ARCS only when withStand, so a test can cover both the set that
 // can boot the miniroot and the one that cannot.
 func primaryImage(t *testing.T, dir, name string, withStand bool) string {
 	t.Helper()
@@ -30,7 +30,7 @@ func primaryImage(t *testing.T, dir, name string, withStand bool) string {
 	root := map[string]uint32{"dist": img.AddDir(dist)}
 	if withStand {
 		fx := img.AddFile(0o755, []byte("fake fx binary"))
-		root["stand"] = img.AddDir(map[string]uint32{"fx.64": fx})
+		root["stand"] = img.AddDir(map[string]uint32{"fx.64": fx, "fx.ARCS": fx})
 	}
 	img.SetRoot(root)
 	return writeImage(t, dir, name, img)
@@ -159,7 +159,8 @@ func TestStartupInstructionsUseAdminSource(t *testing.T) {
 
 	for _, want := range []string{
 		"  PROM: setenv netaddr 127.0.0.1",
-		"  PROM: boot -f bootp():/6.5.30/stand/fx.64",
+		"  PROM: boot -f bootp():/6.5.30/stand/fx.64  (64-bit PROMs: Octane, Origin)",
+		"  PROM: boot -f bootp():/6.5.30/stand/fx.ARCS  (IP22: Indy, Indigo2)",
 		"  PROM: Remote Directory: /6.5.30/dist",
 		"  Inst>: admin source 192.0.2.10:/install.cmds",
 	} {

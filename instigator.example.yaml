@@ -44,8 +44,9 @@ install_sets:
   # contributes its distribution directory to this set's single dist;
   # "dist" is the default, so ordinary media name nothing. boot: true
   # additionally serves that layer's stand/ at /6.5.30/stand, which is
-  # where the PROM fetches fx.64 - at most one layer per set may set it,
-  # and a set nobody netboots needs none at all.
+  # where the PROM fetches fx.64 (fx.ARCS on an Indy or Indigo2) - at
+  # most one layer per set may set it, and a set nobody netboots needs
+  # none at all.
   - name: "6.5.30"
     layers:
       - name: overlays1

@@ -596,9 +596,12 @@ func isShell(command string) bool {
 // zero profile is the nothing-enabled case - no set to open, no boot
 // artifact, no directory to fetch from, nothing generated.
 type profile struct {
-	primary   string
-	dists     []string
-	bootPath  string
+	primary string
+	dists   []string
+	// bootPaths lists the stand programs the PROM can netboot, one per
+	// firmware generation: fx.64 for 64-bit PROMs and fx.ARCS for the
+	// 32-bit ARCS PROMs of the Indy and Indigo2.
+	bootPaths []string
 	remoteDir string
 	generated []generatedFile
 }
@@ -642,13 +645,15 @@ func generate(cfg *config.Config, tree *vfs.Tree) (profile, error) {
 	}
 
 	// The PROM boots only what this server can actually answer for, so a
-	// primary set whose layers carry no miniroot partitioner leaves the
-	// boot path empty rather than name a file that would 404.
+	// primary set whose layers carry no stand program leaves the boot
+	// paths empty rather than name a file that would 404.
 	p.remoteDir = "/" + p.primary + "/dist"
-	boot := "/" + p.primary + "/stand/fx.64"
-	if f, err := tree.Open(fsName(boot)); err == nil {
-		f.Close()
-		p.bootPath = boot
+	for _, name := range []string{"fx.64", "fx.ARCS"} {
+		boot := "/" + p.primary + "/stand/" + name
+		if f, err := tree.Open(fsName(boot)); err == nil {
+			f.Close()
+			p.bootPaths = append(p.bootPaths, boot)
+		}
 	}
 
 	// Keep every script and its timing entrypoints together. An
@@ -754,8 +759,8 @@ func logStartup(cfg *config.Config, tree *vfs.Tree, p profile, logger *logging.L
 	// A merge is only as clear as the file it produced: name the layer
 	// behind the artifact the PROM boots and the one inst reads first, so
 	// a surprise there is visible at startup rather than mid-install.
-	if p.bootPath != "" {
-		logOrigin(tree, logger, p.primary, p.bootPath)
+	for _, boot := range p.bootPaths {
+		logOrigin(tree, logger, p.primary, boot)
 	}
 	for _, dist := range p.dists {
 		set := strings.TrimSuffix(strings.TrimPrefix(dist, "/"), "/dist")
@@ -771,8 +776,10 @@ func logStartup(cfg *config.Config, tree *vfs.Tree, p profile, logger *logging.L
 	for _, c := range cfg.Clients {
 		logger.Infof("client %s: mac=%s ip=%s", c.Name, c.MAC, c.IP)
 		fmt.Fprintf(instructions, "  PROM: setenv netaddr %s\n", c.IP)
-		if p.bootPath != "" {
-			fmt.Fprintf(instructions, "  PROM: boot -f bootp():%s\n", p.bootPath)
+		for _, boot := range p.bootPaths {
+			fmt.Fprintf(instructions, "  PROM: boot -f bootp():%s%s\n", boot, bootNote(boot))
+		}
+		if len(p.bootPaths) > 0 {
 			// The PROM asks for the Remote Directory as part of that
 			// netboot, so it belongs to the boot line and goes with it -
 			// startup drops it in the same case.
@@ -788,6 +795,18 @@ func logStartup(cfg *config.Config, tree *vfs.Tree, p profile, logger *logging.L
 			fmt.Fprintf(instructions, "  Inst>: admin source %s:/%s.cmds\n", cfg.ServerIP, sc.Name)
 		}
 	}
+}
+
+// bootNote says which machines a stand program is for, so a set that
+// carries both does not leave the operator guessing.
+func bootNote(path string) string {
+	switch {
+	case strings.HasSuffix(path, "/fx.ARCS"):
+		return "  (IP22: Indy, Indigo2)"
+	case strings.HasSuffix(path, "/fx.64"):
+		return "  (64-bit PROMs: Octane, Origin)"
+	}
+	return ""
 }
 
 // logOrigin reports which layer one representative served file came
