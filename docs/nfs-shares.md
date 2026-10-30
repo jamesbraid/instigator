@@ -321,6 +321,25 @@ nothing listens on them: UDP to 111 draws the port unreachable above.
   `IRIS` (option 12) and asking for lease 31536000 (option 51), receives
   the OFFER and sends a REQUEST for it. `ef0` comes up with the address,
   the mask and the route to the segment with nothing configured by hand.
+- **Moving between networks.** proclaim keeps its lease in
+  `/var/adm/proclaim.lease_info_ascii.ef0` (and a binary
+  `proclaim.lease_info.ef0`), and at boot sends an init-reboot REQUEST
+  for the address `/etc/hosts` gives the host name, with no server
+  identifier. On the same network the host acknowledges it. A machine
+  that last booted on QEMU's user network asks for 192.0.2.15, and the
+  host answers with a NAK as RFC 2131 4.3.2 requires. proclaim then
+  discovers again, but while the lease file names another server it
+  rejects every OFFER from this one ("Server mismatch to the DHCPREQUEST
+  broadcast" in `/var/adm/SYSLOG`), 193 times in under a second, until it
+  runs out of file descriptors and exits. `ef0` keeps the old address, and
+  nothing on 10.98.0.0/24 is reachable. QEMU's user network, whose NAK
+  has no server identifier, gets the same loop in the other direction.
+  With the lease file gone proclaim takes the NAK, the OFFER and the ACK
+  and rewrites `/etc/hosts` with the new address. No answer from the
+  host fixes this: a client that hears nothing may keep using its lease
+  (RFC 2131 3.2), and an OFFER naming the other network's server would be
+  false. Origami's install post-commands add a boot script that removes
+  the lease files before proclaim starts.
 - **Host name.** IRIX uses it. The REQUEST that follows an OFFER carrying
   option 12 asks for that name, and the system sets its host name and
   `/etc/sys_id` to it: a machine whose client entry has `hostname:
@@ -363,7 +382,9 @@ none
 files from the stack. The files cover ARP, ICMP echo and port unreachable,
 BOOTP and DHCP with and without a host name, DHCP refusals, and ignored
 traffic. The DHCP files include the DISCOVER and REQUEST IRIX's `proclaim`
-sent, with the machine's MAC replaced. The NFS programs have the RPC transcripts in `nfs/testdata`.
+sent, and `dhcp-init-reboot.txt` the init-reboot, rediscovery and
+reselection it sent after moving from QEMU's user network, with the
+machine's MAC replaced. The NFS programs have the RPC transcripts in `nfs/testdata`.
 
 ### Checked against IRIX 6.5.30
 

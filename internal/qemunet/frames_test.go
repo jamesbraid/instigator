@@ -349,6 +349,56 @@ const (
 		"36503251ff"
 )
 
+// Messages proclaim sent on this private network from an Origin 3200 that
+// had last booted on QEMU's user network, where it was leased 192.0.2.15,
+// captured with QEMU's filter-dump at the machine's NIC (08:00:69:17:69:8b).
+// It first asks to keep 192.0.2.15 (an init-reboot REQUEST: option 50, no
+// server identifier), is refused, discovers, and selects the host's offer.
+// The last is the init-reboot it sends on the next boot on the same network.
+const (
+	proclaimInitRebootForeign = "" +
+		"0101060064bd1367000000000000000000000000000000000000000008006917" +
+		"698b000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"000000000000000000000000638253633501033204c000020f330401e133803d" +
+		"070108006917698b370433013632ff"
+	proclaimRediscover = "" +
+		"0101060054a5eb1d000000000000000000000000000000000000000008006917" +
+		"698b000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"00000000000000000000000063825363350101330401e133803d070108006917" +
+		"698b0c0a6f726967696e33323030370933010c280f36503251ff"
+	proclaimReselect = "" +
+		"010106002f7a16c8000000000000000000000000000000000000000008006917" +
+		"698b000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000006382536335010332040a62004136040a62000233" +
+		"0401e133803d070108006917698b0c0a6f726967696e33323030370933010c28" +
+		"0f36503251ff"
+	proclaimInitReboot = "" +
+		"01010600541d12a9000000000000000000000000000000000000000008006917" +
+		"698b000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000006382536335010332040a620041330401e133803d" +
+		"070108006917698b0c0a6f726967696e33323030370433013632ff"
+)
+
 // realDHCP decodes a captured message into its 548 bytes and swaps the
 // capturing machine's MAC, in chaddr and in the client identifier option,
 // for mac.
@@ -358,10 +408,7 @@ func realDHCP(hexMsg string, mac []byte) []byte {
 		panic(err)
 	}
 	p = append(p, make([]byte, 548-len(p))...)
-	captured := []byte{0x08, 0x00, 0x69, 0xff, 0xda, 0xf7}
-	if !bytes.Equal(p[28:34], captured) {
-		panic("chaddr is not the capturing machine")
-	}
+	captured := bytes.Clone(p[28:34])
 	copy(p[28:34], mac)
 	id := append([]byte{61, 7, 1}, captured...)
 	i := bytes.Index(p[240:], id)
@@ -499,6 +546,17 @@ var frameScenarios = []scenario{
 			{label: "DHCPREQUEST naming no address", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, dhcpMessage(guestMAC, 0x55555555, 3, serverIDOpt))},
 			{label: "DHCPDECLINE", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, dhcpMessage(guestMAC, 0x66666666, 4, requestedOpt, serverIDOpt))},
 			{label: "DHCPREQUEST init-reboot for the machine's own address", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, dhcpMessage(guestMAC, 0x77777777, 3, requestedOpt))},
+		},
+	},
+	{
+		file:  "dhcp-init-reboot.txt",
+		about: "DHCP init-reboot, as IRIX proclaim does it after moving networks: it asks to keep the address it was leased elsewhere\n(option 50, no server identifier), the host refuses with a NAK, and the DISCOVER and REQUEST that follow get the machine's\naddress. On the next boot proclaim asks to keep that address and the host acknowledges it. All four are proclaim's own\nmessages, captured on an Origin 3200, with the machine's MAC replaced.",
+		bootp: transcriptBootp + " hostname=" + transcriptHostname + " dhcp",
+		exchanges: []frameExchange{
+			{label: "DHCPREQUEST init-reboot for the address another network leased", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, realDHCP(proclaimInitRebootForeign, guestMAC))},
+			{label: "DHCPDISCOVER after the NAK", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, realDHCP(proclaimRediscover, guestMAC))},
+			{label: "DHCPREQUEST selecting the host's offer", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, realDHCP(proclaimReselect, guestMAC))},
+			{label: "DHCPREQUEST init-reboot for the machine's own address, on the next boot", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, realDHCP(proclaimInitReboot, guestMAC))},
 		},
 	},
 	{
