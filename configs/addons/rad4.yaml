@@ -1,0 +1,12 @@
+# PsiTech RAD4 graphics driver and X server, installed after IRIX. Only for
+# machines with a RAD4 board on PCI; it does not apply to an Indy or
+# Indigo2 (IP22). List this file under `addons:` in a config.
+name: rad4
+layers:
+  - name: rad4
+    source: https://origami-dist.irix.fans/irix/addons/rad4/rad4x_65_13k.tar.gz
+    dist: dist_6.5
+install:
+  - rad4x.sw.driver
+  - rad4x.sw.xserver
+  - rad4x.man

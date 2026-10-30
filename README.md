@@ -87,7 +87,10 @@ admin source <server-ip>:/install.cmds
 If `inst` opens an `Install software from` menu, enter the number beside
 `done`. The command file resumes its package selections and starts the install.
 
-The [installation guide](docs/install.md) has the full command sequence,
+[Installing IRIX on real hardware](docs/real-hardware.md) has ready-made
+configurations for 6.5.22 (Indy, Indigo2) and 6.5.30 (Octane, Origin) with
+the disc URLs filled in, and the 32-bit PROM steps. The
+[installation guide](docs/install.md) has the full command sequence,
 profile ordering, first-boot checks, and captured install notes.
 
 ## Host platforms

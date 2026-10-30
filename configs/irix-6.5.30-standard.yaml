@@ -1,0 +1,78 @@
+# IRIX 6.5.30 standard install from https://origami-dist.irix.fans/irix/.
+# Copy this file, set the client below to your machine, and run:
+#   instigator check CONFIG   (probes every URL)
+#   sudo instigator serve CONFIG
+# To install from local copies of the discs, replace the URL prefix with your
+# directory; see docs/real-hardware.md. Addresses are RFC 5737 documentation
+# ranges: replace them with your install network.
+
+server_ip: 192.0.2.10
+netmask: 192.0.2.0/24
+
+# Read the MAC from the PROM with `printenv eaddr`.
+clients:
+  - name: sgi
+    mac: "08:00:69:00:00:01"
+    ip: 192.0.2.30
+
+services:
+  bootp: true
+  tftp:
+    port_range: [2048, 32767]
+  rsh: true
+
+# Extra software installed after IRIX, in a second pass of the install
+# scripts below. Uncomment to add MIPSpro. rad4.yaml is for PCI machines
+# with a RAD4 board only.
+# addons:
+#   - addons/mipspro.yaml
+
+install_sets:
+  - name: "6.5.30"
+    layers:
+      - name: overlays1
+        source: https://origami-dist.irix.fans/irix/6.5.30/overlays1.iso
+        boot: true
+      - name: overlays2
+        source: https://origami-dist.irix.fans/irix/6.5.30/overlays2.iso
+      - name: overlays3
+        source: https://origami-dist.irix.fans/irix/6.5.30/overlays3.iso
+
+  - name: "foundations"
+    layers:
+      - name: foundation1
+        source: https://origami-dist.irix.fans/irix/6.5-base/foundation1.iso
+      - name: foundation2
+        source: https://origami-dist.irix.fans/irix/6.5-base/foundation2.iso
+      - name: onc3-nfs
+        source: https://origami-dist.irix.fans/irix/6.5-base/nfs.iso
+        dist: dist6.5
+
+  - name: "development"
+    layers:
+      - name: devlibs
+        source: https://origami-dist.irix.fans/irix/6.5-base/devlibs.iso
+      - name: devfoundation
+        source: https://origami-dist.irix.fans/irix/6.5-base/devfoundation.iso
+        dist: dist/dist6.5
+
+  - name: "applications"
+    layers:
+      - name: applications
+        source: https://origami-dist.irix.fans/irix/6.5.30/applications.iso
+
+  - name: "complementary"
+    layers:
+      - name: complementary
+        source: https://origami-dist.irix.fans/irix/6.5.30/complementary.iso
+
+# Load /irix.cmds at the Inst> prompt: admin source <server-ip>:/irix.cmds
+install_scripts:
+  - name: irix
+    install:
+      - nfs.sw.nfs
+    # Products inst cannot install from this media set, kept off so `go` runs.
+    keep:
+      - inventor_dev
+      - java2_plugin.sw32.mozilla_freeware
+      - java_dev.sw32.binaries

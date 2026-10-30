@@ -1,0 +1,133 @@
+format = 1
+base_url = "https://origami-dist.irix.fans/irix/"
+sets = ["6.5.22", "foundations", "development", "applications", "complementary"]
+# There is no minimal profile for 6.5.22. Its overlay discs update well over a
+# hundred products whose originals are on the Applications and Development
+# discs, and inst will not install an update without its original.
+
+[package_selections.standard]
+sets = ["6.5.22", "foundations", "development", "applications", "complementary"]
+install = ["nfs.sw.nfs"]
+# inst's own conflicts on the full media set, each a product it cannot install:
+# the plugin needs fw_mozilla.sw.mozilla, which is on no disc; java_dev's base
+# product clashes with the Java runtime on the overlay discs; sgitools needs
+# sgimeeting.sw.sgimeeting, which is for a workstation graphics board only.
+keep = [
+    "java2_plugin.sw32.mozilla_freeware",
+    "java_dev.sw32.binaries",
+    "sgimeeting.sw.sgitools",
+]
+
+# Add-ons install after IRIX in a second pass. path is relative to base_url
+# and to a --media-root.
+
+# The MIPSpro 7.4.4 archive holds the whole compiler distribution and its
+# 7.4.2m and 7.4.4m overlays. The separate MIPSpro C archive repeats the
+# same c_fe product byte for byte, so it is not needed.
+[addons.mipspro]
+path = "mipspro/7.4.4/mipspro744update.tar.gz"
+base = "MIPSPro7.4.4"
+dist = "."
+# The standard profile installs older C, C++ and Fortran compilers
+# from the Development Foundation disc. inst refuses to upgrade
+# compiler_dev under the old C++ and Fortran compilers, so the
+# add-on upgrades every compiler product in the archive, as its
+# instructions do with inst's Upgrade keyword.
+install = [
+    "c++_dev",
+    "c++_fe",
+    "c_dev",
+    "c_fe",
+    "compiler_dev",
+    "ftn77_dev",
+    "ftn77_fe",
+    "ftn90_dev",
+    "ftn90_fe",
+    "ftn_dev",
+    "langtools",
+    "modules",
+]
+
+# The RAD4 driver archive and selection the user guide gives. Public archive
+# only; there is no local copy.
+[addons.rad4]
+path = "addons/rad4/rad4x_65_13k.tar.gz"
+local = false
+dist = "dist_6.5"
+install = ["rad4x.sw.driver", "rad4x.sw.xserver", "rad4x.man"]
+
+# The first overlay disc and the second carry different copies of this file.
+[collisions."6.5.22"]
+"6.5.22/dist/.prereq_hints" = "overlays1"
+
+[[layers]]
+set = "6.5.22"
+name = "overlays1"
+path = "6.5.22/overlays1.image"
+remote_path = "6.5.22/overlays1.iso"
+boot = true
+
+[[layers]]
+set = "6.5.22"
+name = "overlays2"
+path = "6.5.22/overlays2.image"
+remote_path = "6.5.22/overlays2.iso"
+boot = false
+
+[[layers]]
+set = "6.5.22"
+name = "overlays3"
+path = "6.5.22/overlays3.image"
+remote_path = "6.5.22/overlays3.iso"
+boot = false
+
+[[layers]]
+set = "foundations"
+name = "foundation1"
+path = "6.5-base/foundation1.image"
+remote_path = "6.5-base/foundation1.iso"
+boot = false
+
+[[layers]]
+set = "foundations"
+name = "foundation2"
+path = "6.5-base/foundation2.image"
+remote_path = "6.5-base/foundation2.iso"
+boot = false
+
+[[layers]]
+set = "foundations"
+name = "onc3-nfs"
+path = "6.5-base/nfs.image"
+remote_path = "6.5-base/nfs.iso"
+boot = false
+dist = "dist6.5"
+
+[[layers]]
+set = "development"
+name = "devlibs"
+path = "6.5-base/devlibs.image"
+remote_path = "6.5-base/devlibs.iso"
+boot = false
+
+[[layers]]
+set = "development"
+name = "devfoundation"
+path = "6.5-base/devfoundation.image"
+remote_path = "6.5-base/devfoundation.iso"
+boot = false
+dist = "dist/dist6.5"
+
+[[layers]]
+set = "applications"
+name = "applications"
+path = "6.5.22/applications.image"
+remote_path = "6.5.22/applications.iso"
+boot = false
+
+[[layers]]
+set = "complementary"
+name = "complementary"
+path = "6.5.22/complementary.image"
+remote_path = "6.5.22/complementary.iso"
+boot = false

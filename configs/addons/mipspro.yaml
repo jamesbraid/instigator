@@ -1,0 +1,27 @@
+# MIPSpro 7.4.4 compilers, installed after IRIX. List this file under
+# `addons:` in a config; see docs/real-hardware.md.
+#
+# The archive holds the whole compiler distribution and its 7.4.2m and
+# 7.4.4m overlays. The standard profile installs older C, C++ and Fortran
+# compilers from the Development Foundation disc, and inst refuses to
+# upgrade compiler_dev under them, so this upgrades every compiler product
+# in the archive.
+name: mipspro
+layers:
+  - name: mipspro
+    source: https://origami-dist.irix.fans/irix/mipspro/7.4.4/mipspro744update.tar.gz
+    base: MIPSPro7.4.4
+    dist: .
+install:
+  - c++_dev
+  - c++_fe
+  - c_dev
+  - c_fe
+  - compiler_dev
+  - ftn77_dev
+  - ftn77_fe
+  - ftn90_dev
+  - ftn90_fe
+  - ftn_dev
+  - langtools
+  - modules
