@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"time"
 
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -95,6 +96,10 @@ func New(conn io.ReadWriteCloser, cfg Config) (*Network, error) {
 		NetworkProtocols:   []stack.NetworkProtocolFactory{arp.NewProtocol, ipv4.NewProtocol},
 		TransportProtocols: []stack.TransportProtocolFactory{udp.NewProtocol, tcp.NewProtocol},
 	})
+	if err := configureTCP(s); err != nil {
+		s.Close()
+		return nil, err
+	}
 	ch := channel.New(channelQueue, mtu, tcpip.LinkAddress(cfg.MAC))
 	if err := s.CreateNIC(nicID, ethernet.New(ch)); err != nil {
 		s.Close()
@@ -123,6 +128,37 @@ func New(conn io.ReadWriteCloser, cfg Config) (*Network, error) {
 		close(n.done)
 	}()
 	return n, nil
+}
+
+// minRTO is the floor on the TCP retransmit timeout. RFC 6298 section 2.4
+// asks for one second; Linux uses 200ms, which still sits well above the
+// pauses an emulated guest takes while its round trip measures a fraction
+// of a millisecond.
+const minRTO = 200 * time.Millisecond
+
+// configureTCP tunes the stack's TCP for a guest NIC that loses whole bursts.
+// An emulated SGI Ethernet with a 32-entry receive ring overruns on a burst
+// of small segments, resets, and drops most of the burst while
+// acknowledging, with SACK, the few that landed.
+//
+// gVisor's default loss detection, RACK with tail loss probes, handles that
+// badly: its probes resend after twice the smoothed RTT - a few
+// milliseconds here - and after a timeout it marks the whole hole lost yet
+// counts it as still in flight, so it resends one or two segments per
+// timeout while the timeout doubles to its two-minute cap. The classic
+// RFC 6675 SACK recovery it falls back to without RACK restarts in slow
+// start after a timeout (RFC 5681 section 3.1) and resends the rest of the
+// window as the acknowledgements return.
+func configureTCP(s *stack.Stack) error {
+	recovery := tcpip.TCPRecovery(0)
+	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &recovery); err != nil {
+		return fmt.Errorf("qemunet: set tcp loss recovery: %s", err)
+	}
+	rto := tcpip.TCPMinRTOOption(minRTO)
+	if err := s.SetTransportProtocolOption(tcp.ProtocolNumber, &rto); err != nil {
+		return fmt.Errorf("qemunet: set tcp minimum rto: %s", err)
+	}
+	return nil
 }
 
 // readLoop moves frames from the stream into the stack.
