@@ -327,7 +327,131 @@ func (e *shellEnv) logServed(rawPath string) {
 	e.sess.RecordServed(abs, "", "")
 }
 
-type clientOutput struct{ io.Writer }
+type clientOutput struct{ *coalescedOutput }
+
+// Writes below smallWrite are held and sent together, up to
+// coalesceBuffer bytes at a time.
+const (
+	smallWrite     = 512
+	coalesceBuffer = 16 * 1024
+)
+
+// coalescedOutput gathers the shell's small writes - ls prints a line per
+// write, echo a marker per write - so a listing leaves as a few full TCP
+// segments instead of dozens of tiny ones. A burst of tiny segments
+// overruns the receive ring of an emulated SGI Ethernet, and the guest
+// then drops most of it. A real IRIX shell behaves the same way: stdio
+// fully buffers output to a socket.
+//
+// Held bytes go out when the buffer fills, when a command line finishes,
+// before the shell reads more input, and before anything is written to
+// stderr, so the client never waits on output the server is holding and
+// stdout and stderr keep their order when they share a connection. A
+// write of smallWrite bytes or more - dd and cat moving file data - is
+// passed straight through after the held bytes, so a transfer keeps its
+// own pacing and its interruption.
+//
+// A command run in the background can write after its line has finished
+// and while the shell waits for input, so a session that starts one stops
+// holding writes for the rest of its life.
+//
+// Unlike bufio.Writer, a failed write does not poison the stream: the
+// held bytes are dropped with the error, as they would have been unbuffered,
+// and the shell can still write the marker that follows an interrupted
+// transfer.
+type coalescedOutput struct {
+	mu     sync.Mutex
+	w      io.Writer
+	buf    []byte
+	direct bool // set once by passThrough
+}
+
+func newCoalescedOutput(w io.Writer) *coalescedOutput {
+	return &coalescedOutput{w: w, buf: make([]byte, 0, coalesceBuffer)}
+}
+
+func (o *coalescedOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	direct := o.direct || len(p) >= smallWrite
+	if direct || len(o.buf)+len(p) > cap(o.buf) {
+		if err := o.flushLocked(); err != nil {
+			o.mu.Unlock()
+			return 0, err
+		}
+	}
+	if !direct {
+		o.buf = append(o.buf, p...)
+		o.mu.Unlock()
+		return len(p), nil
+	}
+	o.mu.Unlock()
+	// Unlocked, so a transfer blocked on a stalled connection does not
+	// hold up a flush that has nothing to send.
+	return o.w.Write(p)
+}
+
+// Flush sends any held bytes.
+func (o *coalescedOutput) Flush() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.flushLocked()
+}
+
+// passThrough sends any held bytes and stops holding writes.
+func (o *coalescedOutput) passThrough() error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.direct = true
+	return o.flushLocked()
+}
+
+func (o *coalescedOutput) flushLocked() error {
+	if len(o.buf) == 0 {
+		return nil
+	}
+	_, err := o.w.Write(o.buf)
+	o.buf = o.buf[:0]
+	return err
+}
+
+// flushOutput sends what w holds, when w is the shell's coalesced output,
+// so a transfer ends only once its bytes reach the connection: a small
+// file can sit whole in the buffer, and a write that fails there must
+// fail the transfer.
+func flushOutput(w io.Writer) error {
+	if f, ok := w.(interface{ Flush() error }); ok {
+		return f.Flush()
+	}
+	return nil
+}
+
+// flushBeforeWrite sends the held stdout before each stderr write.
+type flushBeforeWrite struct {
+	w   io.Writer
+	out *coalescedOutput
+}
+
+func (f flushBeforeWrite) Write(p []byte) (int, error) {
+	if err := f.out.Flush(); err != nil {
+		return 0, err
+	}
+	return f.w.Write(p)
+}
+
+// flushBeforeRead sends the held stdout before each read of the shell's
+// input, so a client that waits for output before sending more is never
+// left waiting on the server.
+type flushBeforeRead struct {
+	r   io.Reader
+	out *coalescedOutput
+}
+
+func (f flushBeforeRead) Read(p []byte) (int, error) {
+	if err := f.out.Flush(); err != nil {
+		return 0, err
+	}
+	return f.r.Read(p)
+}
 
 func (e *shellEnv) fileTransferred(f File, dst io.Writer, offset, length int64) {
 	if dst != e.output {
@@ -370,9 +494,14 @@ func RunShellWithSignals(fsys FileSystem, stdin io.Reader, stdout, stderr io.Wri
 		stdout = sess.WrapWriter(stdout, false)
 		stderr = sess.WrapWriter(stderr, true)
 	}
+	out := newCoalescedOutput(stdout)
+	defer out.Flush()
+	stdout = out
+	stderr = flushBeforeWrite{w: stderr, out: out}
+	stdin = flushBeforeRead{r: stdin, out: out}
 	env := newShellEnv(fsys, logger)
 	env.sess = sess
-	env.output = &clientOutput{stdout}
+	env.output = &clientOutput{out}
 	env.transfers = newTransferInterruptController(signals, writeDeadline)
 	defer env.transfers.close()
 	runner, err := interp.New(
@@ -413,6 +542,7 @@ func RunShellWithSignals(fsys FileSystem, stdin io.Reader, stdout, stderr io.Wri
 		unsupportedPipeline := hasUnsupportedTransferPipeline(file)
 		if background {
 			env.transfers.disable()
+			out.passThrough()
 		} else if unsupportedPipeline {
 			env.transfers.suspend()
 		}
@@ -440,6 +570,8 @@ func RunShellWithSignals(fsys FileSystem, stdin io.Reader, stdout, stderr io.Wri
 		if unsupportedPipeline && !background {
 			env.transfers.restore()
 		}
+		// A broken connection shows up on the next read or write.
+		out.Flush()
 		cmd.End(status, env.refused.Load())
 		if runner.Exited() {
 			break
@@ -1015,7 +1147,7 @@ func copyFileTransfer(dst io.Writer, src io.Reader, transfer *fileTransferInterr
 			}
 		}
 		if err == io.EOF {
-			return nil
+			return flushOutput(dst)
 		}
 		if err != nil {
 			return err
@@ -1199,6 +1331,12 @@ func shDD(env *shellEnv, hc interp.HandlerContext, args []string) error {
 			env.logger.Errorf("instcmd: dd: read: %v", err)
 			return interp.ExitStatus(1)
 		}
+	}
+	if err := flushOutput(hc.Stdout); err != nil {
+		if transfer.interruptedNow() {
+			return interp.ExitStatus(130)
+		}
+		return err
 	}
 	p := boolToInt(partial > 0)
 	fmt.Fprintf(hc.Stderr, "%d+%d records in\n%d+%d records out\n", full, p, full, p)

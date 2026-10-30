@@ -915,3 +915,101 @@ func TestShellRefusedCommandLogsErrorOnServerSide(t *testing.T) {
 		t.Fatalf("ERROR line missing %q: %q", "not supported", found)
 	}
 }
+
+// connRecorder records what reaches the connection and in how many writes.
+type connRecorder struct {
+	mu     sync.Mutex
+	b      bytes.Buffer
+	writes int
+}
+
+func (w *connRecorder) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.writes++
+	return w.b.Write(p)
+}
+
+// TestShellCoalescesSmallWrites runs inst's directory listing over a
+// distribution with many products. ls prints one line per write; those
+// lines and the marker after them must reach the connection as one write,
+// not dozens of tiny ones that leave as a burst of tiny segments.
+func TestShellCoalescesSmallWrites(t *testing.T) {
+	fsys := shellTestFS()
+	var names []string
+	for i := 0; i < 40; i++ {
+		name := "product" + strconv.Itoa(i) + ".sw"
+		names = append(names, name)
+		fsys.files["6.5.30/disc1/dist/"+name] = []byte("x")
+	}
+	fsys.dirs["6.5.30/disc1/dist"] = append(fsys.dirs["6.5.30/disc1/dist"], names...)
+	var stdout, stderr connRecorder
+	script := "/bin/ls -a /6.5.30/disc1/dist/ ; ( status=$? ; trap '' 2 ; echo 'o?_InstProc418IsDone\\c' ; echo 'o?_InstProc418IsDone'$status'\\c' 1>&2 )\n"
+	if err := RunShell(fsys, strings.NewReader(script), &stdout, &stderr, logging.New(io.Discard, logging.LevelDebug), nil); err != nil {
+		t.Fatalf("RunShell: %v", err)
+	}
+	out := stdout.b.String()
+	for _, name := range names {
+		if !strings.Contains(out, name+"\n") {
+			t.Fatalf("listing is missing %s: %q", name, out)
+		}
+	}
+	if !strings.HasSuffix(out, "o?_InstProc418IsDone") {
+		t.Fatalf("stdout does not end with the marker: %q", tail(out, 40))
+	}
+	if stdout.writes != 1 {
+		t.Fatalf("listing reached the connection in %d writes, want 1", stdout.writes)
+	}
+	if got := stderr.b.String(); got != "o?_InstProc418IsDone0" {
+		t.Fatalf("stderr = %q, want the status marker", got)
+	}
+}
+
+// TestShellSendsHeldOutputBeforeReadingInput sends one command line at a
+// time and waits for its output before sending the next, as inst does.
+// Output held for coalescing must go out before the shell blocks on input.
+func TestShellSendsHeldOutputBeforeReadingInput(t *testing.T) {
+	server, client := net.Pipe()
+	stdin, input := io.Pipe()
+	t.Cleanup(func() { input.Close(); stdin.Close(); client.Close(); server.Close() })
+	done := make(chan error, 1)
+	go func() {
+		done <- RunShell(shellTestFS(), stdin, server, io.Discard, logging.New(io.Discard, logging.LevelDebug), nil)
+	}()
+	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	for _, word := range []string{"first", "second"} {
+		go io.WriteString(input, "echo '"+word+"\\c'\n")
+		got := make([]byte, len(word))
+		if _, err := io.ReadFull(client, got); err != nil {
+			t.Fatalf("output of %q while the shell waits for input: %v", word, err)
+		}
+		if string(got) != word {
+			t.Fatalf("output = %q, want %q", got, word)
+		}
+	}
+	input.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunShell: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("shell did not finish at end of input")
+	}
+}
+
+// TestShellKeepsStdoutStderrOrder runs a line that writes to both streams
+// when they share one connection, as they do without a stderr callback.
+// Holding stdout must not move it after a later stderr write.
+func TestShellKeepsStdoutStderrOrder(t *testing.T) {
+	var conn connRecorder
+	script := "echo one ; echo two 1>&2 ; echo three\n"
+	if err := RunShell(shellTestFS(), strings.NewReader(script), &conn, &conn, logging.New(io.Discard, logging.LevelDebug), nil); err != nil {
+		t.Fatalf("RunShell: %v", err)
+	}
+	if got := conn.b.String(); got != "one\ntwo\nthree\n" {
+		t.Fatalf("shared connection got %q, want stdout and stderr in order", got)
+	}
+}
