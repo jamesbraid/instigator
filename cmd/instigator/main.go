@@ -155,6 +155,17 @@ func newRoot() *cli.Command {
 		root.Version = info.Main.Version
 	}
 
+	// Repeatable flags take one value each: a comma belongs to the value,
+	// as in --client MAC=IP,HOSTNAME. cli applies each command's own
+	// setting to its flags, so set it on all of them.
+	var noSplit func(*cli.Command)
+	noSplit = func(c *cli.Command) {
+		c.DisableSliceFlagSeparator = true
+		for _, sub := range c.Commands {
+			noSplit(sub)
+		}
+	}
+	noSplit(root)
 	return root
 }
 

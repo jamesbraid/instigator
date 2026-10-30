@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/jamesbraid/instigator/efs/efstest"
 	"github.com/jamesbraid/instigator/internal/qemunet"
 	"github.com/jamesbraid/instigator/internal/sharefs"
+	"github.com/urfave/cli/v3"
 )
 
 func TestParseShareSpecs(t *testing.T) {
@@ -75,6 +77,30 @@ func TestShareCommandRejectsBadOptions(t *testing.T) {
 				t.Errorf("error = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// TestClientFlagKeepsItsComma runs the real flag parsing: the comma in
+// MAC=IP,HOSTNAME is part of one --client value, not a list separator.
+func TestClientFlagKeepsItsComma(t *testing.T) {
+	root := newRoot()
+	root.Writer, root.ErrWriter = new(bytes.Buffer), new(bytes.Buffer)
+	var got shareOptions
+	for _, c := range root.Commands {
+		if c.Name == "share" {
+			c.Action = func(_ context.Context, cmd *cli.Command) (err error) {
+				got, err = shareOptionsFromCommand(cmd)
+				return err
+			}
+		}
+	}
+	args := []string{"instigator", "share", "src", t.TempDir(), "--network-tcp", "127.0.0.1:1",
+		"--client", "08:00:69:12:34:56=10.98.0.65,origin200", "--client", "08:00:69:12:34:57=10.98.0.70,o2"}
+	if err := root.Run(t.Context(), args); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.clients) != 2 || got.clients[0].Hostname != "origin200" || got.clients[1].Hostname != "o2" {
+		t.Fatalf("clients = %+v", got.clients)
 	}
 }
 
