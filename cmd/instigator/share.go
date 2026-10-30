@@ -46,6 +46,9 @@ type shareOptions struct {
 	// for, as serve does for its configuration's clients. Empty answers
 	// neither.
 	clients []bootp.Client
+	// dhcpServerID, when valid, replaces the host address as the DHCP
+	// server identifier.
+	dhcpServerID netip.Addr
 }
 
 // runShare serves a share until a signal stops it.
@@ -230,7 +233,7 @@ func servePrivateShare(o shareOptions, output io.Writer, stop <-chan os.Signal, 
 			return fmt.Errorf("share: bootp: %w", err)
 		}
 		defer pc.Close()
-		bs := &bootp.Server{ServerIP: o.address.Addr(), Netmask: o.address.Masked(), Clients: o.clients, DHCP: true, Logger: logger}
+		bs := &bootp.Server{ServerIP: o.address.Addr(), DHCPServerID: o.dhcpServerID, Netmask: o.address.Masked(), Clients: o.clients, DHCP: true, Logger: logger}
 		go func() {
 			if err := bs.Serve(pc); err != nil && !errors.Is(err, net.ErrClosed) {
 				p.report(fmt.Errorf("share: bootp: %w", err))
@@ -291,10 +294,20 @@ func shareOptionsFromCommand(cmd *cli.Command) (shareOptions, error) {
 		if o.clients, err = parseClients(cmd.StringSlice("client"), o.address); err != nil {
 			return shareOptions{}, err
 		}
+		if id := cmd.String("dhcp-server-id"); id != "" {
+			if len(o.clients) == 0 {
+				return shareOptions{}, errors.New("share: --dhcp-server-id needs --client")
+			}
+			if o.dhcpServerID, err = netip.ParseAddr(id); err != nil || !o.dhcpServerID.Is4() {
+				return shareOptions{}, fmt.Errorf("share: --dhcp-server-id %q is not an IPv4 address", id)
+			}
+		}
 	} else if cmd.IsSet("address") {
 		return shareOptions{}, errors.New("share: --address needs --network-socket or --network-tcp")
 	} else if cmd.IsSet("client") {
 		return shareOptions{}, errors.New("share: --client needs --network-socket or --network-tcp")
+	} else if cmd.IsSet("dhcp-server-id") {
+		return shareOptions{}, errors.New("share: --dhcp-server-id needs --network-socket or --network-tcp")
 	}
 	return o, nil
 }

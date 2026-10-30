@@ -8,6 +8,12 @@ server_ip: 192.0.2.10
 # Offered to the client in the BOOTP reply's vendor area.
 netmask: 192.0.2.0/24
 
+# The DHCP server identifier (option 54) on a private network; server_ip
+# when unset. IRIX's DHCP client takes offers only from the server its
+# cached lease names, so a machine that moves between networks keeps its
+# address unless they share an identifier.
+# dhcp_server_id: 192.0.2.2
+
 # BOOTP answers only these MACs. Read the MAC from the PROM with
 # `printenv eaddr`. Everything else on the segment is ignored, so the
 # LAN's real DHCP server is untouched.

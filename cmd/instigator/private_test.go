@@ -69,6 +69,9 @@ func TestShareCommandRejectsBadOptions(t *testing.T) {
 		{"udp off on private", []string{"share", "src", d, "--network-tcp", "127.0.0.1:1", "--udp=false"}, "--udp does not apply"},
 		{"address on host", []string{"share", "src", d, "--address", "10.1.0.2/24"}, "--address needs"},
 		{"address not ipv4", []string{"share", "src", d, "--network-tcp", "127.0.0.1:1", "--address", "fe80::1/64"}, "IPv4"},
+		{"server id without client", []string{"share", "src", d, "--network-tcp", "127.0.0.1:1", "--dhcp-server-id", "192.0.2.2"}, "--dhcp-server-id needs --client"},
+		{"server id not ipv4", []string{"share", "src", d, "--network-tcp", "127.0.0.1:1", "--client", "08:00:69:12:34:56", "--dhcp-server-id", "x"}, "not an IPv4"},
+		{"server id on host", []string{"share", "src", d, "--dhcp-server-id", "192.0.2.2"}, "--dhcp-server-id needs --network"},
 		{"serve share without network", []string{"serve", "--share", "a=" + d, "config.yaml"}, "--share needs --network"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,12 +98,16 @@ func TestClientFlagKeepsItsComma(t *testing.T) {
 		}
 	}
 	args := []string{"instigator", "share", "src", t.TempDir(), "--network-tcp", "127.0.0.1:1",
-		"--client", "08:00:69:12:34:56=10.98.0.65,origin200", "--client", "08:00:69:12:34:57=10.98.0.70,o2"}
+		"--client", "08:00:69:12:34:56=10.98.0.65,origin200", "--client", "08:00:69:12:34:57=10.98.0.70,o2",
+		"--dhcp-server-id", "192.0.2.2"}
 	if err := root.Run(t.Context(), args); err != nil {
 		t.Fatal(err)
 	}
 	if len(got.clients) != 2 || got.clients[0].Hostname != "origin200" || got.clients[1].Hostname != "o2" {
 		t.Fatalf("clients = %+v", got.clients)
+	}
+	if got.dhcpServerID.String() != "192.0.2.2" {
+		t.Errorf("dhcp server id = %s", got.dhcpServerID)
 	}
 }
 

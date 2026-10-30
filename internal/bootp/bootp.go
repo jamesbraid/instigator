@@ -46,6 +46,14 @@ type Server struct {
 	// Clients lists the MACs answered; everything else is ignored.
 	Clients []Client
 
+	// DHCPServerID, when valid, is the DHCP server identifier (option 54)
+	// sent in replies and expected in a REQUEST that selects a server. It
+	// defaults to ServerIP. Two networks that hand one machine its address
+	// can share an identifier, because IRIX's DHCP client refuses offers
+	// from a server other than the one its cached lease names. BOOTP and
+	// siaddr keep ServerIP.
+	DHCPServerID netip.Addr
+
 	// DHCP, when set, also answers DHCP (RFC 2131) from the configured
 	// clients: DISCOVER with an OFFER, REQUEST with an ACK or NAK. Off,
 	// any request carrying message type option 53 is left unanswered so a

@@ -282,13 +282,18 @@ nothing listens on them: UDP to 111 draws the port unreachable above.
   is still ignored, so a DHCP service on that LAN keeps port 67.
   - A DISCOVER is answered with an OFFER, and a REQUEST with an ACK. The
     address is always the client entry's `ip`. A REQUEST for another
-    address draws a NAK, whether it names the host as server identifier
+    address draws a NAK, whether it names the host's server identifier
     (selecting) or has none (init-reboot), and a REQUEST that carries
     another server's identifier draws nothing, as do DECLINE, RELEASE and
     INFORM. A renewing REQUEST, with `ciaddr` set and no option 50, is
     answered like the others by comparing `ciaddr`.
+  - The server identifier is the host's address unless the configuration
+    sets `dhcp_server_id` (`share --dhcp-server-id`). It goes in option 54
+    of every reply and is the one a selecting REQUEST must name. Origami
+    sets it to 192.0.2.2, QEMU's user network's DHCP server; see "Moving
+    between networks" below.
   - Replies are 300 bytes at least. `yiaddr` is the machine's address,
-    `siaddr` and option 54 the host's, `chaddr`, `xid` and `flags` are the
+    `siaddr` the host's and option 54 the server identifier, `chaddr`, `xid` and `flags` are the
     request's, and `ciaddr` is the request's in an ACK and zero otherwise.
     A NAK has neither `yiaddr` nor `siaddr`. Options, in order: 53, 54,
     then in an OFFER or ACK 51 (lease), 1 (subnet mask, when the
@@ -313,7 +318,8 @@ nothing listens on them: UDP to 111 draws the port unreachable above.
   `MAC=,HOSTNAME`). It must lie in the segment and not be the host's own,
   and no two clients share a MAC or an IP. With several clients each
   needs an IP. Without `--client` nothing listens on 67, as before. The
-  hostname rules are the client entry's.
+  hostname rules are the client entry's. `--dhcp-server-id ADDR` sets the
+  server identifier, as `dhcp_server_id` does.
 - **How the installed guest gets an address.** IRIX's DHCP client
   (`proclaim`) starts at boot when `autoconfig_ipaddress` is on, which
   Origami's install post-commands set. It broadcasts a 548-byte DISCOVER
@@ -328,18 +334,20 @@ nothing listens on them: UDP to 111 draws the port unreachable above.
   identifier. On the same network the host acknowledges it. A machine
   that last booted on QEMU's user network asks for 192.0.2.15, and the
   host answers with a NAK as RFC 2131 4.3.2 requires. proclaim then
-  discovers again, but while the lease file names another server it
-  rejects every OFFER from this one ("Server mismatch to the DHCPREQUEST
+  discovers again, but rejects every OFFER whose server identifier is not
+  the one in its lease file ("Server mismatch to the DHCPREQUEST
   broadcast" in `/var/adm/SYSLOG`), 193 times in under a second, until it
   runs out of file descriptors and exits. `ef0` keeps the old address, and
-  nothing on 10.98.0.0/24 is reachable. QEMU's user network, whose NAK
-  has no server identifier, gets the same loop in the other direction.
-  With the lease file gone proclaim takes the NAK, the OFFER and the ACK
-  and rewrites `/etc/hosts` with the new address. No answer from the
-  host fixes this: a client that hears nothing may keep using its lease
-  (RFC 2131 3.2), and an OFFER naming the other network's server would be
-  false. Origami's install post-commands add a boot script that removes
-  the lease files before proclaim starts.
+  nothing on 10.98.0.0/24 is reachable. QEMU's user network gets the same
+  loop in the other direction. With `dhcp_server_id` set to the user
+  network's 192.0.2.2 both networks name one server, the OFFER matches
+  the lease, and proclaim takes it and rewrites `/etc/hosts`. An ACK from
+  a different identifier, for the address the machine already has, is
+  only logged as a mismatch and accepted, so a lease from 10.98.0.2 moves
+  to the new identifier on the next boot. A client following RFC 2131
+  renews by unicast to the identifier at half the lease, which from this
+  segment goes nowhere, then rebinds by broadcast at 87.5%, which the host
+  answers by `ciaddr`. With a year's lease neither has been seen from IRIX.
 - **Host name.** IRIX uses it. The REQUEST that follows an OFFER carrying
   option 12 asks for that name, and the system sets its host name and
   `/etc/sys_id` to it: a machine whose client entry has `hostname:
@@ -382,9 +390,11 @@ none
 files from the stack. The files cover ARP, ICMP echo and port unreachable,
 BOOTP and DHCP with and without a host name, DHCP refusals, and ignored
 traffic. The DHCP files include the DISCOVER and REQUEST IRIX's `proclaim`
-sent, and `dhcp-init-reboot.txt` the init-reboot, rediscovery and
-reselection it sent after moving from QEMU's user network, with the
-machine's MAC replaced. The NFS programs have the RPC transcripts in `nfs/testdata`.
+sent, `dhcp-init-reboot.txt` the init-reboot, rediscovery and
+reselection it sent after moving from QEMU's user network, and
+`dhcp-server-id.txt` the same move with the identifier set, with the
+machine's MAC replaced. The `bootp` line takes `server-id=ADDR` for
+`dhcp_server_id`. The NFS programs have the RPC transcripts in `nfs/testdata`.
 
 ### Checked against IRIX 6.5.30
 

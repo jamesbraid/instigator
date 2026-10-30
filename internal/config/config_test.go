@@ -138,6 +138,25 @@ install_sets:
 	}
 }
 
+func TestDHCPServerID(t *testing.T) {
+	const rest = "clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 10.98.0.65}]\n" +
+		"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]\n"
+	c, err := Parse([]byte("server_ip: 10.98.0.2\n" + rest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DHCPServerID.IsValid() {
+		t.Errorf("dhcp_server_id defaults to %s, want unset", c.DHCPServerID)
+	}
+	c, err = Parse([]byte("server_ip: 10.98.0.2\ndhcp_server_id: 192.0.2.2\n" + rest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DHCPServerID.String() != "192.0.2.2" {
+		t.Errorf("dhcp_server_id = %s", c.DHCPServerID)
+	}
+}
+
 func TestRejects(t *testing.T) {
 	cases := map[string]string{
 		"no clients": "server_ip: 192.0.2.10\n" +
@@ -153,6 +172,9 @@ func TestRejects(t *testing.T) {
 		"hostname too long": "server_ip: 192.0.2.10\nclients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30, hostname: " + strings.Repeat("a", 41) + "}]\n" +
 			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]",
 		"hostname with a leading hyphen": "server_ip: 192.0.2.10\nclients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30, hostname: -x}]\n" +
+			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]",
+		"dhcp_server_id not an address": "server_ip: 192.0.2.10\ndhcp_server_id: banana\n" +
+			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]\n" +
 			"install_sets: [{name: m, layers: [{name: base, source: /media/m/base.iso}]}]",
 		"no install sets": "server_ip: 192.0.2.10\n" +
 			"clients: [{name: o, mac: \"08:00:69:00:00:01\", ip: 192.0.2.30}]",

@@ -121,7 +121,10 @@ type Credential struct {
 
 // Config is a validated instigator configuration.
 type Config struct {
-	ServerIP       netip.Addr
+	ServerIP netip.Addr
+	// DHCPServerID is the DHCP server identifier (option 54) the private
+	// network's DHCP replies carry; invalid means ServerIP.
+	DHCPServerID   netip.Addr
 	Netmask        netip.Prefix
 	Clients        []Client
 	InstallSets    []InstallSet
@@ -136,9 +139,10 @@ type Config struct {
 
 // raw mirrors the YAML shape before validation.
 type raw struct {
-	ServerIP string `yaml:"server_ip"`
-	Netmask  string `yaml:"netmask"`
-	Clients  []struct {
+	ServerIP     string `yaml:"server_ip"`
+	DHCPServerID string `yaml:"dhcp_server_id"`
+	Netmask      string `yaml:"netmask"`
+	Clients      []struct {
 		Name string `yaml:"name"`
 		MAC  string `yaml:"mac"`
 		IP   string `yaml:"ip"`
@@ -287,6 +291,14 @@ func ParseIn(b []byte, dir string) (*Config, error) {
 		return nil, fmt.Errorf("config: server_ip: %w", err)
 	}
 	c.ServerIP = ip
+
+	if r.DHCPServerID != "" {
+		id, err := netip.ParseAddr(r.DHCPServerID)
+		if err != nil || !id.Is4() {
+			return nil, fmt.Errorf("config: dhcp_server_id: %q is not an IPv4 address", r.DHCPServerID)
+		}
+		c.DHCPServerID = id
+	}
 
 	if r.Netmask != "" {
 		p, err := netip.ParsePrefix(r.Netmask)

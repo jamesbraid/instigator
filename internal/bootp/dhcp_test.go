@@ -109,6 +109,49 @@ func TestDHCPOfferFields(t *testing.T) {
 	}
 }
 
+// TestDHCPServerID: a configured identifier replaces the host's address in
+// option 54 of every reply and is the one a REQUEST must select; siaddr and
+// BOOTP keep the host's address.
+func TestDHCPServerID(t *testing.T) {
+	id := netip.MustParseAddr("192.0.2.2")
+	s := dhcpTestServer()
+	s.DHCPServerID = id
+	offer := dhcpServe(s, dhcpRequestMsg(octaneMAC, dhcpDiscover, netip.Addr{}))
+	if got := options(t, offer.reply)[54]; !bytes.Equal(got, id.AsSlice()) {
+		t.Errorf("OFFER option 54 = %v, want %s", got, id)
+	}
+	if netip.AddrFrom4([4]byte(offer.reply[20:24])) != serverIP {
+		t.Errorf("OFFER siaddr = %v, want %s", offer.reply[20:24], serverIP)
+	}
+	for _, tc := range []struct {
+		name string
+		req  []byte
+		want byte
+	}{
+		{"selecting the identifier", dhcpRequestMsg(octaneMAC, dhcpRequest, netip.Addr{}, opt(50, octaneIP.AsSlice()...), opt(54, id.AsSlice()...)), dhcpAck},
+		{"selecting the host's address", dhcpRequestMsg(octaneMAC, dhcpRequest, netip.Addr{}, opt(50, octaneIP.AsSlice()...), opt(54, serverIP.AsSlice()...)), 0},
+		{"init-reboot for another address", dhcpRequestMsg(octaneMAC, dhcpRequest, netip.Addr{}, opt(50, 10, 98, 0, 99)), dhcpNak},
+	} {
+		got := dhcpServe(s, tc.req)
+		if tc.want == 0 {
+			if got != nil {
+				t.Errorf("%s: replied, want silence", tc.name)
+			}
+			continue
+		}
+		if got == nil {
+			t.Fatalf("%s: no reply", tc.name)
+		}
+		o := options(t, got.reply)
+		if o[53][0] != tc.want || !bytes.Equal(o[54], id.AsSlice()) {
+			t.Errorf("%s: type %v option 54 %v", tc.name, o[53], o[54])
+		}
+	}
+	if r := s.buildReply(request(octaneMAC, 1, ""), &s.Clients[0]); netip.AddrFrom4([4]byte(r[20:24])) != serverIP {
+		t.Errorf("BOOTP siaddr = %v, want %s", r[20:24], serverIP)
+	}
+}
+
 func TestDHCPNoHostnameWithout(t *testing.T) {
 	o := options(t, dhcpServe(dhcpTestServer(), dhcpRequestMsg(octaneMAC, dhcpDiscover, netip.Addr{})).reply)
 	if _, ok := o[12]; ok {

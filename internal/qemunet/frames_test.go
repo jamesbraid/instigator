@@ -113,9 +113,11 @@ const (
 type bootpLine struct {
 	hostname string
 	dhcp     bool
+	serverID netip.Addr
 }
 
-// parseBootpLine accepts the fixed client, then any of hostname=NAME and dhcp.
+// parseBootpLine accepts the fixed client, then any of hostname=NAME, dhcp
+// and server-id=ADDR.
 func parseBootpLine(rest string) (bootpLine, error) {
 	var bl bootpLine
 	f := strings.Fields(rest)
@@ -128,6 +130,12 @@ func parseBootpLine(rest string) (bootpLine, error) {
 			bl.dhcp = true
 		case w == "hostname="+transcriptHostname:
 			bl.hostname = transcriptHostname
+		case strings.HasPrefix(w, "server-id="):
+			id, err := netip.ParseAddr(strings.TrimPrefix(w, "server-id="))
+			if err != nil {
+				return bl, fmt.Errorf("bootp: %q: %v", w, err)
+			}
+			bl.serverID = id
 		default:
 			return bl, fmt.Errorf("bootp: unknown option %q", w)
 		}
@@ -199,6 +207,7 @@ func replayNetwork(t *testing.T, bootpSpec string) net.Conn {
 		}
 		bs.Clients[0].Hostname = bl.hostname
 		bs.DHCP = bl.dhcp
+		bs.DHCPServerID = bl.serverID
 		go bs.Serve(pc)
 	}
 	return peer
@@ -399,6 +408,56 @@ const (
 		"070108006917698b0c0a6f726967696e33323030370433013632ff"
 )
 
+// Messages proclaim sent to Origami's hosted private network when it named
+// itself 192.0.2.2, QEMU's user network's DHCP server, as server identifier.
+// The first three came after a boot on the user network, holding a lease for
+// 192.0.2.15 from 192.0.2.2: proclaim takes the OFFER this time, since its
+// server identifier is the one the lease names. The last came on the first
+// boot after the change, holding a lease for 10.98.0.65 from 10.98.0.2.
+const (
+	proclaimSharedIDInitReboot = "" +
+		"010106005e4bea67000000000000000000000000000000000000000008006917" +
+		"698b000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"000000000000000000000000638253633501033204c000020f330401e133803d" +
+		"070108006917698b0c0a6f726967696e33323030370433013632ff"
+	proclaimSharedIDDiscover = "" +
+		"0101060020cb5636000000000000000000000000000000000000000008006917" +
+		"698b000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"00000000000000000000000063825363350101330401e133803d070108006917" +
+		"698b0c0a6f726967696e33323030370933010c280f36503251ff"
+	proclaimSharedIDSelect = "" +
+		"01010600208defd9000000000000000000000000000000000000000008006917" +
+		"698b000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000006382536335010332040a6200413604c000020233" +
+		"0401e133803d070108006917698b0c0a6f726967696e33323030370933010c28" +
+		"0f36503251ff"
+	proclaimSharedIDKeep = "" +
+		"010106002f682d79000000000000000000000000000000000000000008006917" +
+		"698b000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000006382536335010332040a620041330401e133803d" +
+		"070108006917698b0c0a6f726967696e33323030370433013632ff"
+)
+
 // realDHCP decodes a captured message into its 548 bytes and swaps the
 // capturing machine's MAC, in chaddr and in the client identifier option,
 // for mac.
@@ -557,6 +616,18 @@ var frameScenarios = []scenario{
 			{label: "DHCPDISCOVER after the NAK", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, realDHCP(proclaimRediscover, guestMAC))},
 			{label: "DHCPREQUEST selecting the host's offer", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, realDHCP(proclaimReselect, guestMAC))},
 			{label: "DHCPREQUEST init-reboot for the machine's own address, on the next boot", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, realDHCP(proclaimInitReboot, guestMAC))},
+		},
+	},
+	{
+		file:  "dhcp-server-id.txt",
+		about: "DHCP with a server identifier other than the host's address: OFFER, ACK and NAK carry it as option 54, and a REQUEST\nthat selects it is answered, while siaddr stays the host's. With the identifier IRIX's proclaim saw on another network, its\ninit-reboot for that network's address is refused and the DISCOVER and REQUEST that follow end in an ACK. A REQUEST\nnaming the host's own address as server identifier selected some other server and draws nothing. All but that one are\nproclaim's own messages, captured on an Origin 3200, with the machine's MAC replaced.",
+		bootp: transcriptBootp + " hostname=" + transcriptHostname + " dhcp server-id=192.0.2.2",
+		exchanges: []frameExchange{
+			{label: "DHCPREQUEST init-reboot for the address the other network leased", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, realDHCP(proclaimSharedIDInitReboot, guestMAC))},
+			{label: "DHCPDISCOVER after the NAK", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, realDHCP(proclaimSharedIDDiscover, guestMAC))},
+			{label: "DHCPREQUEST selecting the offer by its server identifier", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, realDHCP(proclaimSharedIDSelect, guestMAC))},
+			{label: "DHCPREQUEST init-reboot for the machine's own address, leased under the host's address as identifier", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, realDHCP(proclaimSharedIDKeep, guestMAC))},
+			{label: "DHCPREQUEST selecting the host's own address as server", frame: guestUDP(bcastMAC, zeroIP, bcastIP, 68, 67, dhcpMessage(guestMAC, 0x88888888, 3, requestedOpt, serverIDOpt))},
 		},
 	},
 	{

@@ -96,7 +96,7 @@ func (s *Server) dhcpAnswer(m dhcpMsg, c *Client) byte {
 	case dhcpDiscover:
 		return dhcpOffer
 	case dhcpRequest:
-		if m.serverID.IsValid() && m.serverID != s.ServerIP {
+		if m.serverID.IsValid() && m.serverID != s.serverID() {
 			return 0
 		}
 		want := m.requested
@@ -112,6 +112,15 @@ func (s *Server) dhcpAnswer(m dhcpMsg, c *Client) byte {
 		return dhcpNak
 	}
 	return 0
+}
+
+// serverID is the server identifier replies carry: DHCPServerID, or
+// ServerIP when that is unset.
+func (s *Server) serverID() netip.Addr {
+	if s.DHCPServerID.IsValid() {
+		return s.DHCPServerID
+	}
+	return s.ServerIP
 }
 
 // buildDHCP builds the reply of type typ to m for client c. The message is
@@ -134,7 +143,7 @@ func (s *Server) buildDHCP(m dhcpMsg, c *Client, typ byte) []byte {
 	copy(rep[236:240], dhcpCookie)
 	opt := func(code byte, v ...byte) { rep = append(append(rep, code, byte(len(v))), v...) }
 	opt(53, typ)
-	opt(54, s.ServerIP.AsSlice()...)
+	opt(54, s.serverID().AsSlice()...)
 	if typ != dhcpNak {
 		opt(51, binary.BigEndian.AppendUint32(nil, LeaseSeconds)...)
 		if s.Netmask.IsValid() {
