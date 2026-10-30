@@ -7,14 +7,14 @@ import (
 	"sync"
 )
 
-// cachingReaderAt wraps a range-fetching io.ReaderAt (httpreaderat) with an
+// cachingReaderAt wraps a range-fetching io.ReaderAt (rangeReader) with an
 // in-memory chunk cache: scattered reads coalesce into aligned chunks, each
 // fetched at most once and evicted least-recently-used past the byte budget
 // (<= 0 disables eviction). Safe for concurrent use - the served FS is read
 // from many goroutines at once.
 type cachingReaderAt struct {
-	r      io.ReaderAt // underlying, thread-safe range fetch (httpreaderat)
-	size   int64       // total object size (httpreaderat.Size())
+	r      io.ReaderAt // underlying, thread-safe range fetch (rangeReader)
+	size   int64       // total object size (rangeReader.Size())
 	chunk  int64       // aligned chunk size, e.g. 1<<20
 	budget int64       // max resident chunk bytes; <= 0 caches without eviction
 

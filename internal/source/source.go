@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,8 +17,8 @@ import (
 
 	"github.com/cavaliergopher/grab/v3"
 	extract "github.com/hashicorp/go-extract"
-	"github.com/snabb/httpreaderat"
 
+	"github.com/jamesbraid/instigator/internal/logging"
 	"github.com/jamesbraid/instigator/internal/vfs"
 )
 
@@ -43,11 +42,13 @@ const (
 
 // Options configures a Resolver: where fetched archives are cached, the
 // credentials offered to https hosts, and the HTTP client to fetch with
-// (http.DefaultClient when nil).
+// (http.DefaultClient when nil). Logger, when set, receives an info line for
+// each retried range read.
 type Options struct {
 	CacheDir    string
 	Credentials Credentials
 	Client      *http.Client
+	Logger      *logging.Logger
 }
 
 // Resolver turns a source reference - a local path or an http(s) URL - into a
@@ -59,6 +60,8 @@ type Resolver struct {
 	creds    Credentials
 	client   *http.Client
 	grab     *grab.Client
+	logger   *logging.Logger
+	retry    retryPolicy
 }
 
 var _ vfs.Resolver = (*Resolver)(nil)
@@ -90,6 +93,8 @@ func New(opts Options) *Resolver {
 		creds:    opts.Credentials,
 		client:   client,
 		grab:     &grab.Client{HTTPClient: client, UserAgent: "instigator"},
+		logger:   opts.Logger,
+		retry:    defaultRetryPolicy,
 	}
 }
 
@@ -107,7 +112,7 @@ func stripAuthOnCrossHostRedirect(req *http.Request, via []*http.Request) error 
 		req.Header.Del("Authorization")
 	}
 	if len(via) >= 10 {
-		return errors.New("stopped after 10 redirects")
+		return errTooManyRedirects
 	}
 	return nil
 }
@@ -309,7 +314,7 @@ func (r *Resolver) resolveRaw(ctx context.Context, ref string) (vfs.Resolved, er
 	// The store buffers a non-range whole-file fallback under cacheDir; its
 	// Close is the closer that frees the reader.
 	store := newCacheStore(r.cacheDir)
-	hra, err := httpreaderat.New(r.client, req, store)
+	hra, err := newRangeReader(ctx, r.client, req, store, r.retry, r.logger)
 	if err != nil {
 		store.Close()
 		return vfs.Resolved{}, fmt.Errorf("source: fetch %s: %w", SafeURL(ref), unwrapURLErr(err))

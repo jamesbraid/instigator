@@ -17,6 +17,7 @@ import (
 
 	"github.com/jamesbraid/instigator/inst"
 	"github.com/jamesbraid/instigator/internal/config"
+	"github.com/jamesbraid/instigator/internal/logging"
 	"github.com/jamesbraid/instigator/internal/mediatree"
 	"github.com/jamesbraid/instigator/internal/vfs"
 )
@@ -114,7 +115,7 @@ func Run(w io.Writer, cfg *config.Config, names []string, outDir string, opts Op
 			}
 		}
 	}
-	tree, err := mediatree.Build(build, cfg.CacheDir, cfg.Credentials)
+	tree, err := mediatree.Build(build, cfg.CacheDir, cfg.Credentials, logging.New(os.Stderr, logging.LevelInfo))
 	if err != nil {
 		return err
 	}

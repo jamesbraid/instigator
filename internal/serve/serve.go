@@ -299,8 +299,8 @@ func withRSHIdleTimeout(d time.Duration) Option {
 	return func(o *options) { o.rshIdleTimeout = d }
 }
 
-func buildTree(cfg *config.Config) (*vfs.Tree, profile, error) {
-	tree, err := mediatree.Build(cfg.InstallSets, cfg.CacheDir, cfg.Credentials)
+func buildTree(cfg *config.Config, logger *logging.Logger) (*vfs.Tree, profile, error) {
+	tree, err := mediatree.Build(cfg.InstallSets, cfg.CacheDir, cfg.Credentials, logger)
 	if err != nil {
 		return nil, profile{}, err
 	}
@@ -388,7 +388,7 @@ func checkSelections(tree *vfs.Tree, script, pass string, selections, sets []str
 // verifies named script selections before closing without binding ports.
 // CheckShallow is the cheaper check for remote media.
 func Check(cfg *config.Config) error {
-	tree, _, err := buildTree(cfg)
+	tree, _, err := buildTree(cfg, nil)
 	if err != nil {
 		return err
 	}
@@ -407,7 +407,7 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 	for _, opt := range opts {
 		opt(&o)
 	}
-	tree, prof, err := buildTree(cfg)
+	tree, prof, err := buildTree(cfg, logger)
 	if err != nil {
 		return nil, err
 	}

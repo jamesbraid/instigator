@@ -9,22 +9,25 @@ import (
 	"path/filepath"
 
 	"github.com/jamesbraid/instigator/internal/config"
+	"github.com/jamesbraid/instigator/internal/logging"
 	"github.com/jamesbraid/instigator/internal/source"
 	"github.com/jamesbraid/instigator/internal/vfs"
 )
 
 // Build opens every set in sets, fetching remote layers through cacheDir
 // (empty for the default) with the given host credentials.
-func Build(sets []config.InstallSet, cacheDir string, creds []config.Credential) (*vfs.Tree, error) {
-	return vfs.Build(setSpecs(sets), NewResolver(cacheDir, creds))
+func Build(sets []config.InstallSet, cacheDir string, creds []config.Credential, logger *logging.Logger) (*vfs.Tree, error) {
+	return vfs.Build(setSpecs(sets), NewResolver(cacheDir, creds, logger))
 }
 
 // NewResolver returns the resolver Build opens sources with, caching under
 // cacheDir (empty for the default) and offering the given host credentials.
-func NewResolver(cacheDir string, creds []config.Credential) *source.Resolver {
+// Retried reads are logged to logger, which may be nil.
+func NewResolver(cacheDir string, creds []config.Credential, logger *logging.Logger) *source.Resolver {
 	return source.New(source.Options{
 		CacheDir:    defaultCacheDir(cacheDir),
 		Credentials: credentials(creds),
+		Logger:      logger,
 	})
 }
 

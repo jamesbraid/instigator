@@ -34,7 +34,7 @@ func TestInstallTimingTransfersAndLogs(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("capture=%t", enabled), func(t *testing.T) {
 			cfg := fourSetConfig(t, true)
-			tree, profile, err := buildTree(cfg)
+			tree, profile, err := buildTree(cfg, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

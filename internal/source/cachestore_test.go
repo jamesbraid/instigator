@@ -43,8 +43,8 @@ func TestCacheStoreRoundTrip(t *testing.T) {
 
 // TestCacheStoreCreatesMissingDir mirrors the scratch container, which has no
 // /tmp: the store must create its cache directory rather than depend on one
-// already existing, which is why it cannot use httpreaderat's default
-// os.TempDir-backed StoreFile.
+// already existing, which is why it cannot use an os.TempDir-backed
+// temporary file.
 func TestCacheStoreCreatesMissingDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "does", "not", "exist", "yet")
 	s := newCacheStore(dir)

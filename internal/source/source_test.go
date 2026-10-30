@@ -222,7 +222,7 @@ func TestResolveRemoteRangeImage(t *testing.T) {
 
 // TestResolveRawNonRangeServer: a raw image on a server that ignores Range
 // (always 200, whole body) still resolves to a readable OriginImage. The
-// range reader (httpreaderat) detects the missing range support from its
+// range reader detects the missing range support from its
 // probe and falls back to buffering the whole object into its Store, so the
 // image opens and a known in-image file reads back. Two resolves in a row
 // both succeed - the fallback is per-resolve, not a persistent cache.

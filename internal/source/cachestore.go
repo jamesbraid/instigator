@@ -6,9 +6,9 @@ import (
 	"os"
 )
 
-// cacheStore is an httpreaderat.Store that spills a non-range whole-object
-// download to a file under cacheDir. httpreaderat's own StoreFile uses the OS
-// temp dir, which the scratch container lacks; Close removes the file.
+// cacheStore is the rangeReader's fallback: it spills a non-range whole-object
+// download to a file under cacheDir rather than the OS temp dir, which the
+// scratch container lacks. Close removes the file.
 type cacheStore struct {
 	dir  string
 	f    *os.File
