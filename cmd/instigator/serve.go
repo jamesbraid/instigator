@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	sdnotify "github.com/coreos/go-systemd/v22/daemon"
@@ -43,7 +44,7 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 	if err != nil {
 		return err
 	}
-	cfg, err := config.Parse(b)
+	cfg, err := config.ParseIn(b, filepath.Dir(configPath))
 	if err != nil {
 		return err
 	}

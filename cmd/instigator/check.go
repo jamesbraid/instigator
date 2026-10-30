@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/jamesbraid/instigator/internal/config"
 	"github.com/jamesbraid/instigator/internal/serve"
@@ -21,7 +22,11 @@ func runCheck(path string, full bool) error {
 	if err != nil {
 		return err
 	}
-	cfg, err := config.Parse(data)
+	dir := ""
+	if path != "-" {
+		dir = filepath.Dir(path)
+	}
+	cfg, err := config.ParseIn(data, dir)
 	if err != nil {
 		return err
 	}

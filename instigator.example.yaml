@@ -153,6 +153,21 @@ install_sets:
 #   - name: maintenance
 #     stream: maintenance
 
+# Add-on files install extra software after the operating system, such as
+# a compiler suite or a driver. Each file becomes an add-on set named
+# "addon-<name>" and joins the second pass of every install script, so at
+# least one install_scripts entry is required. The built-in install.cmds
+# has no second pass. Paths are relative to this file. An add-on file:
+#   name: mipspro
+#   layers:                  # laid out like install_sets layers
+#     - name: mipspro
+#       source: https://media.example.com/mipspro.tar.gz
+#       base: MIPSPro7.4.4
+#       dist: .
+#   install: [c_dev, c_fe]   # products inst installs from it
+# addons:
+#   - mipspro.yaml
+
 services:
   bootp: true
   tftp:

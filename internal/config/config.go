@@ -4,11 +4,13 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -147,33 +149,17 @@ type raw struct {
 		Username string `yaml:"username"`
 		Password string `yaml:"password"`
 	} `yaml:"credentials"`
-	CacheDir    string `yaml:"cache_dir"`
-	InstallSets []struct {
-		Name    string `yaml:"name"`
-		Enabled *bool  `yaml:"enabled"`
-		Addon   bool   `yaml:"addon"`
-		Layers  []struct {
-			Name   string `yaml:"name"`
-			Source string `yaml:"source"`
-			Base   string `yaml:"base"`
-			Dist   string `yaml:"dist"`
-			Stand  string `yaml:"stand"`
-			Boot   bool   `yaml:"boot"`
-		} `yaml:"layers"`
-		Collisions   map[string]string `yaml:"collisions"`
-		Replacements map[string]string `yaml:"replacements"`
-		After        []string          `yaml:"after"`
-	} `yaml:"install_sets"`
+	CacheDir string `yaml:"cache_dir"`
+	// Addons lists add-on files; see loadAddons.
+	Addons         []string `yaml:"addons"`
+	InstallSets    []rawSet `yaml:"install_sets"`
 	InstallScripts []struct {
-		Name    string   `yaml:"name"`
-		Install []string `yaml:"install"`
-		Keep    []string `yaml:"keep"`
-		Remove  []string `yaml:"remove"`
-		Stream  string   `yaml:"stream"`
-		Then    *struct {
-			Sets    []string `yaml:"sets"`
-			Install []string `yaml:"install"`
-		} `yaml:"then"`
+		Name        string   `yaml:"name"`
+		Install     []string `yaml:"install"`
+		Keep        []string `yaml:"keep"`
+		Remove      []string `yaml:"remove"`
+		Stream      string   `yaml:"stream"`
+		Then        *rawThen `yaml:"then"`
 		PostInstall []string `yaml:"post_install"`
 	} `yaml:"install_scripts"`
 	Services *struct {
@@ -191,10 +177,93 @@ type raw struct {
 	} `yaml:"ports"`
 }
 
-// Parse decodes and validates a configuration.
-func Parse(b []byte) (*Config, error) {
+type rawLayer struct {
+	Name   string `yaml:"name"`
+	Source string `yaml:"source"`
+	Base   string `yaml:"base"`
+	Dist   string `yaml:"dist"`
+	Stand  string `yaml:"stand"`
+	Boot   bool   `yaml:"boot"`
+}
+
+type rawSet struct {
+	Name         string            `yaml:"name"`
+	Enabled      *bool             `yaml:"enabled"`
+	Addon        bool              `yaml:"addon"`
+	Layers       []rawLayer        `yaml:"layers"`
+	Collisions   map[string]string `yaml:"collisions"`
+	Replacements map[string]string `yaml:"replacements"`
+	After        []string          `yaml:"after"`
+}
+
+type rawThen struct {
+	Sets    []string `yaml:"sets"`
+	Install []string `yaml:"install"`
+}
+
+// rawAddon is the shape of an add-on file: extra software to install
+// after the operating system, such as a compiler suite or a driver. Name
+// becomes the install set "addon-<name>", an add-on set holding Layers
+// (laid out like an install set's layers), and Install lists the inst
+// products its second pass installs from it.
+type rawAddon struct {
+	Name    string     `yaml:"name"`
+	Layers  []rawLayer `yaml:"layers"`
+	Install []string   `yaml:"install"`
+}
+
+// AddonPrefix starts the name of the install set an add-on file creates.
+const AddonPrefix = "addon-"
+
+// loadAddons reads each file named in addons, relative to dir unless
+// absolute, and appends its add-on set to the install sets. It returns
+// the second pass every install script gains: the add-on sets to open
+// and the products to install from them, in the order the files are
+// listed.
+func (r *raw) loadAddons(dir string) (*rawThen, error) {
+	if len(r.Addons) == 0 {
+		return nil, nil
+	}
+	then := &rawThen{}
+	for i, name := range r.Addons {
+		path := name
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(dir, path)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("config: addons[%d]: %w", i, err)
+		}
+		var a rawAddon
+		dec := yaml.NewDecoder(bytes.NewReader(b))
+		dec.KnownFields(true)
+		if err := dec.Decode(&a); err != nil {
+			return nil, fmt.Errorf("config: addons[%d] (%s): %w", i, name, err)
+		}
+		if !IsDirName(a.Name) || len(a.Layers) == 0 || len(a.Install) == 0 {
+			return nil, fmt.Errorf("config: addons[%d] (%s): name (a single directory name), layers and install are required", i, name)
+		}
+		set := AddonPrefix + a.Name
+		r.InstallSets = append(r.InstallSets, rawSet{Name: set, Addon: true, Layers: a.Layers})
+		then.Sets = append(then.Sets, set)
+		then.Install = append(then.Install, a.Install...)
+	}
+	return then, nil
+}
+
+// Parse decodes and validates a configuration. Add-on files named in it
+// are read relative to the working directory; ParseIn picks the directory.
+func Parse(b []byte) (*Config, error) { return ParseIn(b, "") }
+
+// ParseIn is Parse with add-on files read relative to dir, normally the
+// directory holding the configuration file.
+func ParseIn(b []byte, dir string) (*Config, error) {
 	var r raw
 	if err := yaml.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
+	addons, err := r.loadAddons(dir)
+	if err != nil {
 		return nil, err
 	}
 	c, err := r.installSets()
@@ -251,6 +320,9 @@ func Parse(b []byte) (*Config, error) {
 			addonSets[set.Name] = true
 		}
 	}
+	if addons != nil && len(r.InstallScripts) == 0 {
+		return nil, fmt.Errorf("config: addons need an install script to run their second pass; the built-in install.cmds does not install them")
+	}
 	scriptNames := make(map[string]bool, len(r.InstallScripts))
 	for i, rsc := range r.InstallScripts {
 		if rsc.Name == "" {
@@ -274,6 +346,16 @@ func Parse(b []byte) (*Config, error) {
 		case "", "feature", "maintenance":
 		default:
 			return nil, fmt.Errorf("config: install_scripts[%d] (%s): stream %q must be \"feature\" or \"maintenance\"", i, rsc.Name, rsc.Stream)
+		}
+		if addons != nil {
+			// Every script installs the add-ons after the operating system.
+			if rsc.Then == nil {
+				rsc.Then = &rawThen{}
+			}
+			rsc.Then = &rawThen{
+				Sets:    append(slices.Clone(rsc.Then.Sets), addons.Sets...),
+				Install: append(slices.Clone(rsc.Then.Install), addons.Install...),
+			}
 		}
 		var then *ThenPass
 		var thenInstall []string
@@ -352,9 +434,16 @@ func Parse(b []byte) (*Config, error) {
 // reads: the sets, and the credentials and cache directory their sources
 // are fetched with. Every other key is ignored, so a file holding only
 // install_sets is accepted. Extraction uses it.
-func ParseInstallSets(b []byte) (*Config, error) {
+func ParseInstallSets(b []byte) (*Config, error) { return ParseInstallSetsIn(b, "") }
+
+// ParseInstallSetsIn is ParseInstallSets with add-on files read relative
+// to dir.
+func ParseInstallSetsIn(b []byte, dir string) (*Config, error) {
 	var r raw
 	if err := yaml.Unmarshal(b, &r); err != nil {
+		return nil, err
+	}
+	if _, err := r.loadAddons(dir); err != nil {
 		return nil, err
 	}
 	return r.installSets()

@@ -28,7 +28,7 @@ func extractCommand(w io.Writer, args, sets []string, dist, name string, opts ex
 		if err != nil {
 			return err
 		}
-		cfg, err := config.ParseInstallSets(b)
+		cfg, err := config.ParseInstallSetsIn(b, filepath.Dir(srcs[0]))
 		if err != nil {
 			return err
 		}
