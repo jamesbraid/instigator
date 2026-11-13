@@ -4,6 +4,7 @@ package extract
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -115,7 +116,7 @@ func Run(w io.Writer, cfg *config.Config, names []string, outDir string, opts Op
 			}
 		}
 	}
-	tree, err := mediatree.Build(build, cfg.CacheDir, cfg.Credentials, logging.New(os.Stderr, logging.LevelInfo))
+	tree, err := mediatree.Build(context.Background(), build, cfg.CacheDir, cfg.Credentials, logging.New(os.Stderr, logging.LevelInfo))
 	if err != nil {
 		return err
 	}

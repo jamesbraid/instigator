@@ -2,6 +2,7 @@ package serve
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,7 +35,7 @@ func TestInstallTimingTransfersAndLogs(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("capture=%t", enabled), func(t *testing.T) {
 			cfg := fourSetConfig(t, true)
-			tree, profile, err := buildTree(cfg, nil)
+			tree, profile, err := buildTree(context.Background(), cfg, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

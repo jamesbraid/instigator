@@ -7,6 +7,7 @@
 package serve
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -256,6 +257,13 @@ type options struct {
 	statusNetwork  string // host, socket or tcp, for the ready line
 	rshIdleTimeout time.Duration
 	network        Network // nil means the host stack, today's behavior
+	ctx            context.Context
+}
+
+// WithContext lets the caller abandon Start while it fetches and extracts
+// media; Start then returns the context's error and removes what it made.
+func WithContext(ctx context.Context) Option {
+	return func(o *options) { o.ctx = ctx }
 }
 
 // WithNetwork serves bootp, tftp, and rsh on n instead of the host stack. It
@@ -315,8 +323,8 @@ func withRSHIdleTimeout(d time.Duration) Option {
 	return func(o *options) { o.rshIdleTimeout = d }
 }
 
-func buildTree(cfg *config.Config, logger *logging.Logger) (*vfs.Tree, profile, error) {
-	tree, err := mediatree.Build(cfg.InstallSets, cfg.CacheDir, cfg.Credentials, logger)
+func buildTree(ctx context.Context, cfg *config.Config, logger *logging.Logger) (*vfs.Tree, profile, error) {
+	tree, err := mediatree.Build(ctx, cfg.InstallSets, cfg.CacheDir, cfg.Credentials, logger)
 	if err != nil {
 		return nil, profile{}, err
 	}
@@ -404,7 +412,7 @@ func checkSelections(tree *vfs.Tree, script, pass string, selections, sets []str
 // verifies named script selections before closing without binding ports.
 // CheckShallow is the cheaper check for remote media.
 func Check(cfg *config.Config) error {
-	tree, _, err := buildTree(cfg, nil)
+	tree, _, err := buildTree(context.Background(), cfg, nil)
 	if err != nil {
 		return err
 	}
@@ -419,11 +427,11 @@ func Check(cfg *config.Config) error {
 // property of the logger a caller builds, not a separate flag threaded
 // through every service.
 func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers, error) {
-	o := options{instructions: io.Discard}
+	o := options{instructions: io.Discard, ctx: context.Background()}
 	for _, opt := range opts {
 		opt(&o)
 	}
-	tree, prof, err := buildTree(cfg, logger)
+	tree, prof, err := buildTree(o.ctx, cfg, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -903,22 +911,21 @@ func (s *Servers) CloseWithReason(reason string) error {
 	if s.rshLn != nil {
 		s.rshLn.Close()
 	}
-	// Drain active work so an interrupted install still records its last
-	// command, session, and transfer. Join the serve loops first (this is
-	// where bootp does its inline work), then force-close and drain the
-	// per-request handlers. drained stays true only if every stage finished
-	// within its window; otherwise the capture is incomplete.
+	// Drain so an interrupted install still records its last command, session
+	// and transfer. The stages share one window, each getting at least 250ms.
+	deadline := time.Now().Add(drainTimeout)
+	left := func() time.Duration { return max(time.Until(deadline), 250*time.Millisecond) }
 	drained := true
-	if !waitTimeout(&s.listenerWG, drainTimeout) {
-		s.logger.Warnf("serve: serve loops still running after %s", drainTimeout)
+	if !waitTimeout(&s.listenerWG, left()) {
+		s.logger.Warnf("serve: serve loops still running when the %s shutdown window ended", drainTimeout)
 		drained = false
 	}
-	if s.rshSrv != nil && !s.rshSrv.Shutdown(drainTimeout) {
-		s.logger.Warnf("serve: rsh sessions still active after %s drain", drainTimeout)
+	if s.rshSrv != nil && !s.rshSrv.Shutdown(left()) {
+		s.logger.Warnf("serve: rsh sessions still active when the %s shutdown window ended", drainTimeout)
 		drained = false
 	}
-	if s.tftpSrv != nil && !s.tftpSrv.Shutdown(drainTimeout) {
-		s.logger.Warnf("serve: tftp transfers still active after %s drain", drainTimeout)
+	if s.tftpSrv != nil && !s.tftpSrv.Shutdown(left()) {
+		s.logger.Warnf("serve: tftp transfers still active when the %s shutdown window ended", drainTimeout)
 		drained = false
 	}
 

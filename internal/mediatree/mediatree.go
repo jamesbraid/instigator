@@ -5,6 +5,7 @@
 package mediatree
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 
@@ -16,18 +17,19 @@ import (
 
 // Build opens every set in sets, fetching remote layers through cacheDir
 // (empty for the default) with the given host credentials.
-func Build(sets []config.InstallSet, cacheDir string, creds []config.Credential, logger *logging.Logger) (*vfs.Tree, error) {
-	return vfs.Build(setSpecs(sets), NewResolver(cacheDir, creds, logger))
+func Build(ctx context.Context, sets []config.InstallSet, cacheDir string, creds []config.Credential, logger *logging.Logger) (*vfs.Tree, error) {
+	return vfs.Build(setSpecs(sets), NewResolver(ctx, cacheDir, creds, logger))
 }
 
 // NewResolver returns the resolver Build opens sources with, caching under
 // cacheDir (empty for the default) and offering the given host credentials.
 // Retried reads are logged to logger, which may be nil.
-func NewResolver(cacheDir string, creds []config.Credential, logger *logging.Logger) *source.Resolver {
+func NewResolver(ctx context.Context, cacheDir string, creds []config.Credential, logger *logging.Logger) *source.Resolver {
 	return source.New(source.Options{
 		CacheDir:    defaultCacheDir(cacheDir),
 		Credentials: credentials(creds),
 		Logger:      logger,
+		Context:     ctx,
 	})
 }
 

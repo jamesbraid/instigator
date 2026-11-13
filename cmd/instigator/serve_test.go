@@ -201,3 +201,19 @@ func TestServeExitsWhenReadinessCannotBeReported(t *testing.T) {
 		t.Errorf("error does not name the failure: %s", out)
 	}
 }
+
+// A stop that arrives while Start fails for its own reason must not hide that
+// failure behind a clean exit.
+func TestServeStopDuringFailedStartReportsTheFailure(t *testing.T) {
+	held, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	stop := make(chan os.Signal, 1)
+	stop <- syscall.SIGTERM
+	err = runUntilSignal(serveConfig(t, held.LocalAddr().(*net.UDPAddr).Port), false, "", "", "", nil, io.Discard, nil, stop)
+	if err == nil || !strings.Contains(err.Error(), "bootp") {
+		t.Fatalf("runUntilSignal = %v, want the bootp bind failure", err)
+	}
+}

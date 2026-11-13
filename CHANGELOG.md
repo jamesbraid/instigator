@@ -6,6 +6,9 @@ ones. Entries for 0.5.1 and earlier were rewritten from the original GitHub rele
 
 ## Unreleased
 
+Fixes:
+- serve: a stop while media are being fetched or extracted now abandons the work and removes its `extract-*` directory under the cache. Before, `serve` finished the extraction first, so a container runtime's SIGKILL a few seconds after the stop left the directory, often gigabytes, in the cache. Shutdown also finishes within one five-second drain window rather than up to three.
+
 ## 0.6.0 - 2026-11-24
 
 Instigator now installs IRIX 5.3 and 6.2 on the Indigo, Indy and Indigo2, and a program that runs it can follow an install through `serve --json`.

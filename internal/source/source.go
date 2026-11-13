@@ -49,6 +49,9 @@ type Options struct {
 	Credentials Credentials
 	Client      *http.Client
 	Logger      *logging.Logger
+	// Context bounds every fetch and extraction, so a shutdown stops a long
+	// one instead of waiting it out. Nil means context.Background.
+	Context context.Context
 }
 
 // Resolver turns a source reference - a local path or an http(s) URL - into a
@@ -62,6 +65,7 @@ type Resolver struct {
 	grab     *grab.Client
 	logger   *logging.Logger
 	retry    retryPolicy
+	ctx      context.Context
 }
 
 var _ vfs.Resolver = (*Resolver)(nil)
@@ -88,7 +92,12 @@ func New(opts Options) *Resolver {
 		Jar:           base.Jar,
 		Timeout:       base.Timeout,
 	}
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return &Resolver{
+		ctx:      ctx,
 		cacheDir: opts.CacheDir,
 		creds:    opts.Credentials,
 		client:   client,
@@ -128,7 +137,7 @@ func (r *Resolver) Resolve(ref string) (vfs.Resolved, error) {
 	if err != nil {
 		return vfs.Resolved{}, fmt.Errorf("source: parse %s: %w", SafeURL(ref), unwrapURLErr(err))
 	}
-	ctx := context.Background()
+	ctx := r.ctx
 	if isArchivePath(u.Path) {
 		return r.resolveArchive(ctx, ref, u)
 	}
@@ -168,7 +177,7 @@ func (r *Resolver) resolveLocal(ref string) (vfs.Resolved, error) {
 		return vfs.Resolved{FS: root.FS(), Kind: vfs.OriginDirectory, Closer: root}, nil
 	}
 	if isArchivePath(ref) {
-		return r.resolveExtractedArchive(context.Background(), ref, filepath.Base(ref))
+		return r.resolveExtractedArchive(r.ctx, ref, filepath.Base(ref))
 	}
 	disc, err := vfs.OpenImage(ref)
 	if err != nil {

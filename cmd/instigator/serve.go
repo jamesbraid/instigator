@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -144,7 +145,33 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 		}
 	}
 
-	s, err := serve.Start(cfg, logger, opts...)
+	// Fetching and extracting media can take minutes. A stop then cancels it, so
+	// the extraction directory is removed before the runtime's SIGKILL.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startDone := make(chan struct{})
+	stoppedEarly := make(chan bool, 1)
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+			stoppedEarly <- true
+		case <-startDone:
+			stoppedEarly <- false
+		}
+	}()
+	s, err := serve.Start(cfg, logger, append(opts, serve.WithContext(ctx))...)
+	close(startDone)
+	if <-stoppedEarly {
+		logger.Infof("shutting down before serving started")
+		if errors.Is(err, context.Canceled) {
+			err = nil // the stop's own doing
+		}
+		if s != nil {
+			err = errors.Join(err, s.Close())
+		}
+		return err
+	}
 	if err != nil {
 		return err
 	}

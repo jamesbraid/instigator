@@ -62,11 +62,11 @@ func CheckShallow(cfg *config.Config) error {
 		}
 	}
 
-	if err := probeSources(mediatree.NewResolver(cfg.CacheDir, cfg.Credentials, nil), remote); err != nil {
+	if err := probeSources(mediatree.NewResolver(context.Background(), cfg.CacheDir, cfg.Credentials, nil), remote); err != nil {
 		return err
 	}
 
-	tree, err := mediatree.Build(local, cfg.CacheDir, cfg.Credentials, nil)
+	tree, err := mediatree.Build(context.Background(), local, cfg.CacheDir, cfg.Credentials, nil)
 	if err != nil {
 		return err
 	}
