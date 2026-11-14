@@ -22,6 +22,8 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
+
+	"github.com/jamesbraid/instigator/internal/logging"
 )
 
 const (
@@ -38,6 +40,11 @@ const (
 	frameBatchSize = 32
 )
 
+// writeStallWarn is how long a write to the stream may block before it is
+// logged. A healthy peer drains a flush in microseconds, so a write blocked
+// this long means QEMU has stopped reading the socket.
+var writeStallWarn = 5 * time.Second
+
 // Config describes the private segment a Network serves on.
 type Config struct {
 	// ServerIP is Instigator's address on the segment (10.98.0.2). It must
@@ -49,6 +56,10 @@ type Config struct {
 	MAC net.HardwareAddr
 	// MTU is the link MTU; zero means 1500.
 	MTU uint32
+	// Logger, when set, receives a WARN when the frame writer has been
+	// blocked on the stream for writeStallWarn, and an INFO when it
+	// recovers. A nil Logger is silent.
+	Logger *logging.Logger
 }
 
 // Network is an unprivileged private Ethernet segment backed by a user-space
@@ -60,6 +71,7 @@ type Network struct {
 	ch    *channel.Endpoint
 	conn  io.ReadWriteCloser
 	ip    tcpip.Address
+	log   *logging.Logger
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -118,7 +130,7 @@ func New(conn io.ReadWriteCloser, cfg Config) (*Network, error) {
 	// unicast) and the limited broadcast a BOOTP reply uses.
 	s.SetRouteTable([]tcpip.Route{{Destination: header.IPv4EmptySubnet, NIC: nicID}})
 
-	n := &Network{stack: s, ch: ch, conn: conn, ip: addr, done: make(chan struct{})}
+	n := &Network{stack: s, ch: ch, conn: conn, ip: addr, log: cfg.Logger, done: make(chan struct{})}
 	n.ctx, n.cancel = context.WithCancel(context.Background())
 	n.wg.Add(2)
 	go n.readLoop()
@@ -187,6 +199,8 @@ func (n *Network) readLoop() {
 func (n *Network) writeLoop() {
 	defer n.wg.Done()
 	w := frameWriter{w: n.conn}
+	watch := newWriteWatch(n.log, writeStallWarn)
+	defer watch.close()
 	for {
 		pkt := n.ch.ReadContext(n.ctx)
 		if pkt == nil {
@@ -214,7 +228,10 @@ func (n *Network) writeLoop() {
 			}
 			pkt = n.ch.Read()
 		}
-		if err := w.flush(); err != nil {
+		watch.arm()
+		err := w.flush()
+		watch.disarm(err)
+		if err != nil {
 			n.stop(fmt.Errorf("write frame: %w", err))
 			return
 		}

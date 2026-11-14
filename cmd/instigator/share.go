@@ -203,7 +203,7 @@ func servePrivateShare(o shareOptions, output io.Writer, stop <-chan os.Signal, 
 	}
 	logger := logging.New(output, level)
 
-	cfg := qemunet.Config{ServerIP: o.address.Addr(), PrefixLen: o.address.Bits(), MAC: qemunet.DefaultServerMAC}
+	cfg := qemunet.Config{ServerIP: o.address.Addr(), PrefixLen: o.address.Bits(), MAC: qemunet.DefaultServerMAC, Logger: logger}
 	l, err := o.network.listen(cfg)
 	if err != nil {
 		return err

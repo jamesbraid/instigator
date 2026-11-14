@@ -76,6 +76,7 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 			ServerIP:  cfg.ServerIP,
 			PrefixLen: cfg.Netmask.Bits(),
 			MAC:       qemunet.DefaultServerMAC,
+			Logger:    logger,
 		}
 		// Open the shares before announcing readiness, so a bad directory
 		// fails before the machine is started.
