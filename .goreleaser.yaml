@@ -48,14 +48,10 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# Release notes come from the matching CHANGELOG.md section (see the release
+# workflow), passed with --release-notes.
 changelog:
-  use: git
-  sort: asc
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^ci:"
+  disable: true
 
 release:
   draft: false
