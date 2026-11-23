@@ -101,7 +101,7 @@ install_sets:
 	if got := tftpGet(t, s, "/6.5.22/dist/sa"); len(got) != 1500 {
 		t.Errorf("dist/sa = %d bytes, want 1500", len(got))
 	}
-	if !hasLine(c.instructions, "  PROM: boot -f bootp():/6.5.22/stand/fx.ARCS  (IP22: Indy, Indigo2)") ||
+	if !hasLine(c.instructions, "  PROM: boot -f bootp():/6.5.22/stand/fx.ARCS  (32-bit ARCS PROMs)") ||
 		!hasLine(c.instructions, "  PROM: Remote Directory: /6.5.22/dist") {
 		t.Errorf("instructions lack the IP22 boot lines:\n%v", c.instructions)
 	}

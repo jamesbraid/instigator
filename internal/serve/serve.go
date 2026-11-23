@@ -626,11 +626,13 @@ type profile struct {
 	primary string
 	dists   []string
 	// bootPaths lists the stand programs the PROM can netboot, one per
-	// firmware generation: fx.64 for 64-bit PROMs and fx.ARCS for the
-	// 32-bit ARCS PROMs of the Indy and Indigo2.
+	// firmware generation: fx.64, fx.ARCS and the R3000 Indigo's fx.IP12.
 	bootPaths []string
 	remoteDir string
 	generated []generatedFile
+	// legacyInst marks media older than IRIX 6.5, whose inst has no
+	// "admin source" and so cannot load the generated command files.
+	legacyInst bool
 }
 
 // generatedFile is one file instigator synthesizes: its tree path,
@@ -675,12 +677,20 @@ func generate(cfg *config.Config, tree *vfs.Tree) (profile, error) {
 	// primary set whose layers carry no stand program leaves the boot
 	// paths empty rather than name a file that would 404.
 	p.remoteDir = "/" + p.primary + "/dist"
-	for _, name := range []string{"fx.64", "fx.ARCS"} {
+	for _, name := range []string{"fx.64", "fx.ARCS", "fx.IP12"} {
 		boot := "/" + p.primary + "/stand/" + name
 		if f, err := tree.Open(fsName(boot)); err == nil {
 			f.Close()
 			p.bootPaths = append(p.bootPaths, boot)
 		}
+	}
+
+	// Every 6.5 Installation Tools disc ships .related_dists; 5.3 and 6.2
+	// media do not. Look before the generated copy shadows it.
+	if _, err := tree.Stat(fsName(p.remoteDir + "/.related_dists")); errors.Is(err, fs.ErrNotExist) {
+		p.legacyInst = true
+	} else if err != nil {
+		return profile{}, err
 	}
 
 	// Keep every script and its timing entrypoints together. An
@@ -800,6 +810,9 @@ func logStartup(cfg *config.Config, tree *vfs.Tree, p profile, logger *logging.L
 		logger.Warnf("no install set is enabled: serving the tree with no generated commands")
 	}
 
+	if p.legacyInst && len(cfg.InstallScripts) > 0 {
+		logger.Warnf("install_scripts are served but %s has no .related_dists, so it looks older than IRIX 6.5, whose inst has no admin source to load them", p.remoteDir)
+	}
 	for _, c := range cfg.Clients {
 		logger.Infof("client %s: mac=%s ip=%s", c.Name, c.MAC, c.IP)
 		fmt.Fprintf(instructions, "  PROM: setenv netaddr %s\n", c.IP)
@@ -813,6 +826,14 @@ func logStartup(cfg *config.Config, tree *vfs.Tree, p profile, logger *logging.L
 			fmt.Fprintf(instructions, "  PROM: Remote Directory: %s\n", p.remoteDir)
 		}
 		if len(p.dists) == 0 {
+			continue
+		}
+		if p.legacyInst {
+			for _, dist := range p.dists {
+				fmt.Fprintf(instructions, "  Inst>: from %s:%s\n", cfg.ServerIP, dist)
+				fmt.Fprintf(instructions, "  Inst>: install default\n")
+				fmt.Fprintf(instructions, "  Inst>: go\n")
+			}
 			continue
 		}
 		fmt.Fprintf(instructions, "  Inst>: admin source %s:/install.cmds\n", cfg.ServerIP)
@@ -829,7 +850,9 @@ func logStartup(cfg *config.Config, tree *vfs.Tree, p profile, logger *logging.L
 func bootNote(path string) string {
 	switch {
 	case strings.HasSuffix(path, "/fx.ARCS"):
-		return "  (IP22: Indy, Indigo2)"
+		return "  (32-bit ARCS PROMs)"
+	case strings.HasSuffix(path, "/fx.IP12"):
+		return "  (R3000 Indigo)"
 	case strings.HasSuffix(path, "/fx.64"):
 		return "  (64-bit PROMs: Octane, Origin)"
 	}

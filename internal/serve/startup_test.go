@@ -160,7 +160,7 @@ func TestStartupInstructionsUseAdminSource(t *testing.T) {
 	for _, want := range []string{
 		"  PROM: setenv netaddr 127.0.0.1",
 		"  PROM: boot -f bootp():/6.5.30/stand/fx.64  (64-bit PROMs: Octane, Origin)",
-		"  PROM: boot -f bootp():/6.5.30/stand/fx.ARCS  (IP22: Indy, Indigo2)",
+		"  PROM: boot -f bootp():/6.5.30/stand/fx.ARCS  (32-bit ARCS PROMs)",
 		"  PROM: Remote Directory: /6.5.30/dist",
 		"  Inst>: admin source 192.0.2.10:/install.cmds",
 	} {
