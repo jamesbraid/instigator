@@ -35,6 +35,24 @@ var shipped = []struct{ release, profile string }{
 	{"6.5.22", "standard"},
 }
 
+// Releases before 6.5 have no admin source, so their configs carry no scripts.
+var legacy = []string{"5.3", "6.2"}
+
+func TestLegacyConfigsLoad(t *testing.T) {
+	for _, release := range legacy {
+		cfg, err := config.ParseIn(mustRead(t, "irix-"+release+"-standard.yaml"), ".")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cfg.InstallSets) != 1 || !cfg.InstallSets[0].Layers[0].Boot || len(cfg.InstallScripts) != 0 {
+			t.Errorf("%s: sets %+v scripts %+v, want one booting set and no scripts", release, cfg.InstallSets, cfg.InstallScripts)
+		}
+		if len(cfg.Clients) != 1 || cfg.Clients[0].IP.String() != "192.0.2.30" || cfg.ServerIP.String() != "192.0.2.10" {
+			t.Errorf("%s: client %+v server %s", release, cfg.Clients, cfg.ServerIP)
+		}
+	}
+}
+
 // Each shipped config loads, boots from one layer and serves the irix script,
 // alone and with every shipped add-on joining that script's second pass.
 func TestShippedConfigsLoad(t *testing.T) {

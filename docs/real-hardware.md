@@ -12,6 +12,8 @@ Choose a config for your machine:
 | [irix-6.5.30-standard.yaml](../configs/irix-6.5.30-standard.yaml) | IRIX 6.5.30, all five disc sets | Octane, Origin |
 | [irix-6.5.30-minimal.yaml](../configs/irix-6.5.30-minimal.yaml) | IRIX 6.5.30, overlays and foundations | Octane, Origin |
 | [irix-6.5.22-standard.yaml](../configs/irix-6.5.22-standard.yaml) | IRIX 6.5.22, all five disc sets | Indy, Indigo2 (IP22) |
+| [irix-6.2-standard.yaml](../configs/irix-6.2-standard.yaml) | IRIX 6.2, both discs | R4000 Indigo, Indy, Indigo2 |
+| [irix-5.3-standard.yaml](../configs/irix-5.3-standard.yaml) | IRIX 5.3, the general disc | Indigo, Indy, Indigo2 |
 
 The completed hardware install recorded here is an Octane2 with IRIX 6.5.30.
 IP22 remains untested on hardware. These configs give you the media layout and
@@ -120,6 +122,29 @@ If `inst` opens an `Install software from` menu, enter the number beside
 `sashARCS`, which fetches `/6.5.22/dist/miniroot/unix.IP22`.
 
 Replace the example addresses with your configured client and server IPs.
+
+## IRIX 5.3 and 6.2
+
+Their `inst` has no `admin source`, so there is no `/irix.cmds`. Type the
+selection at `Inst>` instead. The R4000 Indigo, Indy and Indigo2 boot
+`stand/fx.ARCS`. The 5.3 disc also carries `stand/fx.IP12` for the R3000
+Indigo. Boot `fx` as in the IP22 section if the disk needs preparing, then
+choose Install System Software, then Remote Directory, and enter the server IP
+and `/5.3/dist` or `/6.2/dist`. The PROM fetches the miniroot from `dist/sa`.
+
+In the miniroot, `admin mkfs` erases the root and `/usr` filesystems for a
+clean install. 6.2 offers an optional startup script before `Inst>`; it
+checks for COFF programs and old kernel files. At `Inst>`:
+
+```text
+from 192.0.2.10:/5.3/dist
+install default
+go
+```
+
+An Indy with an R4600 or R5000 needs the "5.3 for Indy including R5000" disc
+instead: replace the layer's source with
+`https://origami-dist.irix.fans/irix/5.3/indy-r5000.iso`.
 
 ## Octane and Origin, IRIX 6.5.30
 

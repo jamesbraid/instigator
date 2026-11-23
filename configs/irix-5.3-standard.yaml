@@ -1,0 +1,35 @@
+# IRIX 5.3 install from https://origami-dist.irix.fans/irix/.
+# Copy this file, set the client below to your machine, and run:
+#   instigator check CONFIG   (probes every URL)
+#   sudo instigator serve CONFIG
+# To install from local copies of the discs, replace the URL prefix with your
+# directory; see docs/real-hardware.md. Addresses are RFC 5737 documentation
+# ranges: replace them with your install network.
+#
+# 5.3's inst has no "admin source", so there are no install scripts or
+# add-ons: at Inst> type the from, install and go lines in docs/real-hardware.md.
+
+server_ip: 192.0.2.10
+netmask: 192.0.2.0/24
+
+# Read the MAC from the PROM with `printenv eaddr`.
+clients:
+  - name: sgi
+    mac: "08:00:69:00:00:01"
+    ip: 192.0.2.30
+
+services:
+  bootp: true
+  tftp:
+    port_range: [2048, 32767]
+  rsh: true
+
+install_sets:
+  - name: "5.3"
+    layers:
+      # The general 5.3 disc: Indigo (R3000 and R4000), Indigo2, and Indy
+      # with an R4000 or R4400. For an R4600 or R5000 Indy, use
+      # irix/5.3/indy-r5000.iso instead.
+      - name: irix53
+        source: https://origami-dist.irix.fans/irix/5.3/general.iso
+        boot: true

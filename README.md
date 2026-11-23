@@ -54,7 +54,7 @@ instead of using `sudo`.
 ## First install
 
 The configs in [`configs/`](configs/) have media URLs filled in for IRIX
-6.5.30 and 6.5.22. Choose one for your machine in the [hardware
+6.5.30, 6.5.22, 6.2 and 5.3. Choose one for your machine in the [hardware
 guide](docs/real-hardware.md). For a 6.5.30 standard install:
 
 ```sh
@@ -115,7 +115,8 @@ permissions, firewall ports, and how to use a private emulator network without
 An Octane2 running IRIX 6.5.30 has netbooted, installed from merged media,
 booted from disk, and reached console login using a Linux host. The IP22
 config and boot path are present, but an Indy or Indigo2 install remains
-untested on hardware.
+untested on hardware. IRIX 5.3 and 6.2 have installed over the network on an
+emulated Indy (iris) and booted to a login; the Indigo is untested.
 
 The [NFS reference](docs/nfs-shares.md#checked-against-irix-6530) records IRIX
 6.5.30 guest checks for file sharing. macOS and Windows are build and test
