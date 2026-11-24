@@ -109,11 +109,21 @@ permissions, firewall ports, and how to use a private emulator network without
 - On hardware, an Octane2 running IRIX 6.5.30 has netbooted, installed from
   merged media, booted from disk, and reached console login using a Linux
   host.
-- On emulators only, IRIX 5.3 and 6.2 have installed over the network on the
-  iris Indy emulator and booted to a login, and 5.3 has done the same on an
-  R4000 Indigo under QEMU.
-- Untested: an Indy or Indigo2 (IP22) install on hardware, and the R3000
-  Indigo. The IP22 config and boot path are present.
+- On emulators only, these installs from Instigator have booted to a login:
+
+  | Emulator | Machines | IRIX |
+  | --- | --- | --- |
+  | [Origami](https://origami.irix.fans/) (QEMU) | Origin and Onyx2 (IP27), Octane (IP30), Tezro (IP35), O2 | 6.5.30 |
+  | [Origami](https://origami.irix.fans/) (QEMU) | Origin 300 (IP35) | 6.5.22 |
+  | [Origami](https://origami.irix.fans/) (QEMU) | R4000 Indigo (IP20) | 5.3 |
+  | [iris](https://github.com/techomancer/iris) | Indy, Indigo2 (IP22 and IP28) | 6.5.22 |
+  | [iris](https://github.com/techomancer/iris) | O2 | 6.5.30 |
+  | [iris](https://github.com/techomancer/iris) | Indy | 5.3, 6.2 |
+
+  Most of these are Origami's published disk images, built by its install
+  pipeline.
+- Untested on hardware: everything except the Octane2, including the Indy,
+  Indigo2 and every Indigo. The R3000 Indigo is untested anywhere.
 
 The [network reference](docs/network-reference.md#checked-against-irix-6530)
 records IRIX 6.5.30 guest checks for file sharing. macOS and Windows are build
