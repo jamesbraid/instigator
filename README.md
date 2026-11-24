@@ -116,7 +116,8 @@ An Octane2 running IRIX 6.5.30 has netbooted, installed from merged media,
 booted from disk, and reached console login using a Linux host. The IP22
 config and boot path are present, but an Indy or Indigo2 install remains
 untested on hardware. IRIX 5.3 and 6.2 have installed over the network on an
-emulated Indy (iris) and booted to a login; the Indigo is untested.
+emulated Indy (iris) and booted to a login, and 5.3 on an emulated R4000
+Indigo (QEMU). The R3000 Indigo is untested.
 
 The [NFS reference](docs/nfs-shares.md#checked-against-irix-6530) records IRIX
 6.5.30 guest checks for file sharing. macOS and Windows are build and test

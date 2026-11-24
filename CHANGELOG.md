@@ -7,7 +7,7 @@ ones. Entries for 0.5.1 and earlier were rewritten from the original GitHub rele
 ## Unreleased
 
 Features:
-- configs: IRIX 5.3 and 6.2 configs for the Indigo, Indy and Indigo2, with their discs on origami-dist. Both installed over the network on an emulated Indy.
+- configs: IRIX 5.3 and 6.2 configs for the Indigo, Indy and Indigo2, with their discs on origami-dist. Both installed over the network on an emulated Indy, and 5.3 on an emulated R4000 Indigo.
 - serve: `--json` writes status as JSON Lines on stdout for programs that run Instigator: `ready`, `bootp`, `tftp` with start, progress and end, `inst` sessions and returns, and a final `stopped` with its reason. The human log stays on stderr. The schema is in docs/json-output.md.
 - serve: startup warns when `install_scripts` are configured for media from before IRIX 6.5, whose `inst` has no `admin source` to load them. Media count as pre-6.5 when the first set's distribution ships no `.related_dists`.
 - serve: startup logs the R3000 Indigo's `stand/fx.IP12` alongside `fx.ARCS` and `fx.64`.
