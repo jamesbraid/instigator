@@ -24,6 +24,17 @@ type privateEndpoint struct{ socket, tcp string }
 
 func (e privateEndpoint) enabled() bool { return e.socket != "" || e.tcp != "" }
 
+// kind names the network for the --json ready line.
+func (e privateEndpoint) kind() string {
+	switch {
+	case e.socket != "":
+		return "socket"
+	case e.tcp != "":
+		return "tcp"
+	}
+	return "host"
+}
+
 func (e privateEndpoint) check() error {
 	if e.socket != "" && e.tcp != "" {
 		return errors.New("--network-socket and --network-tcp cannot be used together")

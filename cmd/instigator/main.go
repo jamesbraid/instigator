@@ -40,9 +40,10 @@ func newRoot() *cli.Command {
 					&cli.StringFlag{Name: "network-socket", Usage: "serve a machine's private Ethernet segment over the QEMU stream socket at `PATH` instead of the host network"},
 					&cli.StringFlag{Name: "network-tcp", Usage: "serve a machine's private Ethernet segment over a loopback TCP stream at `IP:PORT`"},
 					&cli.StringSliceFlag{Name: "share", Usage: "also export a host directory over NFS on the private network, as `NAME=DIR` (repeatable; needs --network-socket or --network-tcp)"},
+					&cli.BoolFlag{Name: "json", Usage: "write status as JSON Lines on stdout (see docs/json-output.md); logs stay on stderr"},
 				},
 				Action: func(_ context.Context, cmd *cli.Command) error {
-					return run(cmd.StringArgs("config")[0], cmd.Bool("verbose"), cmd.String("capture-dir"), cmd.String("network-socket"), cmd.String("network-tcp"), cmd.StringSlice("share"))
+					return run(cmd.StringArgs("config")[0], cmd.Bool("verbose"), cmd.Bool("json"), cmd.String("capture-dir"), cmd.String("network-socket"), cmd.String("network-tcp"), cmd.StringSlice("share"))
 				},
 			},
 			{

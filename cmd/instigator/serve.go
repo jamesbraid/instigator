@@ -15,20 +15,35 @@ import (
 	"github.com/jamesbraid/instigator/internal/logging"
 	"github.com/jamesbraid/instigator/internal/qemunet"
 	"github.com/jamesbraid/instigator/internal/serve"
+	"github.com/jamesbraid/instigator/internal/status"
 	"github.com/jamesbraid/instigator/nfs"
 )
 
 // run serves until a signal stops it. The log goes to stderr because a
 // caller waiting on readiness may have closed stdout, as
 // systemd-notify --fork does.
-func run(configPath string, verbose bool, captureDir, networkSocket, networkTCP string, shares []string) error {
+func run(configPath string, verbose, jsonOut bool, captureDir, networkSocket, networkTCP string, shares []string) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sig)
-	return runUntilSignal(configPath, verbose, captureDir, networkSocket, networkTCP, shares, os.Stderr, sig)
+	var st *status.Writer
+	if jsonOut {
+		st = status.New(os.Stdout)
+	}
+	return runUntilSignal(configPath, verbose, captureDir, networkSocket, networkTCP, shares, os.Stderr, st, sig)
 }
 
-func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, networkTCP string, shares []string, output io.Writer, stop <-chan os.Signal) error {
+// runUntilSignal serves until stop fires or the machine leaves. st, when
+// set, gets a ready line once serving starts and a stopped line last.
+func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, networkTCP string, shares []string, output io.Writer, st *status.Writer, stop <-chan os.Signal) (err error) {
+	reason := "signal"
+	defer func() {
+		if err != nil {
+			st.Stopped("error", err.Error())
+		} else {
+			st.Stopped(reason, "")
+		}
+	}()
 	endpoint := privateEndpoint{socket: networkSocket, tcp: networkTCP}
 	if err := endpoint.check(); err != nil {
 		return err
@@ -61,6 +76,9 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 	if captureDir != "" {
 		opts = append(opts, serve.WithCapture(captureDir))
 		logger.Infof("recording this run to %s", captureDir)
+	}
+	if st != nil {
+		opts = append(opts, serve.WithStatus(st), serve.WithCaptureSummary(output))
 	}
 
 	// In private-network mode Instigator owns a stream endpoint the machine
@@ -130,6 +148,7 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 	}
 
 	logger.Infof("serving; stop with SIGINT/SIGTERM")
+	st.Ready(cfg.ServerIP.String(), endpoint.kind(), servedSets(cfg))
 	// Whoever set NOTIFY_SOCKET waits forever if this never arrives. In
 	// private-network mode it was already sent so the machine could connect.
 	if !readinessSent {
@@ -143,6 +162,7 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 		case <-stop:
 			logger.Infof("shutting down")
 		case <-privateNet.Done():
+			reason = "guest_disconnected"
 			return errors.Join(disconnected(privateNet, logger), s.CloseWithReason("disconnected"))
 		case err := <-shareErr:
 			return errors.Join(err, s.Close())
@@ -164,4 +184,15 @@ func disconnected(n *qemunet.Network, logger *logging.Logger) error {
 	}
 	logger.Infof("the machine disconnected")
 	return nil
+}
+
+// servedSets lists the enabled sets for the --json ready line.
+func servedSets(cfg *config.Config) []status.Set {
+	var sets []status.Set
+	for _, set := range cfg.InstallSets {
+		if set.Enabled {
+			sets = append(sets, status.Set{Name: set.Name, Dist: "/" + set.Name + "/dist"})
+		}
+	}
+	return sets
 }

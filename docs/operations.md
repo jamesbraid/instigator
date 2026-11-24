@@ -37,6 +37,9 @@ reference](nfs-shares.md#private-network).
 `serve --share NAME=DIR` also serves writable NFS shares on that segment. See
 the [sharing guide](sharing.md#shares-alongside-an-install).
 
+A program that runs Instigator can add `--json` for machine-readable status on
+stdout. See [JSON output](json-output.md).
+
 ## Install timing
 
 Every generated script uses native `admin source` handoffs to time `go`. Each

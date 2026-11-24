@@ -32,6 +32,7 @@ import (
 	"github.com/jamesbraid/instigator/internal/logging"
 	"github.com/jamesbraid/instigator/internal/mediatree"
 	"github.com/jamesbraid/instigator/internal/source"
+	"github.com/jamesbraid/instigator/internal/status"
 	"github.com/jamesbraid/instigator/internal/tftp"
 	"github.com/jamesbraid/instigator/internal/vfs"
 	"github.com/jamesbraid/instigator/rcmd"
@@ -250,6 +251,8 @@ type options struct {
 	instructions   io.Writer
 	captureDir     string
 	recorder       *capture.Recorder // injected pre-built recorder, for tests
+	captureSummary io.Writer         // where the capture's closing summary goes; nil is stdout
+	status         *status.Writer
 	rshIdleTimeout time.Duration
 	network        Network // nil means the host stack, today's behavior
 }
@@ -285,6 +288,17 @@ func withInstructions(w io.Writer) Option {
 // recording and no overhead.
 func WithCapture(dir string) Option {
 	return func(o *options) { o.captureDir = dir }
+}
+
+// WithCaptureSummary sends the capture's closing summary to w instead of
+// stdout, which --json keeps for its own lines.
+func WithCaptureSummary(w io.Writer) Option {
+	return func(o *options) { o.captureSummary = w }
+}
+
+// WithStatus writes the --json status lines to w.
+func WithStatus(w *status.Writer) Option {
+	return func(o *options) { o.status = w }
 }
 
 // withRecorder injects a pre-built recorder, letting a test supply an
@@ -420,7 +434,11 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 	case o.recorder != nil:
 		s.rec = o.recorder
 	case o.captureDir != "":
-		rec, err := capture.New(o.captureDir)
+		var copts []capture.Option
+		if o.captureSummary != nil {
+			copts = append(copts, capture.WithSummaryWriter(o.captureSummary))
+		}
+		rec, err := capture.New(o.captureDir, copts...)
 		if err != nil {
 			tree.Close()
 			return nil, fmt.Errorf("capture: %w", err)
@@ -445,7 +463,7 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 	allow := func(a netip.Addr) bool { return allowed[a] }
 
 	logStartup(cfg, tree, prof, logger, o.instructions)
-	scripts := newInstallScripts(cfg.ServerIP.String(), prof.generated, logger, s.rec)
+	scripts := newInstallScripts(cfg.ServerIP.String(), prof.generated, logger, s.rec, o.status)
 
 	// Listeners are bound now but their serve loops are launched only after
 	// server_start is emitted, so no bootp/tftp/rsh event can precede it.
@@ -471,6 +489,7 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 			ReplyAddr: o.bootpReplyAddr,
 			Logger:    logger,
 			Recorder:  s.rec,
+			Status:    o.status,
 		}
 		var pc net.PacketConn
 		if o.network != nil {
@@ -494,6 +513,7 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 			PortMax:    cfg.Services.TFTP.PortRange[1],
 			Logger:     logger,
 			Recorder:   s.rec,
+			Status:     o.status,
 			ClientName: func(a netip.Addr) string { return aliasByIP[a] },
 		}
 		var pc net.PacketConn
@@ -536,10 +556,13 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 					logger.Warnf("rsh: refusing non-shell command %q", req.Command)
 					return fmt.Errorf("only a shell session is served")
 				}
-				sess := s.rec.BeginSession(aliasByIP[req.Addr], req.Addr.String(), req.RemoteUser, req.LocalUser)
-				fsys := cmdFS{t: tree, scripts: scripts, client: aliasByIP[req.Addr], address: req.Addr.String()}
+				client := aliasByIP[req.Addr]
+				sess := s.rec.BeginSession(client, req.Addr.String(), req.RemoteUser, req.LocalUser)
+				o.status.Inst(client, "session_start", "")
+				fsys := cmdFS{t: tree, scripts: scripts, client: client, address: req.Addr.String()}
 				err := instcmd.RunShellWithSignals(fsys, req.Stdin, req.Stdout, req.Stderr, req.Signals, logger, sess)
 				sess.End(err)
+				o.status.Inst(client, "session_end", sessionResult(err))
 				return err
 			},
 		}
@@ -974,4 +997,13 @@ func buildProvenance(cfg *config.Config) capture.Provenance {
 		Clients: clients,
 		Media:   media,
 	}
+}
+
+// sessionResult is an inst session's end for --json: ok for a clean close,
+// error otherwise.
+func sessionResult(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "ok"
 }

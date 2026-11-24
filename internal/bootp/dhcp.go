@@ -168,6 +168,7 @@ func (s *Server) serveDHCP(m dhcpMsg, write func(reply []byte, dst net.Addr) err
 		if s.Recorder != nil {
 			s.Recorder.BootpReply("", m.mac.String(), "dhcp "+dhcpName(m.typ), "", "ignored")
 		}
+		s.Status.BOOTP("", m.mac.String(), "", "dhcp "+dhcpName(m.typ), "ignored")
 		return
 	}
 	typ := s.dhcpAnswer(m, client)
@@ -198,4 +199,5 @@ func (s *Server) serveDHCP(m dhcpMsg, write func(reply []byte, dst net.Addr) err
 	if s.Recorder != nil {
 		s.Recorder.BootpReply(client.Name, m.mac.String(), "dhcp "+dhcpName(m.typ), client.IP.String(), result)
 	}
+	s.Status.BOOTP(client.Name, m.mac.String(), client.IP.String(), "dhcp "+dhcpName(m.typ), result)
 }

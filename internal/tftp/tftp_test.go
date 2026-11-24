@@ -3,12 +3,17 @@ package tftp
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/jamesbraid/instigator/internal/status"
 )
 
 // memFS serves in-memory files.
@@ -535,4 +540,59 @@ func TestRetransmitOnLostAck(t *testing.T) {
 		t.Fatalf("retransmit differs: %d vs %d bytes", n1, n2)
 	}
 	_ = from
+}
+
+// --json gets a start carrying the size, progress while blocks are acked,
+// and an end with the result.
+func TestStatusLinesTrackTheTransfer(t *testing.T) {
+	defer func(d time.Duration) { progressEvery = d }(progressEvery)
+	progressEvery = 0
+	var out lockedBuffer
+	content := bytes.Repeat([]byte("z"), 1100)
+	addr := startServer(t, &Server{FS: memFS{"f": content}, Status: status.New(&out)})
+	fetch(t, addr, "f")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(out.String(), `"phase":"end"`) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	var phases []string
+	for _, l := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		var m struct {
+			Phase     string
+			Size      int64
+			BytesSent int64 `json:"bytes_sent"`
+			Result    string
+		}
+		if err := json.Unmarshal([]byte(l), &m); err != nil {
+			t.Fatalf("line %q: %v", l, err)
+		}
+		if m.Size != 1100 {
+			t.Errorf("line %q: size %d, want 1100", l, m.Size)
+		}
+		phases = append(phases, m.Phase)
+		if m.Phase == "end" && (m.Result != "ok" || m.BytesSent != 1100) {
+			t.Errorf("end line %q, want result ok after 1100 bytes", l)
+		}
+	}
+	if want := []string{"start", "progress", "progress", "progress", "end"}; !slices.Equal(phases, want) {
+		t.Errorf("phases %v, want %v", phases, want)
+	}
+}
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }

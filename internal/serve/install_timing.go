@@ -12,6 +12,7 @@ import (
 	"github.com/jamesbraid/instigator/internal/capture"
 	"github.com/jamesbraid/instigator/internal/instcmd"
 	"github.com/jamesbraid/instigator/internal/logging"
+	"github.com/jamesbraid/instigator/internal/status"
 )
 
 const installReturnPrefix = "__instigator/attempts/"
@@ -56,6 +57,7 @@ type installScripts struct {
 	starts   map[string]installEntry
 	logger   *logging.Logger
 	rec      *capture.Recorder
+	status   *status.Writer
 	mu       sync.Mutex
 	attempts map[string]*installAttempt
 }
@@ -72,9 +74,9 @@ type installAttempt struct {
 	returned                    bool
 }
 
-func newInstallScripts(server string, generated []generatedFile, logger *logging.Logger, rec *capture.Recorder) *installScripts {
+func newInstallScripts(server string, generated []generatedFile, logger *logging.Logger, rec *capture.Recorder, st *status.Writer) *installScripts {
 	s := &installScripts{
-		server: server, logger: logger, rec: rec,
+		server: server, logger: logger, rec: rec, status: st,
 		starts: make(map[string]installEntry), attempts: make(map[string]*installAttempt),
 	}
 	for _, file := range generated {
@@ -120,6 +122,7 @@ func (s *installScripts) open(name, client, address string) (instcmd.File, bool,
 			attempt.returned = true
 			elapsed := time.Since(attempt.start)
 			s.rec.InstallReturned(attempt.id, attempt.client, attempt.script, elapsed.Milliseconds())
+			s.status.Inst(attempt.client, "go_returned", "")
 			s.logger.Infof("install_returned: %s (%s), attempt %s: go returned after %s (success not verified)", attempt.script, attempt.client, attempt.id, elapsed.Round(time.Millisecond))
 		}), true, nil
 	}

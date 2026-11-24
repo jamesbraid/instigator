@@ -7,6 +7,7 @@ ones. Entries for 0.5.1 and earlier were rewritten from the original GitHub rele
 ## Unreleased
 
 Features:
+- serve: `--json` writes status as JSON Lines on stdout for programs that run Instigator: `ready`, `bootp`, `tftp` with start, progress and end, `inst` sessions and returns, and a final `stopped` with its reason. The human log stays on stderr. The schema is in docs/json-output.md.
 - qemunet: a write to the QEMU stream that stays blocked for five seconds logs a warning, and logs again with how long it blocked (or the error) when it returns. Before, a stalled `--network-tcp` install gave no sign of why.
 
 Changed:

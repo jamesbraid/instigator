@@ -21,6 +21,7 @@ import (
 
 	"github.com/jamesbraid/instigator/internal/capture"
 	"github.com/jamesbraid/instigator/internal/logging"
+	"github.com/jamesbraid/instigator/internal/status"
 )
 
 // ErrNotFound is returned by a FileSystem when the path does not exist.
@@ -116,6 +117,9 @@ type Server struct {
 	// Recorder, when set, receives a tftp_transfer_end record for each
 	// completed or abandoned transfer. A nil Recorder is a no-op.
 	Recorder *capture.Recorder
+	// Status, when set, gets serve --json tftp lines: a start, progress at
+	// most once per progressEvery, and an end.
+	Status *status.Writer
 
 	// ClientName, when set, maps a client IP to its configured alias for
 	// the recorded transfer. Nil, or a miss, records the IP.
@@ -445,6 +449,9 @@ func (s *Server) sendAndWaitAck(pc net.PacketConn, dst net.Addr, clientAP netip.
 	return false, false, retries
 }
 
+// progressEvery spaces a transfer's --json progress lines.
+var progressEvery = time.Second
+
 // transferClient is the client identity recorded for a transfer: the
 // configured alias when known, the IP otherwise.
 func (s *Server) transferClient(client *net.UDPAddr) string {
@@ -526,6 +533,12 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 		}()
 	}
 
+	statusClient := ""
+	if s.Status != nil {
+		statusClient = s.transferClient(client)
+		defer func() { s.Status.TFTP(statusClient, name, "end", size, bytesSent, result) }()
+	}
+
 	f, err := s.FS.Open(path)
 	if err != nil {
 		s.Logger.Warnf("tftp: %s: %q: %v", client, name, err)
@@ -566,6 +579,8 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 
 	s.Logger.Infof("tftp: %s: sending %q (%d bytes) from port %d",
 		client, name, size, pc.LocalAddr().(*net.UDPAddr).Port)
+	s.Status.TFTP(statusClient, name, "start", size, 0, "")
+	lastProgress := time.Now()
 
 	// Pre-converted once per transfer; Unmap keeps a v4-mapped v6 address
 	// comparing equal to its plain v4 form on the hot path below.
@@ -631,6 +646,10 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 		resendTotal += resends
 		if acked {
 			bytesAcked += want
+		}
+		if s.Status != nil && time.Since(lastProgress) >= progressEvery {
+			lastProgress = time.Now()
+			s.Status.TFTP(statusClient, name, "progress", size, bytesSent, "")
 		}
 		switch {
 		case aborted:

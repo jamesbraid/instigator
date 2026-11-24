@@ -112,11 +112,11 @@ func TestClientFlagKeepsItsComma(t *testing.T) {
 }
 
 func TestServeShareNeedsAPrivateNetwork(t *testing.T) {
-	err := runUntilSignal("unused.yaml", false, "", "", "", []string{"a=" + t.TempDir()}, new(bytes.Buffer), nil)
+	err := runUntilSignal("unused.yaml", false, "", "", "", []string{"a=" + t.TempDir()}, new(bytes.Buffer), nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "--share needs --network") {
 		t.Fatalf("error = %v", err)
 	}
-	err = runUntilSignal("unused.yaml", false, "", "", "", []string{"nodir"}, new(bytes.Buffer), nil)
+	err = runUntilSignal("unused.yaml", false, "", "", "", []string{"nodir"}, new(bytes.Buffer), nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "NAME=DIR") {
 		t.Fatalf("error = %v", err)
 	}
@@ -375,7 +375,7 @@ services:
 	done := make(chan error, 1)
 	var output lockedBuffer
 	go func() {
-		done <- runUntilSignal(configPath, false, "", "", endpoint, []string{"src=" + src, "out=" + out}, &output, stop)
+		done <- runUntilSignal(configPath, false, "", "", endpoint, []string{"src=" + src, "out=" + out}, &output, nil, stop)
 	}()
 	g := attachGuest(t, endpoint)
 	checkPrivateShares(t, g, []string{"src", "out"})
@@ -430,7 +430,7 @@ func TestServeWithoutSharesLeavesNFSOff(t *testing.T) {
 	stop := make(chan os.Signal, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- runUntilSignal(configPath, false, "", "", endpoint, nil, new(bytes.Buffer), stop)
+		done <- runUntilSignal(configPath, false, "", "", endpoint, nil, new(bytes.Buffer), nil, stop)
 	}()
 	g := attachGuest(t, endpoint)
 	// Wait for serving to start by getting a BOOTREPLY, then probe portmap.

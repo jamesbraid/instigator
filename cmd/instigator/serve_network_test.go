@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/netip"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/jamesbraid/instigator/efs/efstest"
 	"github.com/jamesbraid/instigator/internal/qemunet"
+	"github.com/jamesbraid/instigator/internal/status"
 )
 
 type lockedBuffer struct {
@@ -69,7 +71,7 @@ func TestServeNetworkSocketFailsOnTruncatedFrame(t *testing.T) {
 	errCh := make(chan error, 1)
 	var output lockedBuffer
 	go func() {
-		errCh <- runUntilSignal(configPath, false, "", endpoint, "", nil, &output, make(chan os.Signal, 1))
+		errCh <- runUntilSignal(configPath, false, "", endpoint, "", nil, &output, nil, make(chan os.Signal, 1))
 	}()
 	conn := dialWhenReady(t, "unix", endpoint, time.Now().Add(5*time.Second))
 	conn.Write([]byte{0, 0, 0, 100, 'x'}) // header promises 100 bytes, one follows
@@ -138,7 +140,7 @@ func servePrivateNetworkAnswersBootp(t *testing.T, network, endpoint string, dis
 	if disconnect {
 		captureDir = filepath.Join(dir, "capture")
 	}
-	var output lockedBuffer
+	var output, jsonOut lockedBuffer
 	networkSocket, networkTCP := "", ""
 	if network == "tcp" {
 		networkTCP = endpoint
@@ -146,7 +148,7 @@ func servePrivateNetworkAnswersBootp(t *testing.T, network, endpoint string, dis
 		networkSocket = endpoint
 	}
 	go func() {
-		errCh <- runUntilSignal(configPath, false, captureDir, networkSocket, networkTCP, nil, &output, stop)
+		errCh <- runUntilSignal(configPath, false, captureDir, networkSocket, networkTCP, nil, &output, status.New(&jsonOut), stop)
 	}()
 
 	// Act as the machine: connect once the socket is up, attach a guest stack.
@@ -217,6 +219,14 @@ func servePrivateNetworkAnswersBootp(t *testing.T, network, endpoint string, dis
 	case <-time.After(5 * time.Second):
 		t.Fatal("serve did not shut down")
 	}
+	wantReason, wantNetwork := "signal", "socket"
+	if disconnect {
+		wantReason = "guest_disconnected"
+	}
+	if network == "tcp" {
+		wantNetwork = "tcp"
+	}
+	checkStatusLines(t, jsonOut.String(), wantNetwork, wantReason)
 	if disconnect {
 		events, err := os.ReadFile(filepath.Join(captureDir, "events.jsonl"))
 		if err != nil {
@@ -231,6 +241,50 @@ func servePrivateNetworkAnswersBootp(t *testing.T, network, endpoint string, dis
 		if !found {
 			t.Fatalf("capture did not record disconnected server stop: %s", events)
 		}
+	}
+}
+
+// A run that fails before serving still ends its --json output with the
+// reason, so a caller can show why.
+func TestServeJSONReportsStartupError(t *testing.T) {
+	var out bytes.Buffer
+	err := runUntilSignal(filepath.Join(t.TempDir(), "missing.yaml"), false, "", "", "", nil, new(bytes.Buffer), status.New(&out), nil)
+	if err == nil {
+		t.Fatal("runUntilSignal succeeded on a missing config")
+	}
+	var m map[string]any
+	if jerr := json.Unmarshal(out.Bytes(), &m); jerr != nil || m["type"] != "stopped" || m["reason"] != "error" || m["error"] != err.Error() {
+		t.Errorf("status output %q, want one stopped error line naming %q", out.String(), err)
+	}
+}
+
+// checkStatusLines holds serve --json to its contract: only JSON objects,
+// ready first, the BOOTP answer, and stopped last with the given reason.
+func checkStatusLines(t *testing.T, out, network, reason string) {
+	t.Helper()
+	var lines []map[string]any
+	for _, l := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(l), &m); err != nil {
+			t.Fatalf("status line %q is not JSON: %v", l, err)
+		}
+		if m["v"] != 1.0 {
+			t.Errorf("status line without v 1: %q", l)
+		}
+		lines = append(lines, m)
+	}
+	if len(lines) < 3 || lines[0]["type"] != "ready" || lines[0]["network"] != network {
+		t.Fatalf("status lines do not start with a %s ready line:\n%s", network, out)
+	}
+	answered := false
+	for _, m := range lines {
+		answered = answered || (m["type"] == "bootp" && m["result"] == "answered" && m["ip"] == "10.98.0.65")
+	}
+	if !answered {
+		t.Errorf("no answered bootp line:\n%s", out)
+	}
+	if last := lines[len(lines)-1]; last["type"] != "stopped" || last["reason"] != reason {
+		t.Errorf("last status line = %v, want stopped with reason %s", last, reason)
 	}
 }
 

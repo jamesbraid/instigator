@@ -49,7 +49,7 @@ func TestInstallTimingTransfersAndLogs(t *testing.T) {
 				t.Cleanup(func() { rec.Close() })
 			}
 			var logs bytes.Buffer
-			scripts := newInstallScripts(cfg.ServerIP.String(), profile.generated, logging.New(&logs, logging.LevelInfo), rec)
+			scripts := newInstallScripts(cfg.ServerIP.String(), profile.generated, logging.New(&logs, logging.LevelInfo), rec, nil)
 			fsys := cmdFS{t: tree, scripts: scripts, client: "guest", address: "192.0.2.20"}
 			fetch := func(command string) string {
 				t.Helper()

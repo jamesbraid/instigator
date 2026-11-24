@@ -22,6 +22,7 @@ import (
 
 	"github.com/jamesbraid/instigator/internal/capture"
 	"github.com/jamesbraid/instigator/internal/logging"
+	"github.com/jamesbraid/instigator/internal/status"
 )
 
 const packetLen = 300
@@ -73,6 +74,8 @@ type Server struct {
 	// Recorder, when set, receives a bootp_reply record for each request
 	// answered or ignored. A nil Recorder is a no-op.
 	Recorder *capture.Recorder
+	// Status, when set, gets the same requests as serve --json bootp lines.
+	Status *status.Writer
 }
 
 // Serve answers requests on pc (conventionally bound to :67) until pc is
@@ -145,6 +148,7 @@ func (s *Server) Serve(pc net.PacketConn) error {
 			if s.Recorder != nil {
 				s.Recorder.BootpReply("", mac.String(), file, "", "ignored")
 			}
+			s.Status.BOOTP("", mac.String(), "", file, "ignored")
 			continue
 		}
 		s.Logger.Infof("bootp: answering %s (%s): ip=%s file=%q", mac, client.Name, client.IP, file)
@@ -184,6 +188,7 @@ func (s *Server) Serve(pc net.PacketConn) error {
 		if s.Recorder != nil {
 			s.Recorder.BootpReply(client.Name, mac.String(), file, client.IP.String(), result)
 		}
+		s.Status.BOOTP(client.Name, mac.String(), client.IP.String(), file, result)
 	}
 }
 
