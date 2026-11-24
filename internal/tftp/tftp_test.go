@@ -596,3 +596,41 @@ func (l *lockedBuffer) String() string {
 	defer l.mu.Unlock()
 	return l.b.String()
 }
+
+// A PROM that has read what it needs ends with an ERROR; one that refuses
+// the file sends ERROR before acking anything. Only the first is normal.
+func TestClientErrorAfterDataIsClientStopped(t *testing.T) {
+	for _, tc := range []struct {
+		acks int
+		want string
+	}{{1, "client_stopped"}, {0, "aborted"}} {
+		var out lockedBuffer
+		addr := startServer(t, &Server{FS: memFS{"sa": bytes.Repeat([]byte("s"), 2048)}, Status: status.New(&out)})
+		c, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		c.WriteTo(rrq("sa", "octet"), addr)
+		buf := make([]byte, 1500)
+		for i := 0; ; i++ {
+			c.SetReadDeadline(time.Now().Add(2 * time.Second))
+			_, from, err := c.ReadFrom(buf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if i == tc.acks {
+				c.WriteTo([]byte{0, 5, 0, 3, 0x9f, 0xc2, 0}, from) // ERROR code 3, as a PROM sends
+				break
+			}
+			c.WriteTo([]byte{0, 4, buf[2], buf[3]}, from)
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		for !strings.Contains(out.String(), `"phase":"end"`) && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if !strings.Contains(out.String(), `"result":"`+tc.want+`"`) {
+			t.Errorf("after %d acks: %s, want result %s", tc.acks, out.String(), tc.want)
+		}
+	}
+}

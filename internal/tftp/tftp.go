@@ -392,14 +392,15 @@ func hostListenPacket(port int) (net.PacketConn, error) {
 // an ACK for wantBlock arrives from the client (block 0 acknowledges an
 // OACK). acked reports success; aborted reports the send itself failing or
 // the client sending a TFTP ERROR - both end the transfer immediately.
+// clientErr describes the client's ERROR, empty for a failed send.
 // resends is how many retransmits it took (0 if the first send was acked).
 // ackbuf is caller-owned and reused across calls so a transfer allocates it
 // once, not per block.
-func (s *Server) sendAndWaitAck(pc net.PacketConn, dst net.Addr, clientAP netip.AddrPort, ackbuf, pkt []byte, wantBlock uint16, timeout time.Duration, retries int) (acked, aborted bool, resends int) {
+func (s *Server) sendAndWaitAck(pc net.PacketConn, dst net.Addr, clientAP netip.AddrPort, ackbuf, pkt []byte, wantBlock uint16, timeout time.Duration, retries int) (acked, aborted bool, clientErr string, resends int) {
 	for attempt := 0; attempt <= retries; attempt++ {
 		if _, err := pc.WriteTo(pkt, dst); err != nil {
 			s.Logger.Errorf("tftp: %s: send: %v", clientAP, err)
-			return false, true, attempt
+			return false, true, "", attempt
 		}
 		if attempt > 0 && s.Logger.Enabled(logging.LevelDebug) {
 			s.Logger.Debugf("tftp: %s: resend block %d (attempt %d)", clientAP, wantBlock, attempt)
@@ -431,14 +432,13 @@ func (s *Server) sendAndWaitAck(pc net.PacketConn, dst net.Addr, clientAP netip.
 					if s.Logger.Enabled(logging.LevelDebug) {
 						s.Logger.Debugf("tftp: %s: ACK block %d", clientAP, got)
 					}
-					return true, false, attempt
+					return true, false, "", attempt
 				}
 				if s.Logger.Enabled(logging.LevelDebug) {
 					s.Logger.Debugf("tftp: %s: ACK block %d (waiting for %d)", clientAP, got, wantBlock)
 				}
 			case opERROR:
-				s.Logger.Warnf("tftp: %s: client ERROR code %d: %q", clientAP, binary.BigEndian.Uint16(ackbuf[2:4]), ackbuf[4:n])
-				return false, true, attempt
+				return false, true, fmt.Sprintf("ERROR code %d: %q", binary.BigEndian.Uint16(ackbuf[2:4]), ackbuf[4:n]), attempt
 			default:
 				if s.Logger.Enabled(logging.LevelDebug) {
 					s.Logger.Debugf("tftp: %s: unexpected opcode %d during transfer", clientAP, binary.BigEndian.Uint16(ackbuf[0:2]))
@@ -446,7 +446,7 @@ func (s *Server) sendAndWaitAck(pc net.PacketConn, dst net.Addr, clientAP netip.
 			}
 		}
 	}
-	return false, false, retries
+	return false, false, "", retries
 }
 
 // progressEvery spaces a transfer's --json progress lines.
@@ -594,10 +594,13 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 		if s.Logger.Enabled(logging.LevelDebug) {
 			s.Logger.Debugf("tftp: %s: OACK %v", client, opts)
 		}
-		acked, aborted, resends := s.sendAndWaitAck(pc, client, clientAP, ack, oack, 0, retry, retries)
+		acked, aborted, clientErr, resends := s.sendAndWaitAck(pc, client, clientAP, ack, oack, 0, retry, retries)
 		resendTotal += resends
 		if aborted {
 			result = "aborted"
+			if clientErr != "" {
+				s.Logger.Warnf("tftp: %s: %q: client sent %s", client, name, clientErr)
+			}
 			return
 		}
 		if !acked {
@@ -642,7 +645,7 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 		// transmitted before we know whether it was acked.
 		blocksSent++
 		bytesSent += want
-		acked, aborted, resends := s.sendAndWaitAck(pc, client, clientAP, ack, pkt, block, blockTimeout, blockRetries)
+		acked, aborted, clientErr, resends := s.sendAndWaitAck(pc, client, clientAP, ack, pkt, block, blockTimeout, blockRetries)
 		resendTotal += resends
 		if acked {
 			bytesAcked += want
@@ -652,8 +655,16 @@ func (s *Server) serveFile(client *net.UDPAddr, name, mode string, opts map[stri
 			s.Status.TFTP(statusClient, name, "progress", size, bytesSent, "")
 		}
 		switch {
+		case aborted && clientErr != "" && bytesAcked > 0:
+			// SGI PROMs read the part of dist/sa they need and stop this way.
+			result = "client_stopped"
+			s.Logger.Infof("tftp: %s: %q: client stopped after %d bytes (%s)", client, name, bytesAcked, clientErr)
+			return
 		case aborted:
 			result = "aborted"
+			if clientErr != "" {
+				s.Logger.Warnf("tftp: %s: %q: client sent %s", client, name, clientErr)
+			}
 			return
 		case isFinal:
 			// Its own result so the summary doesn't warn on this expected case.

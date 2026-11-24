@@ -60,11 +60,15 @@ file, has only an `end`.
 | `phase` | `start`, `progress` or `end` |
 | `size` | The file's size in bytes |
 | `bytes_sent` | Bytes sent so far |
-| `result` | On `end` only: `ok`, `unacked_final`, `aborted`, `gaveup`, `notfound` or `error` |
+| `result` | On `end` only: `ok`, `unacked_final`, `client_stopped`, `aborted`, `gaveup`, `notfound` or `error` |
 
-`aborted` is normal for `dist/sa`: the PROM reads the part of the archive it
-needs and stops. `unacked_final` means the PROM did not acknowledge the last
-block, which some PROMs never do.
+`client_stopped` means the PROM ended the transfer after taking data. It is
+normal for `dist/sa`: the PROM reads the part of the archive it needs and
+stops. `aborted` means the PROM refused the file before taking any, or
+Instigator could not send. `unacked_final` means the PROM did not acknowledge
+the last block, which some PROMs never do. A `notfound` for
+`dist/unix.IP22` or a similar kernel while loading the IRIX 5.3 miniroot is
+the PROM probing before it falls back to the kernel inside `dist/sa`.
 
 ### `inst`
 

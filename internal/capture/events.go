@@ -101,9 +101,10 @@ func (r *Recorder) BootpReply(alias, mac, file, offeredIP, result string) {
 // TransferRecord is one completed TFTP transfer, assembled by the tftp
 // server and handed here for recording. Result is the outcome: ok,
 // unacked_final (all blocks sent but the client never acked the last one,
-// the normal SGI PROM case), aborted (the client sent ERROR or a send
-// failed), gaveup (a mid-transfer block went unacked within the retry
-// budget), notfound, or error. BytesSent is what went on the wire;
+// the normal SGI PROM case), client_stopped (the client sent ERROR after
+// taking data, as a PROM reading part of dist/sa does), aborted (the client
+// sent ERROR before taking any, or a send failed), gaveup (a mid-transfer
+// block went unacked within the retry budget), notfound, or error. BytesSent is what went on the wire;
 // BytesAcked is what the client confirmed - they differ exactly when the
 // final block is unacked.
 type TransferRecord struct {
