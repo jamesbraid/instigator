@@ -62,6 +62,28 @@ func TestServeNetworkTCPExitsOnDisconnect(t *testing.T) {
 	servePrivateNetworkAnswersBootp(t, "tcp", loopbackEndpoint(t), true)
 }
 
+// A stream that ends inside a frame is a broken link, not the machine leaving.
+func TestServeNetworkSocketFailsOnTruncatedFrame(t *testing.T) {
+	endpoint := shortSocketPath(t)
+	configPath := privateNetworkConfig(t, t.TempDir())
+	errCh := make(chan error, 1)
+	var output lockedBuffer
+	go func() {
+		errCh <- runUntilSignal(configPath, false, "", endpoint, "", nil, &output, make(chan os.Signal, 1))
+	}()
+	conn := dialWhenReady(t, "unix", endpoint, time.Now().Add(5*time.Second))
+	conn.Write([]byte{0, 0, 0, 100, 'x'}) // header promises 100 bytes, one follows
+	conn.Close()
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "unexpected EOF") {
+			t.Fatalf("runUntilSignal = %v, want an unexpected EOF failure; log: %s", err, output.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not stop")
+	}
+}
+
 func loopbackEndpoint(t *testing.T) string {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -73,9 +95,10 @@ func loopbackEndpoint(t *testing.T) string {
 	return address
 }
 
-func servePrivateNetworkAnswersBootp(t *testing.T, network, endpoint string, disconnect bool) {
+// privateNetworkConfig writes a one-set config for the private network,
+// with BOOTP only, and returns its path.
+func privateNetworkConfig(t *testing.T, dir string) string {
 	t.Helper()
-	dir := t.TempDir()
 	imagePath := filepath.Join(dir, "dist.image")
 	image := efstest.New()
 	sa := image.AddFile(0o444, []byte("sa"))
@@ -102,6 +125,13 @@ services:
 	if err := os.WriteFile(configPath, []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return configPath
+}
+
+func servePrivateNetworkAnswersBootp(t *testing.T, network, endpoint string, disconnect bool) {
+	t.Helper()
+	dir := t.TempDir()
+	configPath := privateNetworkConfig(t, dir)
 	stop := make(chan os.Signal, 1)
 	errCh := make(chan error, 1)
 	captureDir := ""
@@ -180,10 +210,8 @@ services:
 	}
 	select {
 	case err := <-errCh:
-		if disconnect && (err == nil || !strings.Contains(err.Error(), "private network disconnected")) {
-			t.Fatalf("runUntilSignal on disconnect = %v", err)
-		}
-		if !disconnect && err != nil {
+		// The machine leaving is the normal end of a private-network run.
+		if err != nil {
 			t.Fatalf("runUntilSignal: %v", err)
 		}
 	case <-time.After(5 * time.Second):

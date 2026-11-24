@@ -98,12 +98,13 @@ fresh install run when you need transfer and timing records.
 
 ## Private network disconnects
 
-With `--network-socket` or `--network-tcp`, an emulator network disconnect
-stops Instigator with a timestamped error and exit status 1. For example,
-`private network disconnected: read frame: EOF` reports the connection
-closing. It does not establish installation completion. Capture ends with
-`server_stop` / `disconnected`. Attempts without return markers stay
-incomplete.
+With `--network-socket` or `--network-tcp`, Instigator stops when the emulator
+closes the network, which normally happens when the machine powers off. A clean
+close exits with status 0 and logs `the machine disconnected`. A close in the
+middle of a frame, or another link error, exits with status 1 and an error
+such as `private network disconnected: read frame: unexpected EOF`. Neither
+establishes installation completion. Capture ends with `server_stop` /
+`disconnected`. Attempts without return markers stay incomplete.
 
 ## Running it as a service
 

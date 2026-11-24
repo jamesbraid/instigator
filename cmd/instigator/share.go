@@ -253,7 +253,7 @@ func servePrivateShare(o shareOptions, output io.Writer, stop <-chan os.Signal, 
 	case err := <-p.Err():
 		return err
 	case <-n.Done():
-		return fmt.Errorf("private network disconnected: %w", n.Err())
+		return disconnected(n, logger)
 	}
 }
 

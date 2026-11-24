@@ -143,7 +143,7 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 		case <-stop:
 			logger.Infof("shutting down")
 		case <-privateNet.Done():
-			return errors.Join(fmt.Errorf("private network disconnected: %w", privateNet.Err()), s.CloseWithReason("disconnected"))
+			return errors.Join(disconnected(privateNet, logger), s.CloseWithReason("disconnected"))
 		case err := <-shareErr:
 			return errors.Join(err, s.Close())
 		}
@@ -154,4 +154,14 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 	// Close drains and finalizes the capture, returning an error if the
 	// capture came out incomplete, so a run that cannot be trusted says so.
 	return s.Close()
+}
+
+// disconnected is the command's result when the private network ends: a
+// clean end of stream is the machine leaving, anything else is a fault.
+func disconnected(n *qemunet.Network, logger *logging.Logger) error {
+	if err := n.Err(); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("private network disconnected: %w", err)
+	}
+	logger.Infof("the machine disconnected")
+	return nil
 }

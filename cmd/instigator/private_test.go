@@ -308,8 +308,8 @@ func TestSharePrivateNetworkServesPortmapMountAndNFS(t *testing.T) {
 	g.net.Close()
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "private network disconnected") {
-			t.Fatalf("share returned %v; log: %s", err, output.String())
+		if err != nil {
+			t.Fatalf("share returned %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("share did not stop when the machine disconnected")
@@ -577,7 +577,7 @@ func TestSharePrivateNetworkAnswersDHCPForItsClient(t *testing.T) {
 	g.net.Close()
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "private network disconnected") {
+		if err != nil {
 			t.Fatalf("share returned %v", err)
 		}
 	case <-time.After(5 * time.Second):
