@@ -1,5 +1,5 @@
 # MIPSpro 7.4.4 compilers, installed after IRIX. List this file under
-# `addons:` in a config; see docs/real-hardware.md.
+# `addons:` in a config; see docs/install.md.
 #
 # The archive holds the whole compiler distribution and its 7.4.2m and
 # 7.4.4m overlays. The standard profile installs older C, C++ and Fortran

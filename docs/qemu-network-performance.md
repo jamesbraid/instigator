@@ -1,16 +1,7 @@
 # QEMU private-network performance
 
-Small installer reads need not become small host socket writes. The shell
-groups whole `dd` input blocks into approximately 32 KiB transfers while
-preserving count, skip, record accounting, and foreground cancellation.
-The QEMU stream writer combines length prefixes and frames in reusable storage
-and drains at most 32 already-queued frames per write. It flushes when the queue
-empties or reaches that limit, without waiting for more packets.
-
-The frame reader reuses scratch storage. gVisor copies each received frame into
-its own packet storage before the next read, so queued packets retain distinct
-contents. Frame size validation precedes allocation. A complete header with a
-missing body is a truncated frame, rather than clean EOF.
+The optimized code groups the install shell's small `dd` writes into transfers
+of about 32 KiB and batches the frames it writes to the QEMU stream.
 
 ## Observed QEMU/IRIX comparison
 

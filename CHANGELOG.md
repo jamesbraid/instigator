@@ -7,14 +7,14 @@ ones. Entries for 0.5.1 and earlier were rewritten from the original GitHub rele
 ## Unreleased
 
 Features:
-- configs: IRIX 5.3 and 6.2 configs for the Indigo, Indy and Indigo2, with their discs on origami-dist. Both installed over the network on an emulated Indy, and 5.3 on an emulated R4000 Indigo.
+- configs: IRIX 5.3 and 6.2 configs, 5.3 for the Indigo, Indy and Indigo2 and 6.2 for the R4000 Indigo, Indy and Indigo2, using discs from origami-dist.irix.fans. Both installed over the network on an emulated Indy, and 5.3 on an emulated R4000 Indigo.
 - serve: `--json` writes status as JSON Lines on stdout for programs that run Instigator: `ready`, `bootp`, `tftp` with start, progress and end, `inst` sessions and returns, and a final `stopped` with its reason. The human log stays on stderr. The schema is in docs/json-output.md.
 - serve: startup warns when `install_scripts` are configured for media from before IRIX 6.5, whose `inst` has no `admin source` to load them. Media count as pre-6.5 when the first set's distribution ships no `.related_dists`.
 - serve: startup logs the R3000 Indigo's `stand/fx.IP12` alongside `fx.ARCS` and `fx.64`.
 - qemunet: a write to the QEMU stream that stays blocked for five seconds logs a warning, and logs again with how long it blocked (or the error) when it returns. Before, a stalled `--network-tcp` install gave no sign of why.
 
 Changed:
-- serve: when the emulator closes the private network cleanly, `serve` and `share` exit with status 0 instead of 1 and `private network disconnected: read frame: EOF`. A close in the middle of a frame or another link error still exits 1. A systemd unit for these modes needs `Restart=always` to restart after a disconnect.
+- serve: when the emulator closes the private network cleanly, `serve` and `share` exit 0. Before, they exited 1 with `private network disconnected: read frame: EOF`. A close in the middle of a frame or another link error still exits 1. A systemd unit for these modes needs `Restart=always` to restart after a disconnect.
 - tftp: when a PROM ends a transfer after taking data, as it does reading the miniroot from `dist/sa`, the log says so at INFO and the capture records `client_stopped`. Before, each normal miniroot load logged a WARN and counted as an aborted transfer. An ERROR before any data still counts as aborted.
 
 ## 0.5.1 - 2026-10-30

@@ -63,7 +63,7 @@ mkdir -p "$HOME/sgi-share"
 
 Replace the MAC with your guest's MAC. Configure the emulator to connect its
 NIC to the stream at `127.0.0.1:45031`. Instigator listens. QEMU connects. The
-[private network reference](nfs-shares.md#the-link) gives the QEMU arguments
+[private network reference](network-reference.md#the-link) gives the QEMU arguments
 and framing details. `--network-socket PATH` uses a Unix socket instead.
 Choose one transport.
 
@@ -82,7 +82,8 @@ mount 10.98.0.2:/files /mnt/files
 
 Private-network NFS uses UDP and TCP ports 111, 635, and 2049 inside the
 segment. `--listen`, `--port`, `--portmap-port`, `--udp`, and `--tcp` do not
-apply in this mode. The server exits when the emulator disconnects.
+apply in this mode. The server exits when the emulator disconnects. See
+[exit status](operations.md#disconnects-and-exit-status).
 
 ## Moving between networks
 
@@ -97,12 +98,9 @@ the private `share` command. It requires `--client`. With `serve`, set
 identifier if it differs from that default.
 
 The private server still uses `10.98.0.2` unless you change its address.
-The option changes only the DHCP identifier. When an existing lease already
-holds the offered address, IRIX accepts the ACK and records the new
-identifier for the next boot. Renewal to an identifier outside the private
-segment cannot reach it, but broadcast rebinding can. Renewal over the
-one-year lease has not been observed from IRIX. See the
-[protocol reference](nfs-shares.md#addressing-the-machine-bootp-dhcp-and-the-guest).
+The option changes only the DHCP identifier. The [network
+reference](network-reference.md#addressing-the-machine-bootp-dhcp-and-the-guest)
+gives the lease behaviour and the untested renewal case.
 
 ## Shares alongside an install
 
@@ -158,5 +156,5 @@ birth times, Instigator keeps a path table in the user cache directory.
 `--handle-table FILE` selects another location. Keep that table if clients
 will remount after a restart. Path tables detect replacements made through
 NFS, but cannot detect a host process replacing a file at the same path. The
-[NFS reference](nfs-shares.md#files-owners-and-handles) explains the handle
+[NFS reference](network-reference.md#files-owners-and-handles) explains the handle
 formats and limitations.

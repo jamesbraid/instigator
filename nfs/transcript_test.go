@@ -3,7 +3,7 @@ package nfs_test
 // The transcript harness. Each file in testdata/transcripts pairs RPC
 // call bytes with the reply the server must send, against a fixture tree
 // described in testdata/fixture.txt. The files are the contract another
-// implementation of this server replays; docs/nfs-shares.md describes the
+// implementation of this server replays; docs/network-reference.md describes the
 // format. Scenarios in transcripts_scenarios_test.go generate them:
 //
 //	go test ./nfs -run TestTranscripts -update

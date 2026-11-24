@@ -3,11 +3,11 @@
 #   instigator check CONFIG   (probes every URL)
 #   sudo instigator serve CONFIG
 # To install from local copies of the discs, replace the URL prefix with your
-# directory; see docs/real-hardware.md. Addresses are RFC 5737 documentation
+# directory; see docs/install.md. Addresses are RFC 5737 documentation
 # ranges: replace them with your install network.
 #
 # 5.3's inst has no "admin source", so there are no install scripts or
-# add-ons: at Inst> type the from, install and go lines in docs/real-hardware.md.
+# add-ons: at Inst> type the from, install and go lines in docs/install.md.
 
 server_ip: 192.0.2.10
 netmask: 192.0.2.0/24

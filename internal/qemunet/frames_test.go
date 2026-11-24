@@ -2,7 +2,7 @@ package qemunet
 
 // Frame transcripts. Each file in testdata/transcripts pairs an Ethernet
 // frame sent by the machine with the frame the server must answer, or with
-// silence, on a segment configured as docs/nfs-shares.md "Private network"
+// silence, on a segment configured as docs/network-reference.md "Private network"
 // describes. The files are the contract another implementation of the
 // network replays. Scenarios below generate them:
 //

@@ -3,7 +3,7 @@
 #   instigator check CONFIG   (probes every URL)
 #   sudo instigator serve CONFIG
 # To install from local copies of the discs, replace the URL prefix with your
-# directory; see docs/real-hardware.md. Addresses are RFC 5737 documentation
+# directory; see docs/install.md. Addresses are RFC 5737 documentation
 # ranges: replace them with your install network.
 
 server_ip: 192.0.2.10

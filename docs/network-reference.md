@@ -1,24 +1,20 @@
-# NFS protocol and Origami integration
+# Network reference
 
 For commands to share a host folder with IRIX, start with the
-[sharing guide](sharing.md). This reference covers protocol behavior, file
-handles, private networking, and the transcripts shared by the Go server
-and Origami's Rust port.
+[sharing guide](sharing.md). This reference gives the NFS server's behaviour
+and the private network's wire contract: what a second implementation, such
+as the Rust port in the Origami emulator, must match byte for byte.
 
 Instigator's `nfs` package implements NFSv2 and NFSv3 over UDP and TCP,
 with portmap and MOUNT. `internal/sharefs` adapts host directories for
-writable shares; `internal/nfsexport` adapts `io/fs` trees for read-only
+writable shares. `internal/nfsexport` adapts `io/fs` trees for read-only
 exports. The `share` command serves host folders on its own, and
 `serve --share` adds them to the private install network. Install media
 continues to use BOOTP, TFTP, and rsh.
 
-The Rust port is embedded in Origami. Sections describing `origami share`
-and its network switch concern that integration, rather than Instigator's
-standalone command.
-
 ## Protocol coverage
 
-Both servers implement the same set:
+Instigator implements this set:
 
 | Program | Versions | Procedures |
 |---|---|---|
@@ -31,7 +27,7 @@ Transports: UDP and TCP with record marking, for every program.
 
 - Writes are synchronous to the host file. WRITE replies `FILE_SYNC`, and
   COMMIT is a no-op that returns the server's boot verifier.
-- No locking (NLM) and no NFSv4. IRIX ignores `nolock`; mounting with
+- No locking (NLM) and no NFSv4. IRIX ignores `nolock`. Mounting with
   `private` keeps locking local, and plain copies in and out work
   without it.
 
@@ -95,61 +91,16 @@ A UDP reply to a call that changes the share, other than WRITE, is kept
 and resent for an identical retransmission, so a REMOVE retried after a
 lost reply doesn't come back NOENT.
 
-## Networking
+## IRIX client behaviour
 
-Each running machine gets an in-process network stack, a host of its own
-on the machine's network that serves portmap, MOUNT and NFS, and a small
-Ethernet switch that puts it beside whatever network the machine uses.
+Observed with IRIX 6.5.30:
 
-IRIX's `mount` always asks portmap, over UDP port 111 of the server
-address, before it contacts MOUNT or NFS, whatever `port=` says. QEMU's
-`guestfwd` is TCP-only, so it can't carry that call. The server has to
-be a host on the guest's network, answering on UDP 111 itself.
-
-The wiring uses a hub and two QEMU stream netdevs. The machine's own
-network, whatever its mode, joins hub 1; the guest NIC is a stream
-client of the switch instead:
-
-```
--netdev user,id=net0,net=192.0.2.0/24,host=192.0.2.2,dhcpstart=192.0.2.15,...
--netdev hubport,id=hu,hubid=1,netdev=net0
--netdev stream,id=sB,addr.type=inet,addr.host=127.0.0.1,addr.port=PB,server=off,reconnect-ms=1000
--netdev hubport,id=hsb,hubid=1,netdev=sB
--netdev stream,id=sA,addr.type=inet,addr.host=127.0.0.1,addr.port=PA,server=off,reconnect-ms=1000
--net nic,model=<NIC>,netdev=sA
-```
-
-Stream A carries the guest's frames and stream B everything on the
-machine's network. QEMU frames each Ethernet frame with a 4-byte
-big-endian length. The switch knows nothing of what is upstream:
-
-- From the guest: a frame for the stack's MAC or IP goes to the stack
-  only. A broadcast goes to the stack and to the network. Everything
-  else goes to the network.
-- From the network and from the stack: to the guest only.
-
-Without the switch, a hub alone floods every frame to the upstream
-network as well as the stack, which answers for frames meant for the
-stack and races its replies.
-
-The stack takes a spare address on the network, with a fixed MAC in the
-08:00:69 prefix. It answers ARP and ICMP echo and serves portmap, MOUNT
-and NFS on UDP and TCP ports 111, 635 and 2049. The streams reconnect
-every second, so a restarted `origami run` picks the guest back up.
-
-| Mode | `net0` behind the hub | Stack address |
-|---|---|---|
-| user | slirp | 192.0.2.4 (slirp is 192.0.2.2) |
-| private | the install network's stream client | 10.98.0.4 (Instigator is 10.98.0.2) |
-| tap, vmnet | the tap device or socket_vmnet | set by the user, with its prefix length |
-
-Facts the spikes established against IRIX 6.5.30:
-
+- IRIX's `mount` always asks portmap, over UDP port 111 of the server
+  address, before it contacts MOUNT or NFS, whatever `port=` says. The
+  server must answer on UDP 111 itself, as a host on the guest's network.
 - The mount is `mount ADDRESS:/NAME /mnt/x`. IRIX negotiates NFSv3 over
-  TCP; `-o vers=2,proto=udp` also works, as do v2/v3 over either
+  TCP. `-o vers=2,proto=udp` also works, as do v2/v3 over either
   transport.
-- `nolock` is ignored on IRIX. `private` is the option that makes
-  locking local.
 - READDIR doesn't list `.` or `..`, and IRIX accepts that.
 - A read-only export fails every write immediately with `ROFS`.
 
@@ -158,12 +109,11 @@ Facts the spikes established against IRIX 6.5.30:
 The private network is the Ethernet segment Instigator builds for one QEMU
 machine, with no host privileges: a user-space IPv4 stack (gVisor's
 netstack, in `internal/qemunet`) attached to the machine's NIC over a byte
-stream. `serve` runs the install services on it, `serve --share` and
-`share --network-socket` or `--network-tcp` add portmap, MOUNT and NFS,
-and the Rust port in Origami builds the same segment. This section is
-what the two must agree on. The frame transcripts under
-`internal/qemunet/testdata/transcripts` pin the parts a test can pin; the
-rest is stated here.
+stream. `serve` runs the install services on it, and `serve --share` and
+`share --network-socket` or `--network-tcp` add portmap, MOUNT and NFS.
+Another implementation of the segment must behave as this section states.
+The frame transcripts under `internal/qemunet/testdata/transcripts` pin the
+parts a test can pin.
 
 ### The link
 
@@ -180,8 +130,9 @@ rest is stated here.
   error and closes the stream. The two directions are independent. A
   stream that ends between frames is a disconnect; one that ends inside a
   frame is a truncated read. Either ends the network, and `serve` and
-  `share` exit with `private network disconnected`. They do not wait for a
-  second connection.
+  `share` exit without waiting for a second connection: status 0 after a
+  disconnect, status 1 with `private network disconnected` after a
+  truncated read or other link error.
 - **Padding.** Frames the host sends are padded with zeros to 60 bytes,
   the Ethernet minimum without FCS. Longer frames are sent as built.
 - **MTU.** 1500. IPv4 only: IPv6, and any ethertype but ARP (0x0806) and
@@ -256,12 +207,13 @@ nothing listens on them: UDP to 111 draws the port unreachable above.
 - **Host name.** A client entry's optional `hostname` (letters, digits,
   hyphens and dots, 40 bytes at most) is sent as option 12. Without it the
   option is absent and the reply is byte for byte what it was before the
-  option existed. Origami's `install-serve` writes the client as
-  `{"name": "sgi", "mac": ..., "ip": "10.98.0.65"}` and does not set it;
-  it must pass the machine directory's name as `hostname` for BOOTP to
-  carry the name. Whether the PROM and the miniroot take option 12 from a
-  BOOTP reply has not been run against IRIX; the installed system takes it
-  from DHCP, below.
+  option existed. Whether the PROM and the miniroot take option 12 from a
+  BOOTP reply has not been run against IRIX. The installed system takes it
+  from DHCP: the REQUEST that follows an OFFER carrying option 12 asks for
+  that name, and the system sets its host name and `/etc/sys_id` to it. A
+  machine whose client entry has `hostname: origin200` boots as
+  `origin200`. Without the option the machine keeps the name it has
+  (`IRIS` on a fresh install).
 - **DHCP.** On the private network the same service answers DHCP
   (RFC 2131) for the same clients, by MAC, and for nobody else. Off the
   private network, on a host's own interface, a message carrying option 53
@@ -276,7 +228,7 @@ nothing listens on them: UDP to 111 draws the port unreachable above.
   - The server identifier is the host's address unless the configuration
     sets `dhcp_server_id` (`share --dhcp-server-id`). It goes in option 54
     of every reply and is the one a selecting REQUEST must name. Origami
-    sets it to 192.0.2.2, QEMU's user network's DHCP server; see "Moving
+    sets it to 192.0.2.2, its QEMU user network's DHCP server. See "Moving
     between networks" below.
   - Replies are 300 bytes at least. `yiaddr` is the machine's address,
     `siaddr` the host's and option 54 the server identifier, `chaddr`, `xid` and `flags` are the
@@ -307,8 +259,8 @@ nothing listens on them: UDP to 111 draws the port unreachable above.
   hostname rules are the client entry's. `--dhcp-server-id ADDR` sets the
   server identifier, as `dhcp_server_id` does.
 - **How the installed guest gets an address.** IRIX's DHCP client
-  (`proclaim`) starts at boot when `autoconfig_ipaddress` is on, which
-  Origami's install post-commands set. It broadcasts a 548-byte DISCOVER
+  (`proclaim`) starts at boot when `autoconfig_ipaddress` is on, which a
+  `post_install` command can set. It broadcasts a 548-byte DISCOVER
   from `0.0.0.0:68` with the broadcast flag clear, naming the host name
   `IRIS` (option 12) and asking for lease 31536000 (option 51), receives
   the OFFER and sends a REQUEST for it. `ef0` comes up with the address,
@@ -322,10 +274,9 @@ nothing listens on them: UDP to 111 draws the port unreachable above.
   host answers with a NAK as RFC 2131 4.3.2 requires. proclaim then
   discovers again, but rejects every OFFER whose server identifier is not
   the one in its lease file ("Server mismatch to the DHCPREQUEST
-  broadcast" in `/var/adm/SYSLOG`), 193 times in under a second, until it
-  runs out of file descriptors and exits. `ef0` keeps the old address, and
-  nothing on 10.98.0.0/24 is reachable. QEMU's user network gets the same
-  loop in the other direction. With `dhcp_server_id` set to the user
+  broadcast" in `/var/adm/SYSLOG`) until it runs out of file descriptors
+  and exits. `ef0` keeps the old address. QEMU's user network gets the
+  same loop in the other direction. With `dhcp_server_id` set to the user
   network's 192.0.2.2 both networks name one server, the OFFER matches
   the lease, and proclaim takes it and rewrites `/etc/hosts`. An ACK from
   a different identifier, for the address the machine already has, is
@@ -334,11 +285,6 @@ nothing listens on them: UDP to 111 draws the port unreachable above.
   renews by unicast to the identifier at half the lease, which from this
   segment goes nowhere, then rebinds by broadcast at 87.5%, which the host
   answers by `ciaddr`. With a year's lease neither has been seen from IRIX.
-- **Host name.** IRIX uses it. The REQUEST that follows an OFFER carrying
-  option 12 asks for that name, and the system sets its host name and
-  `/etc/sys_id` to it: a machine whose client entry has `hostname:
-  origin200` boots as `origin200`. Without the option the machine keeps
-  the name it has (`IRIS` on a fresh install).
 
 ### Transcripts
 
@@ -403,55 +349,20 @@ Origin 200 machine, private mode, Origami 0.4.1, `serve --share` and
   recycles inode numbers, so a name that is removed and made again could get
   its old handle, and the guest reported `Stale NFS file handle`. Shares on
   such a filesystem now use path-table handles (see "No birth time"). With
-  shares on an NFS mount (`/storage/nvme` here), `touch t; rm t; touch t;
+  shares on an NFS mount, `touch t; rm t; touch t;
   cat t` and the same with a two-second pause, three times on each mount,
   pass on both v2/UDP and v3/TCP, and so do the file operations above.
 
-## CLI
+## Transcripts as the contract
 
-```sh
-origami share my-octane src ~/code          # saved in machine.toml
-origami share my-octane src --remove
-```
-
-IRIX side, printed by `origami share` and given once in the guide:
-
-```sh
-mkdir -p /mnt/src
-mount 192.0.2.4:/src /mnt/src
-```
-
-The address is the stack's on the machine's network; `origami share`
-prints the line for the machine's current mode.
-
-`origami show` lists shares. Adding one to a running machine takes
-effect at the next `run`.
-
-## Keeping Go and Rust identical
-
-- **Shared transcripts.** Every procedure, error case and transport is a
-  file of RPC request bytes paired with the expected reply bytes, run
-  against a fixed fixture tree. The fixture and transcripts live in
-  Instigator. Origami's crate test-imports them through the existing
-  submodule.
+- **RPC transcripts.** Every procedure, error case and transport is a file
+  of RPC request bytes paired with the expected reply bytes, run against a
+  fixed fixture tree. The fixture and transcripts live in `nfs/testdata`.
+  Another implementation replays every transcript over UDP and TCP and must
+  produce identical bytes.
 - **Frame transcripts.** The private network's frames have their own
   transcripts, under `internal/qemunet/testdata/transcripts`, read the
-  same way through the submodule. See "Private network".
-- **A change to either server** lands with a transcript, and CI in both
-  repos replays every transcript.
-- **The IRIX check** runs against each server before a release that
-  touches it: mount, list, read, write, rename, remove, mkdir, a 3 GB file,
-  unmount and remount. It covers NFSv3/TCP, plus NFSv2/UDP on a private
-  network.
-
-The Rust port is the `origami-nfs` crate, at `crates/origami-nfs` in the
-sgi-emulator repository (the Origami product CLI) and a member of its
-Cargo workspace. Its test `tests/transcripts.rs` reads `nfs/testdata` from
-the `instigator` submodule and replays every transcript over UDP and TCP,
-requiring identical bytes. The CLI tests workflow runs it with
-`cargo test --workspace`, so moving the submodule pin to a newer Instigator
-replays that Instigator's transcripts. A Windows host skips the share
-transcripts, which need Unix modes and symlinks.
+  same way. See "Private network".
 
 ## Transcript format
 
@@ -496,8 +407,3 @@ The Go scenarios in `nfs/transcripts_scenarios_test.go` generate the
 files. `go test ./nfs -run TestTranscripts -update` rewrites them from
 the current server, and a plain `go test` fails when a scenario no longer
 produces its file byte for byte, then replays each file's raw calls.
-
-## Network performance to check
-
-Compare an internet download through Origami's userspace switch with plain
-QEMU user networking before claiming the switch has no throughput cost.

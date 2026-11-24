@@ -32,7 +32,7 @@ The config's `server_ip`, `netmask`, and client addresses must describe the
 private segment. Configured clients get BOOTP and DHCP replies there.
 Host-network mode answers BOOTP only. The private segment has no gateway or
 DNS. For attachment details, see the [network
-reference](nfs-shares.md#private-network).
+reference](network-reference.md#private-network).
 
 `serve --share NAME=DIR` also serves writable NFS shares on that segment. See
 the [sharing guide](sharing.md#shares-alongside-an-install).
@@ -40,9 +40,21 @@ the [sharing guide](sharing.md#shares-alongside-an-install).
 A program that runs Instigator can add `--json` for machine-readable status on
 stdout. See [JSON output](json-output.md).
 
+### Disconnects and exit status
+
+With `--network-socket` or `--network-tcp`, Instigator stops when the emulator
+closes the network, which normally happens when the machine powers off. A clean
+close exits with status 0 and logs `the machine disconnected`. A close in the
+middle of a frame, or another link error, exits with status 1 and an error
+such as `private network disconnected: read frame: unexpected EOF`. Neither
+means the install finished. Capture ends with `server_stop` /
+`disconnected`. Attempts without return markers stay incomplete.
+
 ## Install timing
 
-Every generated script uses native `admin source` handoffs to time `go`. Each
+Every generated script uses native `admin source` handoffs to time `go`.
+IRIX 5.3 and 6.2 have no `admin source`, so their installs produce no timing
+records. Each
 execution gets a separate token to identify its start and return. A script
 with a second pass records two attempts: `NAME.cmds` for the first `go` and
 `NAME.cmds then` for the second.
@@ -81,33 +93,23 @@ the command after `go`. Verify success from guest output and first boot.
 Errors that abort the command file leave the attempt incomplete. Handwritten
 scripts and commands entered at `Inst>` have no markers.
 
-Chaining and the newline-only marker were tested with installed IRIX 6.5
-`inst` 4.1. A full successful miniroot install with these markers remains
-untested.
+Chaining between command files and the newline-only marker were tested with
+`inst` 4.1 on an installed IRIX 6.5 system. A complete, successful install
+from the miniroot with these markers remains untested.
 
 ## Troubleshooting
 
 | Symptom | Check |
 | --- | --- |
-| `check` passes but `serve` rejects media | Remote checks probe URLs by default. Run `check --full` to read the media and check collisions and products. |
+| `check` passes but `serve` rejects media | Run `check --full`, which reads remote media as `serve` does. |
 | PROM waits for a BOOTP reply | Match the configured MAC to `printenv eaddr`, check UDP 67, and check which interface carries broadcast replies. |
 | TFTP starts but stalls | Allow the configured transfer-port range as well as UDP 69. SGI PROMs need low transfer ports. |
 | Installer waits at `Install software from` | Enter the number beside `done` to resume the command file. |
-| Add-ons were not installed | Source `/irix.cmds` with shipped configs. The baseline `/install.cmds` has no add-ons. |
+| Add-ons were not installed | Source `/irix.cmds` with the shipped IRIX 6.5 configs. The baseline `/install.cmds` has no add-ons. |
 | NFS mount cannot reach the server | Check the listen address and portmap. See the sharing guide for host and private-network ports. |
 
 `serve --verbose` decodes packets. `share --verbose` logs RPC calls. Capture a
 fresh install run when you need transfer and timing records.
-
-## Private network disconnects
-
-With `--network-socket` or `--network-tcp`, Instigator stops when the emulator
-closes the network, which normally happens when the machine powers off. A clean
-close exits with status 0 and logs `the machine disconnected`. A close in the
-middle of a frame, or another link error, exits with status 1 and an error
-such as `private network disconnected: read frame: unexpected EOF`. Neither
-establishes installation completion. Capture ends with `server_stop` /
-`disconnected`. Attempts without return markers stay incomplete.
 
 ## Running it as a service
 

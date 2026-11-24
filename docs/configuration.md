@@ -1,13 +1,12 @@
 # Configuration
 
 For ready-made remote media layouts, use the [shipped
-configs](real-hardware.md). For your own layout, start with
+configs](install.md#choose-a-config). For your own layout, start with
 [instigator.example.yaml](../instigator.example.yaml). Copy it to
 `instigator.yaml` and edit the addresses and media paths before running it.
 The example contains placeholder addresses and a placeholder Freeware URL.
 
-For your first install, follow the [installation guide](install.md). This page
-explains how to change the media layout and generated installer scripts.
+For your first install, follow the [installation guide](install.md).
 
 ## Client and network addresses
 
@@ -106,6 +105,10 @@ transfer-port range required by SGI PROMs. Keep that range when editing it.
 
 ## Install scripts
 
+Install scripts need IRIX 6.5. Earlier `inst` has no `admin source` to load
+them, and `serve` warns at startup when a config for IRIX 5.3 or 6.2 defines
+`install_scripts`.
+
 By default `instigator` serves `/install.cmds`, which selects the standard
 product set and starts installation. `install_scripts` add named variants that
 select more on top of that baseline. For example, a `debug` script can also
@@ -138,7 +141,8 @@ script may take that name.
 
 ## Add-on files
 
-The shipped configs use `addons:` to install extra software after IRIX:
+The shipped IRIX 6.5 configs use `addons:` to install extra software after
+IRIX:
 
 ```yaml
 addons:
@@ -153,7 +157,8 @@ Each add-on file contains `name`, `layers`, and `install`. Its layers follow
 the same rules as an install set. Instigator creates an `addon-<name>` set and
 adds its products to the second pass of every named install script. The
 configuration must define at least one named script. The built-in
-`/install.cmds` stays unchanged, so use `/irix.cmds` with the shipped configs.
+`/install.cmds` stays unchanged, so use `/irix.cmds` with the shipped 6.5
+configs.
 
 ## Add-on sets
 
@@ -184,7 +189,7 @@ No first pass opens an add-on set, including `/install.cmds`. After the first
 already installed, selects the named products and runs `go` again. `then.sets`
 must name enabled add-on sets, and `instigator check` requires each
 `then.install` name to have a `.sw` or `.man` file in them. For remote sets,
-use `check --full` to check their contents. Ordinary `check` only probes URLs.
+only `check --full` reads their contents.
 
 ## Post-install commands
 
@@ -207,5 +212,5 @@ failed)` and `inst` skips the remaining commands. After the last one succeeds,
 instigator: post-install commands finished
 ```
 
- For console prompts, post-install failures, and service setup, see the
+For console prompts, post-install failures, and service setup, see the
 [installation guide](install.md) and [operations guide](operations.md).

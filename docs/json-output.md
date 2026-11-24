@@ -43,9 +43,9 @@ One BOOTP or DHCP request.
 
 | Field | Meaning |
 | --- | --- |
-| `client` | The configured client name; absent for an unknown machine |
+| `client` | The configured client name. Absent for an unknown machine. |
 | `mac` | The machine's MAC address |
-| `ip` | The address offered; absent when ignored |
+| `ip` | The address offered. Absent when ignored. |
 | `file` | The boot file requested, or `dhcp` and the message type |
 | `result` | `answered`, `ignored` (not a configured client) or `error` |
 

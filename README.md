@@ -24,12 +24,14 @@ ports. Install services and shares can run together or separately.
 
 | I want to… | Guide |
 | --- | --- |
-| Install IRIX using a ready-made media config | [Real hardware and shipped configs](docs/real-hardware.md) |
-| Understand the installer prompts and finish an install | [Installation walkthrough](docs/install.md) |
+| Choose a shipped config and install IRIX | [Installing IRIX](docs/install.md) |
+| Install IRIX 5.3 or 6.2 | [IRIX 5.3 and 6.2](docs/install.md#irix-53-and-62) |
 | Use my own media or change package selections | [Configuration](docs/configuration.md) |
 | Share a host folder with IRIX | [File sharing](docs/sharing.md) |
 | Extract files or manual pages without installing IRIX | [Extraction](docs/extract.md) |
 | Record an install, diagnose a connection, or run a service | [Operations](docs/operations.md) |
+| Run Instigator from another program | [JSON output](docs/json-output.md) |
+| Check NFS or private-network wire behaviour | [Network reference](docs/network-reference.md) |
 
 ## Get Instigator
 
@@ -54,8 +56,8 @@ instead of using `sudo`.
 ## First install
 
 The configs in [`configs/`](configs/) have media URLs filled in for IRIX
-6.5.30, 6.5.22, 6.2 and 5.3. Choose one for your machine in the [hardware
-guide](docs/real-hardware.md). For a 6.5.30 standard install:
+6.5.30, 6.5.22, 6.2 and 5.3. Choose one for your machine in the [install
+guide](docs/install.md#choose-a-config). For a 6.5.30 standard install:
 
 ```sh
 cp configs/irix-6.5.30-standard.yaml instigator.yaml
@@ -64,29 +66,21 @@ cp -R configs/addons .
 
 Edit `server_ip`, `netmask`, and the client MAC and IP. The supplied addresses
 are placeholders. At the SGI PROM, `printenv eaddr` shows the MAC address. The
-config uses remote media. Replace its `source` URLs with local paths if you
-have your own copies. The second command copies the add-on files beside your
-config so its relative paths work if you enable them.
-
-Check it, then start the server:
+second command copies the add-on files beside your config so its relative
+paths work if you enable them. Check the config, then start the server:
 
 ```sh
 ./instigator check instigator.yaml
 sudo ./instigator serve instigator.yaml
 ```
 
-`check` probes remote URLs without downloading their contents and fully checks
-sets made only from local media. Use `check --full` to assemble and validate
-remote media too. `serve` assembles every set before serving it. A passing
-check does not prove the media will boot your machine.
-
-Leave the server running. It prints a disk-partitioner boot command and the
-remote distribution directory. Follow the [hardware guide](docs/real-hardware.md)
-to prepare the disk if needed, then start the installer from the maintenance
-menu. It covers the 32-bit IP22 and 64-bit boot paths.
-With a shipped config, load `/irix.cmds` at `Inst>` to apply its package
-choices and add-ons. If an `Install software from` menu appears, enter the
-number beside `done` to let the script continue.
+Leave the server running. At the SGI, boot from the network and start the
+installer as the [install guide](docs/install.md#machines-and-boot-files)
+describes for your machine. With an IRIX 6.5 config, load `/irix.cmds` at
+`Inst>` to apply its package choices and add-ons. If an `Install software
+from` menu appears, enter the number beside `done` to let the script
+continue. IRIX 5.3 and 6.2 have no `admin source`, so type the `from`,
+`install default` and `go` lines in [the guide](docs/install.md#irix-53-and-62).
 
 ## First file share
 
@@ -112,18 +106,20 @@ permissions, firewall ports, and how to use a private emulator network without
 
 ## What has been tested
 
-An Octane2 running IRIX 6.5.30 has netbooted, installed from merged media,
-booted from disk, and reached console login using a Linux host. The IP22
-config and boot path are present, but an Indy or Indigo2 install remains
-untested on hardware. IRIX 5.3 and 6.2 have installed over the network on an
-emulated Indy (iris) and booted to a login, and 5.3 on an emulated R4000
-Indigo (QEMU). The R3000 Indigo is untested.
+- On hardware, an Octane2 running IRIX 6.5.30 has netbooted, installed from
+  merged media, booted from disk, and reached console login using a Linux
+  host.
+- On emulators only, IRIX 5.3 and 6.2 have installed over the network on the
+  iris Indy emulator and booted to a login, and 5.3 has done the same on an
+  R4000 Indigo under QEMU.
+- Untested: an Indy or Indigo2 (IP22) install on hardware, and the R3000
+  Indigo. The IP22 config and boot path are present.
 
-The [NFS reference](docs/nfs-shares.md#checked-against-irix-6530) records IRIX
-6.5.30 guest checks for file sharing. macOS and Windows are build and test
-targets. That is separate from a completed hardware install on those hosts.
-The [QEMU performance notes](docs/qemu-network-performance.md) give the
-conditions and limits of the measured install comparison.
+The [network reference](docs/network-reference.md#checked-against-irix-6530)
+records IRIX 6.5.30 guest checks for file sharing. macOS and Windows are build
+and test targets. That is separate from a completed hardware install on those
+hosts. The [QEMU performance notes](docs/qemu-network-performance.md) give
+the conditions and limits of the measured install comparison.
 
 ## Development
 
@@ -139,8 +135,8 @@ local IRIX media skip when those files are unavailable:
 go test -run RealMedia -v ./internal/vfs ./internal/instcmd ./cmd/instigator
 ```
 
-The [NFS reference](docs/nfs-shares.md) covers protocol behavior and the
-transcripts shared with Origami's Rust implementation. The
+The [network reference](docs/network-reference.md) covers protocol behavior
+and the transcripts a second implementation must replay. The
 [roadmap](docs/roadmap.md) lists the remaining validation and possible work.
 
 ## License
