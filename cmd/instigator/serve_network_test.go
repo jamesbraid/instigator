@@ -3,13 +3,16 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -298,4 +301,24 @@ func dialWhenReady(t *testing.T, network, endpoint string, deadline time.Time) n
 	}
 	t.Fatalf("%s %s never became connectable", network, endpoint)
 	return nil
+}
+
+// Whichever pump sees a closed emulator first decides the error, so a write
+// refused by the gone peer counts as the machine leaving, as an end does.
+func TestMachineLeft(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{fmt.Errorf("read frame: %w", io.EOF), true},
+		{fmt.Errorf("write frame: %w", &os.SyscallError{Syscall: "write", Err: syscall.EPIPE}), true},
+		{fmt.Errorf("read frame: %w", &os.SyscallError{Syscall: "read", Err: syscall.ECONNRESET}), true},
+		{fmt.Errorf("read frame: %w", io.ErrUnexpectedEOF), false},
+		{errors.New("qemunet: framed length 99999 exceeds maximum 1518"), false},
+		{nil, false},
+	} {
+		if got := machineLeft(tc.err); got != tc.want {
+			t.Errorf("machineLeft(%v) = %v, want %v", tc.err, got, tc.want)
+		}
+	}
 }

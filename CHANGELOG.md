@@ -11,7 +11,7 @@ Features:
 - qemunet: a write to the QEMU stream that stays blocked for five seconds logs a warning, and logs again with how long it blocked (or the error) when it returns. Before, a stalled `--network-tcp` install gave no sign of why.
 
 Changed:
-- serve: when the emulator closes the private network cleanly, `serve` and `share` exit with status 0 instead of 1 and `private network disconnected: read frame: EOF`. A close in the middle of a frame or another link error still exits 1.
+- serve: when the emulator closes the private network cleanly, `serve` and `share` exit with status 0 instead of 1 and `private network disconnected: read frame: EOF`. A close in the middle of a frame or another link error still exits 1. A systemd unit for these modes needs `Restart=always` to restart after a disconnect.
 - tftp: when a PROM ends a transfer after taking data, as it does reading the miniroot from `dist/sa`, the log says so at INFO and the capture records `client_stopped`. Before, each normal miniroot load logged a WARN and counted as an aborted transfer. An ERROR before any data still counts as aborted.
 
 ## 0.5.1 - 2026-10-30

@@ -141,6 +141,9 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
+With `--network-socket` or `--network-tcp`, a clean disconnect exits 0, so a
+unit that should wait for the emulator's next boot needs `Restart=always`.
+
 To start the server from a script and wait until it is serving:
 
 ```sh

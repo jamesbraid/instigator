@@ -176,14 +176,20 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 	return s.Close()
 }
 
-// disconnected is the command's result when the private network ends: a
-// clean end of stream is the machine leaving, anything else is a fault.
+// disconnected is the command's result when the private network ends: the
+// machine leaving is a clean end, anything else is a fault.
 func disconnected(n *qemunet.Network, logger *logging.Logger) error {
-	if err := n.Err(); !errors.Is(err, io.EOF) {
+	if err := n.Err(); !machineLeft(err) {
 		return fmt.Errorf("private network disconnected: %w", err)
 	}
 	logger.Infof("the machine disconnected")
 	return nil
+}
+
+// machineLeft reports whether err is the emulator closing the stream: an end
+// between frames, or the closed peer refusing whichever pump touched it first.
+func machineLeft(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)
 }
 
 // servedSets lists the enabled sets for the --json ready line.
