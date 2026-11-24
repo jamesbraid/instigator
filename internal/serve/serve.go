@@ -253,6 +253,7 @@ type options struct {
 	recorder       *capture.Recorder // injected pre-built recorder, for tests
 	captureSummary io.Writer         // where the capture's closing summary goes; nil is stdout
 	status         *status.Writer
+	statusNetwork  string // host, socket or tcp, for the ready line
 	rshIdleTimeout time.Duration
 	network        Network // nil means the host stack, today's behavior
 }
@@ -296,9 +297,10 @@ func WithCaptureSummary(w io.Writer) Option {
 	return func(o *options) { o.captureSummary = w }
 }
 
-// WithStatus writes the --json status lines to w.
-func WithStatus(w *status.Writer) Option {
-	return func(o *options) { o.status = w }
+// WithStatus writes the --json status lines to w. network names the
+// segment for the ready line: host, socket or tcp.
+func WithStatus(w *status.Writer, network string) Option {
+	return func(o *options) { o.status, o.statusNetwork = w, network }
 }
 
 // withRecorder injects a pre-built recorder, letting a test supply an
@@ -589,6 +591,7 @@ func Start(cfg *config.Config, logger *logging.Logger, opts ...Option) (*Servers
 		s.rec.ServerStart()
 		s.started.Store(true)
 	}
+	o.status.Ready(cfg.ServerIP.String(), o.statusNetwork, servedSets(cfg))
 	for _, l := range listeners {
 		s.listenerWG.Add(1)
 		go func(l listenerFn) {
@@ -999,11 +1002,25 @@ func buildProvenance(cfg *config.Config) capture.Provenance {
 	}
 }
 
-// sessionResult is an inst session's end for --json: ok for a clean close,
-// error otherwise.
+// sessionResult is an inst session's end for --json, classified as the
+// capture does: ok, idle (the idle timeout closed it) or error.
 func sessionResult(err error) string {
-	if err != nil {
-		return "error"
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		return "idle"
 	}
-	return "ok"
+	return "error"
+}
+
+// servedSets lists the sets inst can open first, for the ready line.
+func servedSets(cfg *config.Config) []status.Set {
+	sets := []status.Set{}
+	for _, set := range cfg.InstallSets {
+		if set.Enabled && !set.Addon {
+			sets = append(sets, status.Set{Name: set.Name, Dist: "/" + set.Name + "/dist"})
+		}
+	}
+	return sets
 }

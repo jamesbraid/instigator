@@ -18,13 +18,15 @@ Every line starts with the same three fields:
 | `type` | One of the types below |
 
 Ignore types and fields you do not know. New ones can appear without a version
-change.
+change. Keep reading stdout while Instigator runs. If you fall behind, it drops
+`progress` lines rather than delay the machine, and other lines wait.
 
 ## Types
 
 ### `ready`
 
-The media are assembled and every service is listening. With
+The first line of a run that starts serving: the media are assembled and
+every service is about to answer. With
 `--network-socket` or `--network-tcp`, Instigator assembles the media after
 the emulator connects, so `ready` follows the connection. Start the emulator
 once the socket or port accepts connections.
@@ -33,7 +35,7 @@ once the socket or port accepts connections.
 | --- | --- |
 | `server_ip` | The server address from the config |
 | `network` | `host`, `socket` or `tcp` |
-| `sets` | The enabled install sets: `name` and `dist`, the path to give inst |
+| `sets` | The enabled install sets inst can open first, add-ons excepted: `name` and `dist`, the path to give inst. Empty when none is enabled. |
 
 ### `bootp`
 
@@ -78,7 +80,7 @@ The installer at work over rsh.
 | --- | --- |
 | `client` | The configured client name |
 | `phase` | `session_start`, `session_end` or `go_returned` |
-| `result` | On `session_end` only: `ok` or `error` |
+| `result` | On `session_end` only: `ok`, `idle` (closed after the idle timeout) or `error` |
 
 `go_returned` comes from the generated install scripts, so it appears only
 when inst loaded one with `admin source`. Inst before IRIX 6.5 has no

@@ -28,6 +28,8 @@ func run(configPath string, verbose, jsonOut bool, captureDir, networkSocket, ne
 	defer signal.Stop(sig)
 	var st *status.Writer
 	if jsonOut {
+		// A reader that closes stdout gets EPIPE on the write, not a dead server.
+		signal.Ignore(syscall.SIGPIPE)
 		st = status.New(os.Stdout)
 	}
 	return runUntilSignal(configPath, verbose, captureDir, networkSocket, networkTCP, shares, os.Stderr, st, sig)
@@ -78,7 +80,7 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 		logger.Infof("recording this run to %s", captureDir)
 	}
 	if st != nil {
-		opts = append(opts, serve.WithStatus(st), serve.WithCaptureSummary(output))
+		opts = append(opts, serve.WithStatus(st, endpoint.kind()), serve.WithCaptureSummary(output))
 	}
 
 	// In private-network mode Instigator owns a stream endpoint the machine
@@ -148,7 +150,6 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 	}
 
 	logger.Infof("serving; stop with SIGINT/SIGTERM")
-	st.Ready(cfg.ServerIP.String(), endpoint.kind(), servedSets(cfg))
 	// Whoever set NOTIFY_SOCKET waits forever if this never arrives. In
 	// private-network mode it was already sent so the machine could connect.
 	if !readinessSent {
@@ -190,15 +191,4 @@ func disconnected(n *qemunet.Network, logger *logging.Logger) error {
 // between frames, or the closed peer refusing whichever pump touched it first.
 func machineLeft(err error) bool {
 	return errors.Is(err, io.EOF) || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)
-}
-
-// servedSets lists the enabled sets for the --json ready line.
-func servedSets(cfg *config.Config) []status.Set {
-	var sets []status.Set
-	for _, set := range cfg.InstallSets {
-		if set.Enabled {
-			sets = append(sets, status.Set{Name: set.Name, Dist: "/" + set.Name + "/dist"})
-		}
-	}
-	return sets
 }

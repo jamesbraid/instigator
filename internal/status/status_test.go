@@ -2,6 +2,7 @@ package status
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 )
@@ -26,4 +27,37 @@ func TestLinesCarryHeaderThenFields(t *testing.T) {
 func TestNilWriterIsNoOp(t *testing.T) {
 	var w *Writer
 	w.Inst("sgi", "go_returned", "")
+}
+
+// stuck is a reader that never drains, as a front end that stopped reading.
+type stuck struct{ release chan struct{} }
+
+func (s stuck) Write(p []byte) (int, error) { <-s.release; return len(p), nil }
+
+func TestStuckReaderNeverBlocksProgress(t *testing.T) {
+	r := stuck{release: make(chan struct{})}
+	w := New(r)
+	done := make(chan struct{})
+	go func() {
+		for range queueLen * 2 {
+			w.TFTP("sgi", "/5.3/dist/sa", "progress", 10, 5, "")
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("progress lines blocked on a reader that is not reading")
+	}
+	close(r.release)
+}
+
+func TestNothingFollowsStopped(t *testing.T) {
+	var b bytes.Buffer
+	w := New(&b)
+	w.Stopped("signal", "")
+	w.Inst("sgi", "session_end", "ok") // a session that outlived shutdown
+	if got := strings.Count(b.String(), "\n"); got != 1 || !strings.Contains(b.String(), `"type":"stopped"`) {
+		t.Errorf("output %q, want only the stopped line", b.String())
+	}
 }
