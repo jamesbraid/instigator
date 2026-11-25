@@ -1,7 +1,7 @@
 # Configuration
 
-For ready-made remote media layouts, use the [shipped
-configs](install.md#choose-a-config). For your own layout, start with
+For ready-made remote media layouts, see [Choose a
+config](install.md#choose-a-config). For your own layout, start with
 [instigator.example.yaml](../instigator.example.yaml). Copy it to
 `instigator.yaml` and edit the addresses and media paths before running it.
 The example contains placeholder addresses and a placeholder Freeware URL.
@@ -16,8 +16,9 @@ address to offer it. The optional `hostname` is sent as BOOTP/DHCP option 12.
 It is separate from `name`, which labels the client in logs.
 
 On a host interface, Instigator answers BOOTP for configured clients and
-ignores DHCP. On the private emulator network it answers both. See the
-[operations guide](operations.md) for network setup.
+ignores DHCP. On an emulator's private network it answers both. See [Network
+setup](operations.md#network-setup) and [Emulator
+connections](operations.md#emulator-connections).
 
 `dhcp_server_id` sets the DHCP server identifier, which defaults to
 `server_ip`. If an installed IRIX guest moves between private and QEMU user
@@ -29,8 +30,8 @@ dhcp_server_id: 192.0.2.2
 ```
 
 This changes DHCP option 54, not the server's address or BOOTP replies.
-See [moving between networks](sharing.md#moving-between-networks) for the
-lease behavior and limits.
+See [Moving between networks](sharing.md#moving-between-networks) for the
+lease behaviour and limits.
 
 ## Sets and layers
 
@@ -49,7 +50,7 @@ install_sets:
         source: /media/irix/overlays2.image
 ```
 
-`instigator` auto-detects whether a source is an SGI image, an extracted
+Instigator detects whether a source is an SGI image, an extracted
 directory, or a local `.tar`, `.tar.gz`, `.tgz`, `.tardist`, or `.tardist.gz`
 archive. Local archives are extracted under `cache_dir` and the extracted
 files are removed when the source closes. `base:` names the subtree holding
@@ -97,8 +98,8 @@ unpacked into a directory. A bare `.gz` source is decompressed into an image.
 A raw `.image` on a range-capable server is read lazily, pulling only the
 bytes an install touches. `credentials:` supply HTTP Basic auth over HTTPS for
 the matching host. A `${VAR}` password is read from the environment. Downloads
-are cached under `cache_dir:` (default: the user cache dir) and reused across
-runs. Each run extracts the archive into a fresh temporary directory.
+are cached under `cache_dir:` (default: the user cache directory) and reused
+across runs. Each run extracts the archive into a fresh temporary directory.
 
 The example also shows client filtering, service toggles, and the low TFTP
 transfer-port range required by SGI PROMs. Keep that range when editing it.
@@ -109,7 +110,7 @@ Install scripts need IRIX 6.5. Earlier `inst` has no `admin source` to load
 them, and `serve` warns at startup when a config for IRIX 5.3 or 6.2 defines
 `install_scripts`.
 
-By default `instigator` serves `/install.cmds`, which selects the standard
+By default Instigator serves `/install.cmds`, which selects the standard
 product set and starts installation. `install_scripts` add named variants that
 select more on top of that baseline. For example, a `debug` script can also
 install the `dbx` debugger:
@@ -124,15 +125,11 @@ install_scripts:
 
 Each entry is served next to the default at `/<name>.cmds`, so the one above
 gives `/debug.cmds` and `/maintenance.cmds`. `/install.cmds` is always
-generated and unchanged. At the `Inst>` prompt, load the one you want instead
-of the default:
-
-```text
-admin source <server-ip>:/debug.cmds
-```
+generated and unchanged. [Named install
+scripts](install.md#named-install-scripts) shows how to load one at `Inst>`.
 
 `install`, `keep`, and `remove` add those `inst` selection lines after the
-standard set. `instigator` passes the names straight through to `inst`, which
+standard set. Instigator passes the names straight through to `inst`, which
 resolves them against the open media. A name must exist on an enabled set, and
 you can confirm its exact spelling with `inst`'s `list`. `stream` picks the
 IRIX release stream: the default feature stream, or `maintenance` for the
@@ -157,7 +154,7 @@ Each add-on file contains `name`, `layers`, and `install`. Its layers follow
 the same rules as an install set. Instigator creates an `addon-<name>` set and
 adds its products to the second pass of every named install script. The
 configuration must define at least one named script. The built-in
-`/install.cmds` stays unchanged, so use `/irix.cmds` with the shipped 6.5
+`/install.cmds` stays unchanged, so use `/irix.cmds` with the shipped IRIX 6.5
 configs.
 
 ## Add-on sets
@@ -204,13 +201,7 @@ install_scripts:
 ```
 
 Each command is one line, run by `/bin/sh` through `inst`'s `shroot`, which
-runs it chrooted into the new system. A failing command prints `(command
-failed)` and `inst` skips the remaining commands. After the last one succeeds,
-`inst`'s `shell` preference goes back to `/bin/csh` and the console shows:
-
-```text
-instigator: post-install commands finished
-```
-
-For console prompts, post-install failures, and service setup, see the
-[installation guide](install.md) and [operations guide](operations.md).
+runs it chrooted into the new system. [Post-install
+commands](install.md#post-install-commands) in the installation guide covers
+failures and what the console shows. For service setup, see the [operations
+guide](operations.md).

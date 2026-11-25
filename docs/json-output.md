@@ -26,16 +26,16 @@ change. Keep reading stdout while Instigator runs. If you fall behind, it drops
 ### `ready`
 
 The first line of a run that starts serving: the media are assembled and
-every service is about to answer. With
-`--network-socket` or `--network-tcp`, Instigator assembles the media after
-the emulator connects, so `ready` follows the connection. Start the emulator
-once the socket or port accepts connections.
+every service is about to answer. With `--network-socket` or `--network-tcp`,
+Instigator assembles the media after the emulator connects, so `ready`
+follows the connection. Start the emulator once the socket or port accepts
+connections.
 
 | Field | Meaning |
 | --- | --- |
 | `server_ip` | The server address from the config |
 | `network` | `host`, `socket` or `tcp` |
-| `sets` | The enabled install sets inst can open first, add-ons excepted: `name` and `dist`, the path to give inst. Empty when none is enabled. |
+| `sets` | The enabled install sets `inst` can open first, add-ons excepted: `name` and `dist`, the path to give `inst`. Empty when none is enabled. |
 
 ### `bootp`
 
@@ -83,8 +83,8 @@ The installer at work over rsh.
 | `result` | On `session_end` only: `ok`, `idle` (closed after the idle timeout) or `error` |
 
 `go_returned` comes from the generated install scripts, so it appears only
-when inst loaded one with `admin source`. Inst before IRIX 6.5 has no
-`admin source` and never produces it. A return does not mean the installation
+when `inst` loaded one with `admin source`. Before IRIX 6.5, `inst` has no
+`admin source`, so it never appears. A return does not mean the installation
 succeeded: only the console shows that, with `Installations and removals were
 successful.`
 

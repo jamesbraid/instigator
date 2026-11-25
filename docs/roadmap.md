@@ -5,21 +5,22 @@ install or a focused test.
 
 ## Installation coverage
 
-- Repeat the Octane2 6.5.30 install with a fresh capture and serial log.
-- Test the 6.5.22 config and 32-bit ARCS boot path on an Indy or Indigo2.
+- Repeat the Octane2 IRIX 6.5.30 install with a fresh capture and serial log.
+- Test the IRIX 6.5.22 config and 32-bit ARCS boot path on an Indy or Indigo2.
 - Install IRIX 5.3 and 6.2 on real hardware.
-- Test the R3000 Indigo, which boots `fx.IP12` from the 5.3 disc.
+- Test the R3000 Indigo, which boots `fx.IP12` from the IRIX 5.3 disc.
 - Verify extra package selections, such as `dbx`, and a maintenance-stream
   install end to end. Keep the guest output with each result.
 - Validate the shipped MIPSpro add-on on the target configurations. Having a
   media config is separate from a completed compiler installation.
-- Turn captured install behavior into small synthetic regression fixtures.
+- Turn captured install behaviour into small synthetic regression fixtures.
 
 ## File sharing and networking
 
 - Observe DHCP lease renewal and rebinding from IRIX, which the one-year
-  lease has kept out of every run so far. See the [network
-  reference](network-reference.md#addressing-the-machine-bootp-dhcp-and-the-guest).
+  lease has kept out of every run so far. See [Addressing the
+  machine](network-reference.md#addressing-the-machine-bootp-dhcp-and-the-guest)
+  in the network reference.
 
 ## Further work
 

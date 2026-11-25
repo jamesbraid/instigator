@@ -1,8 +1,7 @@
 # Installing IRIX
 
-Use the docs from the same release as your binary. For which machines and
-releases have completed an install, see [what has been
-tested](../README.md#what-has-been-tested).
+For which machines and releases have completed an install, see [What has
+been tested](../README.md#what-has-been-tested).
 
 ## Before you start
 
@@ -12,7 +11,7 @@ You need:
 - Your IRIX install images, including the matching boot and foundation media,
   or the published images the shipped configs point at.
 - The server's IPv4 address on the install network and the client's MAC and IP
-  addresses. At the PROM, `printenv eaddr` shows the client MAC.
+  addresses.
 - Console access to the SGI and a network connection to the server.
 
 IRIX media is read from your local files or the URLs in the config. The
@@ -27,14 +26,14 @@ own copies of the discs.
 
 | File | Release and media | Intended machines |
 | --- | --- | --- |
-| [irix-6.5.30-standard.yaml](../configs/irix-6.5.30-standard.yaml) | IRIX 6.5.30, all five disc sets | Octane, Origin |
+| [irix-6.5.30-standard.yaml](../configs/irix-6.5.30-standard.yaml) | IRIX 6.5.30, all five install sets | Octane, Origin |
 | [irix-6.5.30-minimal.yaml](../configs/irix-6.5.30-minimal.yaml) | IRIX 6.5.30, overlays and foundations | Octane, Origin |
-| [irix-6.5.22-standard.yaml](../configs/irix-6.5.22-standard.yaml) | IRIX 6.5.22, all five disc sets | Indy, Indigo2 (IP22) |
+| [irix-6.5.22-standard.yaml](../configs/irix-6.5.22-standard.yaml) | IRIX 6.5.22, all five install sets | Indy, Indigo2 (IP22) |
 | [irix-6.2-standard.yaml](../configs/irix-6.2-standard.yaml) | IRIX 6.2, both discs | R4000 Indigo, Indy, Indigo2 |
 | [irix-5.3-standard.yaml](../configs/irix-5.3-standard.yaml) | IRIX 5.3, the general disc | Indigo, Indy, Indigo2 |
 
-The configs give you the media layout and package selections. 6.5.22 has no
-minimal config because its overlay discs update products from the
+The configs give you the media layout and package selections. IRIX 6.5.22 has
+no minimal config because its overlay discs update products from the
 Applications and Development discs.
 
 To lay out your own media instead, start from the example in your release
@@ -46,7 +45,8 @@ cp instigator.example.yaml instigator.yaml
 
 The example uses documentation addresses and a placeholder Freeware URL.
 Replace those values and remove sets you will not use. Keep the install sets
-in the [tested order](#tested-6530-install-set-ordering).
+in the order given under [Tested 6.5.30 install-set
+ordering](#tested-6530-install-set-ordering).
 
 ### Use local media
 
@@ -77,10 +77,10 @@ The supplied [MIPSpro config](../configs/addons/mipspro.yaml) selects the
 PsiTech driver and X server for PCI machines with a RAD4 board. RAD4 does not
 apply to an Indy or Indigo2.
 
-Add-on paths are relative to the main config. Each file becomes an install set
-named `addon-<name>`, and its products are added to a second install pass in
-each named script. Load `/irix.cmds` to install them. The built-in
-`/install.cmds` does not install add-ons. IRIX 5.3 and 6.2 have no add-ons.
+Add-on paths are relative to the main config. Load `/irix.cmds` to install
+them. The built-in `/install.cmds` does not install add-ons. IRIX 5.3 and 6.2
+have no add-ons. [Add-on files](configuration.md#add-on-files) explains how
+each file becomes an install set and a second install pass.
 
 ## Set up, check and serve
 
@@ -130,7 +130,7 @@ sudo ./instigator serve instigator.yaml
 ```
 
 On Windows, run `instigator.exe serve instigator.yaml` as Administrator. For
-firewall ports and hosts with several network interfaces, see [network
+firewall ports and hosts with several network interfaces, see [Network
 setup](operations.md#network-setup). Leave the server running throughout the
 install.
 
@@ -145,9 +145,9 @@ install.
 | R3000 Indigo | pre-ARCS | `stand/fx.IP12` | 5.3 | type `from`, `install default`, `go` |
 
 With the example config instead of a shipped one, IRIX 6.5 loads
-`/install.cmds` instead of `/irix.cmds`. The 5.3 disc carries `fx.IP12` as
-well as `fx.ARCS`. The 6.5.22 Overlays 1 disc holds `miniroot/unix.IP22` and
-`ide.IP22`.
+`/install.cmds` instead of `/irix.cmds`. The IRIX 5.3 disc carries `fx.IP12`
+as well as `fx.ARCS`. The IRIX 6.5.22 Overlays 1 disc holds
+`miniroot/unix.IP22` and `ide.IP22`.
 
 ## Prepare the disk
 
@@ -176,10 +176,11 @@ distribution, without a trailing slash:
 /6.5.30/dist
 ```
 
-The PROM boots the installer by fetching `dist/sa` over TFTP. With 6.5.22 on
-IP22 it selects `sashARCS`, which fetches `/6.5.22/dist/miniroot/unix.IP22`.
+The PROM boots the installer by fetching `dist/sa` over TFTP. With IRIX 6.5.22
+on an IP22 machine it selects `sashARCS`, which fetches
+`/6.5.22/dist/miniroot/unix.IP22`.
 
-## At Inst>
+## At `Inst>`
 
 ### IRIX 6.5
 
@@ -191,7 +192,7 @@ admin source 192.0.2.10:/irix.cmds
 
 That script includes the config's package choices and any files listed under
 `addons:`. With the example config, load the baseline `/install.cmds`
-instead. It does not install add-ons.
+instead.
 
 The command file opens every enabled supplemental set and reopens the primary
 release last. If `inst` opens an `Install software from` menu, enter the
@@ -241,13 +242,13 @@ returns to `Inst>` without running the rest. When every command succeeds, the
 file sets `shell` back to the default `/bin/csh` and the console shows
 `instigator: post-install commands finished` before `Inst>`.
 
-`inst` saves preferences in the installed system's `/var/inst/.swmgrrc`, so
-after a failed command later `inst` sessions there keep `shell` at `/bin/sh`
-until it is set back.
+`inst` saves preferences in the installed system's `/var/inst/.swmgrrc`. After
+a failed command, later `inst` sessions on that system keep `shell` at
+`/bin/sh` until you set it back.
 
 #### Tested 6.5.30 install-set ordering
 
-For a `6.5.30` installation, keep the enabled sets in this order:
+For an IRIX 6.5.30 install, keep the enabled sets in this order:
 
 1. `6.5.30` overlays, with all overlay discs merged into one set.
 2. `foundations`, with Foundation and NFS media merged together.
@@ -257,7 +258,7 @@ For a `6.5.30` installation, keep the enabled sets in this order:
 6. `freeware`, when enabled.
 
 The generated command file opens the supplemental sets in that order and
-reopens `6.5.30` last. That ordering comes from the successful Octane run.
+reopens `6.5.30` last. This is the order the successful Octane install used.
 
 Applications and Complementary Applications remain separate sets. Multiple
 discs within a set are merged into one logical `/<set>/dist` tree. Disc names
@@ -266,15 +267,15 @@ are never exposed to `inst`.
 ### IRIX 5.3 and 6.2
 
 Their `inst` has no `admin source`, so these configs have no `/irix.cmds`,
-named scripts or add-ons, and the install records no timing. If you add
-`install_scripts` to such a config, `serve` warns at startup that `inst`
-cannot load them.
+named scripts or add-ons. [Install scripts](configuration.md#install-scripts)
+covers the startup warning, and [Install timing](operations.md#install-timing)
+the missing timing records.
 
 In the miniroot, `admin mkfs` erases the root and `/usr` filesystems for a
-clean install. 6.2's `mkfs` also asks whether to make each one EFS or XFS.
-6.2 asks for the machine's network address if the disk has none, and offers
-an optional startup script before `Inst>`. The script checks for COFF programs
-and old kernel files. At `Inst>`, type:
+clean install. On IRIX 6.2, `mkfs` also asks whether to make each one EFS or
+XFS. IRIX 6.2 asks for the machine's network address if the disk has none, and
+offers an optional startup script before `Inst>`. The script checks for COFF
+programs and old kernel files. At `Inst>`, type:
 
 ```text
 from 192.0.2.10:/5.3/dist
@@ -282,8 +283,8 @@ install default
 go
 ```
 
-For 6.2, use `/6.2/dist`. Its two discs form one distribution, so one `from`
-opens all of 6.2.
+For IRIX 6.2, use `/6.2/dist`. Its two discs form one distribution, so one
+`from` opens all of 6.2.
 
 An Indy with an R4600 or R5000 needs the "5.3 for Indy including R5000" disc
 instead of the general one. Replace the layer's source with
@@ -308,7 +309,7 @@ The volume header should contain `sash`, `ide`, and the machine PROM. The
 installed root should contain `/unix`. The PROM normally loads `sash` from the
 volume header, not from `/stand` in the root filesystem.
 
-For common failures, see [troubleshooting](operations.md#troubleshooting).
+For common failures, see [Troubleshooting](operations.md#troubleshooting).
 For capture logs, install timing, and emulator disconnects, see the
 [operations guide](operations.md). For script settings, see the
 [configuration guide](configuration.md).

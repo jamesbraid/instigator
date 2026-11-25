@@ -12,8 +12,8 @@ For example:
 ```
 
 This writes `out/disc/` and `out/disc.jsonl`. The source image stays
-read-only. You can use a [configured install set](configuration.md) when the
-files span several discs.
+read-only. When the files span several discs, use a configured install set
+(see [Sets and layers](configuration.md#sets-and-layers)).
 
 ## Sources and install order
 
@@ -43,7 +43,7 @@ install_sets:
   - name: base
     layers: [...]            # the base release's discs
   - name: overlay
-    after: [base]            # transitive; unknown names and cycles are refused
+    after: [base]            # transitive. Unknown names and cycles are refused
     layers: [...]            # the overlay release's discs
 ```
 

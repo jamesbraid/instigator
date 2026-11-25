@@ -5,9 +5,9 @@ TCP. Use it to copy files into IRIX, get files out, or work on files from both
 systems. It runs its own NFS server. You don't need to configure the host's
 NFS service or install IRIX media first.
 
-Shares are writable. Guest writes affect the host files, and the server uses
-the permissions of the user who started it. Every file appears owned by root
-in the guest. Guest `chown` and `chgrp` leave host ownership unchanged.
+Shares are writable. Writes from IRIX change the host files, and the server
+uses the permissions of the user who started it. On IRIX every file appears
+owned by root, and `chown` and `chgrp` leave host ownership unchanged.
 
 ## On a physical network
 
@@ -62,9 +62,10 @@ mkdir -p "$HOME/sgi-share"
 ```
 
 Replace the MAC with your guest's MAC. Configure the emulator to connect its
-NIC to the stream at `127.0.0.1:45031`. Instigator listens. QEMU connects. The
-[private network reference](network-reference.md#the-link) gives the QEMU arguments
-and framing details. `--network-socket PATH` uses a Unix socket instead.
+NIC to the stream at `127.0.0.1:45031`. Instigator listens and QEMU connects.
+[The link](network-reference.md#the-link) in the network reference gives the
+QEMU arguments and framing details. `--network-socket PATH` uses a Unix socket
+instead.
 Choose one transport.
 
 The server address defaults to `10.98.0.2/24`. `--client` makes it answer
@@ -83,7 +84,7 @@ mount 10.98.0.2:/files /mnt/files
 Private-network NFS uses UDP and TCP ports 111, 635, and 2049 inside the
 segment. `--listen`, `--port`, `--portmap-port`, `--udp`, and `--tcp` do not
 apply in this mode. The server exits when the emulator disconnects. See
-[exit status](operations.md#disconnects-and-exit-status).
+[Disconnects and exit status](operations.md#disconnects-and-exit-status).
 
 ## Moving between networks
 
@@ -98,9 +99,10 @@ the private `share` command. It requires `--client`. With `serve`, set
 identifier if it differs from that default.
 
 The private server still uses `10.98.0.2` unless you change its address.
-The option changes only the DHCP identifier. The [network
-reference](network-reference.md#addressing-the-machine-bootp-dhcp-and-the-guest)
-gives the lease behaviour and the untested renewal case.
+The option changes only the DHCP identifier. [Addressing the
+machine](network-reference.md#addressing-the-machine-bootp-dhcp-and-the-guest)
+in the network reference gives the lease behaviour and the untested renewal
+case.
 
 ## Shares alongside an install
 
@@ -133,8 +135,8 @@ For host sockets:
 - `--listen ADDR` binds an address. Repeat it to bind several.
 - `--port PORT` changes the NFS/MOUNT port from 2049.
 - `--portmap-port PORT` changes the portmap port from 111. 0 disables it.
-  IRIX's `mount` asks portmap on UDP 111 even when given `port=`, so disabling
-  it is not a substitute for a reachable portmap service for IRIX.
+  IRIX's `mount` asks portmap on UDP 111 even when given `port=`, so IRIX
+  still needs a reachable portmap service.
 - `--udp=false` or `--tcp=false` disables that transport.
 - `--verbose` logs every RPC call.
 
@@ -151,10 +153,10 @@ special-file creation. It implements neither NFSv4 nor network locking (NLM).
 On IRIX, use the mount option `private` when locks should stay local. `nolock`
 is ignored.
 
-File handles survive server restarts. On Windows and filesystems without file
-birth times, Instigator keeps a path table in the user cache directory.
+File handles survive server restarts. On Windows and on filesystems without
+file birth times, Instigator keeps a path table in the user cache directory.
 `--handle-table FILE` selects another location. Keep that table if clients
 will remount after a restart. Path tables detect replacements made through
-NFS, but cannot detect a host process replacing a file at the same path. The
-[NFS reference](network-reference.md#files-owners-and-handles) explains the handle
-formats and limitations.
+NFS, but cannot detect a host process replacing a file at the same path.
+[Files, owners and handles](network-reference.md#files-owners-and-handles) in
+the network reference explains the handle formats and limitations.

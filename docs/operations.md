@@ -31,11 +31,11 @@ emulator. Use one option at a time.
 The config's `server_ip`, `netmask`, and client addresses must describe the
 private segment. Configured clients get BOOTP and DHCP replies there.
 Host-network mode answers BOOTP only. The private segment has no gateway or
-DNS. For attachment details, see the [network
-reference](network-reference.md#private-network).
+DNS. For attachment details, see [Private
+network](network-reference.md#private-network) in the network reference.
 
 `serve --share NAME=DIR` also serves writable NFS shares on that segment. See
-the [sharing guide](sharing.md#shares-alongside-an-install).
+[Shares alongside an install](sharing.md#shares-alongside-an-install).
 
 A program that runs Instigator can add `--json` for machine-readable status on
 stdout. See [JSON output](json-output.md).
@@ -54,10 +54,9 @@ means the install finished. Capture ends with `server_stop` /
 
 Every generated script uses native `admin source` handoffs to time `go`.
 IRIX 5.3 and 6.2 have no `admin source`, so their installs produce no timing
-records. Each
-execution gets a separate token to identify its start and return. A script
-with a second pass records two attempts: `NAME.cmds` for the first `go` and
-`NAME.cmds then` for the second.
+records. Each execution gets a separate token to identify its start and
+return. A script with a second pass records two attempts: `NAME.cmds` for the
+first `go` and `NAME.cmds then` for the second.
 
 Timestamped INFO logs identify the script, client, and attempt. Return records
 include elapsed time. Capture and `-v` are optional. Example with token
@@ -106,7 +105,7 @@ from the miniroot with these markers remains untested.
 | TFTP starts but stalls | Allow the configured transfer-port range as well as UDP 69. SGI PROMs need low transfer ports. |
 | Installer waits at `Install software from` | Enter the number beside `done` to resume the command file. |
 | Add-ons were not installed | Source `/irix.cmds` with the shipped IRIX 6.5 configs. The baseline `/install.cmds` has no add-ons. |
-| NFS mount cannot reach the server | Check the listen address and portmap. See the sharing guide for host and private-network ports. |
+| NFS mount cannot reach the server | Check the listen address and portmap. See the [sharing guide](sharing.md) for host and private-network ports. |
 
 `serve --verbose` decodes packets. `share --verbose` logs RPC calls. Capture a
 fresh install run when you need transfer and timing records.
@@ -133,7 +132,7 @@ After=network-online.target
 
 [Service]
 Type=notify
-# Assembling the sets reads each image over the network; allow for a slow
+# Assembling the sets reads each image over the network. Allow for a slow
 # store rather than systemd's default start timeout.
 TimeoutStartSec=600
 ExecStart=/usr/local/bin/instigator serve /etc/instigator.yaml

@@ -27,9 +27,9 @@ ports. Install services and shares can run together or separately.
 | Choose a shipped config and install IRIX | [Installing IRIX](docs/install.md) |
 | Install IRIX 5.3 or 6.2 | [IRIX 5.3 and 6.2](docs/install.md#irix-53-and-62) |
 | Use my own media or change package selections | [Configuration](docs/configuration.md) |
-| Share a host folder with IRIX | [File sharing](docs/sharing.md) |
-| Extract files or manual pages without installing IRIX | [Extraction](docs/extract.md) |
-| Record an install, diagnose a connection, or run a service | [Operations](docs/operations.md) |
+| Share a host folder with IRIX | [Sharing files with IRIX](docs/sharing.md) |
+| Extract files or manual pages without installing IRIX | [Extracting installed files](docs/extract.md) |
+| Record an install, diagnose a connection, or run a service | [Running and troubleshooting the server](docs/operations.md) |
 | Run Instigator from another program | [JSON output](docs/json-output.md) |
 | Check NFS or private-network wire behaviour | [Network reference](docs/network-reference.md) |
 
@@ -56,8 +56,8 @@ instead of using `sudo`.
 ## First install
 
 The configs in [`configs/`](configs/) have media URLs filled in for IRIX
-6.5.30, 6.5.22, 6.2 and 5.3. Choose one for your machine in the [install
-guide](docs/install.md#choose-a-config). For a 6.5.30 standard install:
+6.5.30, 6.5.22, 6.2 and 5.3. Choose one for your machine under [Choose a
+config](docs/install.md#choose-a-config). For an IRIX 6.5.30 standard install:
 
 ```sh
 cp configs/irix-6.5.30-standard.yaml instigator.yaml
@@ -75,12 +75,13 @@ sudo ./instigator serve instigator.yaml
 ```
 
 Leave the server running. At the SGI, boot from the network and start the
-installer as the [install guide](docs/install.md#machines-and-boot-files)
+installer as [Machines and boot files](docs/install.md#machines-and-boot-files)
 describes for your machine. With an IRIX 6.5 config, load `/irix.cmds` at
 `Inst>` to apply its package choices and add-ons. If an `Install software
 from` menu appears, enter the number beside `done` to let the script
 continue. IRIX 5.3 and 6.2 have no `admin source`, so type the `from`,
-`install default` and `go` lines in [the guide](docs/install.md#irix-53-and-62).
+`install default` and `go` lines in [IRIX 5.3 and
+6.2](docs/install.md#irix-53-and-62).
 
 ## First file share
 
@@ -99,10 +100,10 @@ mkdir -p /mnt/src
 mount 192.0.2.10:/src /mnt/src
 ```
 
-Guest writes change the host files. They run with the permissions of the user
-who started Instigator. The [sharing guide](docs/sharing.md) explains
-permissions, firewall ports, and how to use a private emulator network without
-`sudo`.
+Writes from IRIX change the host files. They run with the permissions of the
+user who started Instigator. The [sharing guide](docs/sharing.md) explains
+permissions, firewall ports, and how to use an emulator's private network
+without `sudo`.
 
 ## What has been tested
 
@@ -125,10 +126,11 @@ permissions, firewall ports, and how to use a private emulator network without
 - Untested on hardware: everything except the Octane2, including the Indy,
   Indigo2 and every Indigo. The R3000 Indigo is untested anywhere.
 
-The [network reference](docs/network-reference.md#checked-against-irix-6530)
-records IRIX 6.5.30 guest checks for file sharing. macOS and Windows are build
-and test targets. That is separate from a completed hardware install on those
-hosts. The [QEMU performance notes](docs/qemu-network-performance.md) give
+[Checked against IRIX
+6.5.30](docs/network-reference.md#checked-against-irix-6530) in the network
+reference records the guest checks for file sharing. macOS and Windows are build
+and test targets. That does not mean a hardware install has completed from
+either host. The [QEMU performance notes](docs/qemu-network-performance.md) give
 the conditions and limits of the measured install comparison.
 
 ## Development
@@ -145,7 +147,7 @@ local IRIX media skip when those files are unavailable:
 go test -run RealMedia -v ./internal/vfs ./internal/instcmd ./cmd/instigator
 ```
 
-The [network reference](docs/network-reference.md) covers protocol behavior
+The [network reference](docs/network-reference.md) covers protocol behaviour
 and the transcripts a second implementation must replay. The
 [roadmap](docs/roadmap.md) lists the remaining validation and possible work.
 
