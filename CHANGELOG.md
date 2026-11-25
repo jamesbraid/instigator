@@ -6,8 +6,12 @@ ones. Entries for 0.5.1 and earlier were rewritten from the original GitHub rele
 
 ## Unreleased
 
+## 0.6.0 - 2026-11-24
+
+Instigator now installs IRIX 5.3 and 6.2 on the Indigo, Indy and Indigo2, and a program that runs it can follow an install through `serve --json`.
+
 Features:
-- configs: an IRIX 5.3 config for the Indigo, Indy and Indigo2 and an IRIX 6.2 config for the R4000 Indigo, Indy and Indigo2, both using discs from origami-dist.irix.fans. Both have installed over the network on an emulated Indy, and the 5.3 config also on an emulated R4000 Indigo.
+- configs: an IRIX 5.3 config for the Indigo, Indy and Indigo2 and an IRIX 6.2 config for the R4000 Indigo, Indy and Indigo2, both using discs from origami-dist.irix.fans. Their `inst` has no `admin source`, so type `from`, `install default` and `go` at `Inst>` as docs/install.md describes. Both have installed over the network on an emulated Indy, and the 5.3 config also on an emulated R4000 Indigo.
 - serve: `--json` writes status as JSON Lines on stdout for programs that run Instigator: `ready`, `bootp`, `tftp` with start, progress and end, `inst` sessions and returns, and a final `stopped` with its reason. The human log stays on stderr. The schema is in docs/json-output.md.
 - serve: startup warns when `install_scripts` are configured for media from before IRIX 6.5, whose `inst` has no `admin source` to load them. Media count as pre-6.5 when the first set's distribution ships no `.related_dists`.
 - serve: startup logs the R3000 Indigo's `stand/fx.IP12` alongside `fx.ARCS` and `fx.64`.
@@ -16,6 +20,7 @@ Features:
 Changed:
 - serve: when the emulator closes the private network cleanly, `serve` and `share` exit 0. Before, they exited 1 with `private network disconnected: read frame: EOF`. A close in the middle of a frame or another link error still exits 1. A systemd unit for these modes needs `Restart=always` to restart after a disconnect.
 - tftp: when a PROM ends a transfer after taking data, as it does reading the miniroot from `dist/sa`, the log says so at INFO and the capture records `client_stopped`. Before, each normal miniroot load logged a WARN and counted as an aborted transfer. An ERROR before any data still counts as aborted.
+- docs: the hardware guide is folded into docs/install.md, which now covers every shipped config, and docs/nfs-shares.md is now docs/network-reference.md. Links to the old files break.
 
 ## 0.5.1 - 2026-10-30
 
