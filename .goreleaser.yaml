@@ -48,10 +48,8 @@ archives:
 checksum:
   name_template: checksums.txt
 
-# Release notes come from the matching CHANGELOG.md section (see the release
-# workflow), passed with --release-notes.
-changelog:
-  disable: true
+# Release notes are the CHANGELOG.md section the release workflow passes with
+# --release-notes. Disabling the changelog would make goreleaser ignore it.
 
 release:
   draft: false
