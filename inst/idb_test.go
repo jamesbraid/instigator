@@ -132,6 +132,58 @@ func TestNoTrailingNewlineAndCRLF(t *testing.T) {
 	}
 }
 
+func TestBareCRLineEndings(t *testing.T) {
+	// A file with no LF ends its lines in bare CRs; line 3 is bad.
+	in := "# header\rf 0644 root sys a s p.i.s\rf 0644 bogus\rl 0777 root sys c s p.i.s symval(a)\r"
+	for _, tail := range []string{"", "\n", "\r\n"} { // a final LF changes nothing
+		entries, bad, err := ParseIDB(strings.NewReader(in + tail))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 2 || entries[0].Path != "a" || entries[1].Path != "c" {
+			t.Fatalf("%q: entries = %+v", tail, entries)
+		}
+		if entries[0].Subsystem != "p.i.s" || entries[1].Symlink != "a" {
+			t.Errorf("CR leaked into a field: %+v", entries)
+		}
+		if len(bad) != 1 || bad[0].Line != 3 || bad[0].Text != "f 0644 bogus" {
+			t.Errorf("%q: bad = %+v", tail, bad)
+		}
+	}
+}
+
+// A stray CR inside the only entry of a file stays in the entry, with or
+// without a final newline, as do CRs in a file whose lines do not all look like entries.
+func TestStrayCRInSingleLine(t *testing.T) {
+	for _, in := range []string{
+		"f 0644 root sys a s p.i.s postop(echo a\rb)",
+		"f 0644 root sys a s p.i.s postop(echo a\rb)\n",
+		"f 0644 root sys a s p.i.s postop(echo a\rb)\r\n",
+		"f 0644 root sys a s p.i.s postop(echo a\rb)\rtext\r",
+	} {
+		entries, bad, err := ParseIDB(strings.NewReader(in))
+		if err != nil || len(entries) != 1 || len(bad) != 0 || entries[0].Attrs["postop"] != "echo a\rb" {
+			t.Errorf("%q: %+v %+v %v", in, entries, bad, err)
+		}
+	}
+}
+
+// In a file with LFs, a CR inside a line is part of the line, and extra CRs
+// before the LF do not add lines.
+func TestStrayCRInLFFile(t *testing.T) {
+	in := "f 0644 root sys a s p.i.s postop(echo a\rb)\r\r\nbogus\r\nd 0755 root sys c s p.i.s\nbogus2"
+	entries, bad, err := ParseIDB(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 || entries[0].Attrs["postop"] != "echo a\rb" || entries[1].Path != "c" {
+		t.Fatalf("entries = %+v", entries)
+	}
+	if len(bad) != 2 || bad[0].Line != 2 || bad[1].Line != 4 || bad[1].Text != "bogus2" {
+		t.Errorf("bad = %+v", bad)
+	}
+}
+
 func TestLongLine(t *testing.T) {
 	long := "f 0644 root sys " + strings.Repeat("a", 200000) + " s p.i.s"
 	e := parseOne(t, long)

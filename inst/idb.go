@@ -66,32 +66,49 @@ func (e Entry) Stored() int64 {
 	return e.Size
 }
 
-// ParseIDB reads a manifest. Blank lines and lines starting with '#' are
-// ignored. Every other line that does not parse, including one whose off(),
-// size() or cmpsize() is not a non-negative decimal number, is returned as
-// a BadLine instead of being skipped, so a format variant shows up. The
-// error is non-nil only for a read failure.
+// ParseIDB reads a manifest whose lines end in LF or CRLF. A single-line file
+// (no LF, or only a final one) ends its lines at bare CRs when each looks like
+// an entry or comment. Blank and '#' lines are ignored; any other line that
+// does not parse, including a non-decimal off(), size() or cmpsize(), is a
+// BadLine. The error is non-nil only for a read failure.
 func ParseIDB(r io.Reader) ([]Entry, []BadLine, error) {
 	var entries []Entry
 	var bad []BadLine
 	br := bufio.NewReader(r)
-	for n := 1; ; n++ {
+	for n, first := 1, true; ; first = false {
 		line, err := br.ReadString('\n')
 		if err != nil && !errors.Is(err, io.EOF) {
 			return entries, bad, err
 		}
-		if line != "" {
-			text := strings.TrimRight(line, "\r\n")
+		lines := []string{strings.TrimRight(line, "\r\n")}
+		if _, perr := br.Peek(1); first && errors.Is(perr, io.EOF) {
+			lines = crLines(lines[0])
+		}
+		for _, text := range lines {
 			if e, reason := parseLine(text); reason != "" {
 				bad = append(bad, BadLine{Line: n, Text: text, Reason: reason})
 			} else if e != nil {
 				entries = append(entries, *e)
 			}
+			n++
 		}
 		if err != nil {
 			return entries, bad, nil
 		}
 	}
+}
+
+// crLines splits text at bare CRs, but only if every line looks like an entry or
+// comment; a stray CR inside one line leaves it whole.
+func crLines(text string) []string {
+	lines := strings.Split(text, "\r")
+	for _, l := range lines {
+		l = strings.TrimLeft(l, " \t")
+		if l != "" && l[0] != '#' && (len(l) < 2 || !strings.Contains("fdlbcpsX", l[:1]) || l[1] != ' ' && l[1] != '\t') {
+			return []string{text}
+		}
+	}
+	return lines
 }
 
 // parseLine returns (nil, "") for lines to skip.
