@@ -167,11 +167,55 @@ func parseLine(text string) (*Entry, string) {
 	return e, ""
 }
 
+// closingParen returns the index of the ')' ending an attribute value, or -1.
+// A ')' in single quotes, as in nekoware's exitop('( ... )'), does not end it.
+func closingParen(s string) int {
+	dq := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\\' && i+1 < len(s) && s[i+1] == '\'':
+			i++
+		case c == '"':
+			dq = !dq
+		case c == '\'' && !dq && (i == 0 || !isWord(s[i-1])):
+			if k := quoteEnd(s[i+1:]); k >= 0 {
+				i += k + 1
+			}
+		case c == ')':
+			return i
+		}
+	}
+	return -1
+}
+
+// quoteEnd returns the index of the quote closing s, or -1 unless the text
+// before it has balanced parentheses.
+func quoteEnd(s string) int {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\'':
+			if depth == 0 {
+				return i
+			}
+			return -1
+		case '(':
+			depth++
+		case ')':
+			if depth--; depth < 0 {
+				return -1
+			}
+		}
+	}
+	return -1
+}
+
 // scanTail splits the tail into key(value) attributes and bare words. A
-// value runs to the first ')' and may contain spaces. A value that starts
-// with '"' runs to the next '"', which must be followed by ')'; the quotes
-// are kept. A repeated key keeps its last value. It returns a reason when
-// the tail cannot be split.
+// value runs to the first ')' outside single quotes and may contain spaces.
+// A value that starts with '"' runs to the next '"', which must be followed
+// by ')'; the quotes are kept. A repeated key keeps its last value. It
+// returns a reason when the tail cannot be split.
 func scanTail(tail string, attrs map[string]string, words *[]string) string {
 	for i := 0; i < len(tail); {
 		if c := tail[i]; c == ' ' || c == '\t' {
@@ -196,9 +240,9 @@ func scanTail(tail string, attrs map[string]string, words *[]string) string {
 			continue
 		}
 		if j > i && j < len(tail) && tail[j] == '(' {
-			if end := strings.IndexByte(tail[j:], ')'); end >= 0 {
-				attrs[tail[i:j]] = tail[j+1 : j+end]
-				i = j + end + 1
+			if end := closingParen(tail[j+1:]); end >= 0 {
+				attrs[tail[i:j]] = tail[j+1 : j+1+end]
+				i = j + end + 2
 				continue
 			}
 		}

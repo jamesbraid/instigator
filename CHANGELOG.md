@@ -16,6 +16,7 @@ Fixes:
 - source: an archive download now goes to its own locked `download-*` directory at the top of the cache and is renamed into place only once complete, so a new download never resumes an earlier run's partial file, two runs fetching the same URL into one cache no longer write over each other, and the sweep removes a download a killed run left. Before, an interrupted download sat under the cache name, and the next run resumed it with a range request; if the file on the server had been replaced in between, the cache kept a spliced, corrupt archive for good.
 - dump: a file whose write fails, or that Ctrl-C or SIGTERM interrupts, is removed instead of left truncated under its real name, and a stop now ends the dump between 64 KiB chunks. A symlink already at a file's path is replaced instead of followed, so its target is never truncated.
 - extract: a manifest whose lines end in a bare carriage return, as Discreet Smoke 5.0's do, is read as one entry per line. Before, the whole file read as a single entry and the files of the product were left out of the output with nothing reported.
+- extract: a manifest attribute whose shell command holds a `)` inside single quotes, such as `exitop('( if ... fi )')` in nekoware packages, is read whole. Before, the value stopped at that `)` and a stray `')` showed up as a flag of the entry.
 
 ## 0.6.0 - 2026-11-24
 

@@ -67,6 +67,21 @@ func TestSubsystemPlacement(t *testing.T) {
 		// subsystem, and a ')' inside one does not end it.
 		{"quoted paren", `p.i.s exitop("if test -n $(ls); then a.b.c; fi")`, "p.i.s", nil, map[string]string{"exitop": `"if test -n $(ls); then a.b.c; fi"`}},
 		{"quoted then subsystem", `postop("x) y.z.w") p.i.s`, "p.i.s", nil, map[string]string{"postop": `"x) y.z.w"`}},
+		// The shell command is echo '(done)'; the ')' in the quotes does not end the attribute.
+		{"single-quoted paren", `p.i.s postop(echo '(done)')`, "p.i.s", nil, map[string]string{"postop": `echo '(done)'`}},
+		{"single-quoted paren before subsystem", `postop(echo '(done)') p.i.s`, "p.i.s", nil, map[string]string{"postop": `echo '(done)'`}},
+		{"single-quoted subshell", `p.i.s exitop('( if test -f x; then a; fi )')`, "p.i.s", nil, map[string]string{"exitop": `'( if test -f x; then a; fi )'`}},
+		{"apostrophes in two attributes", `p.i.s config(don't) other(can't)`, "p.i.s", nil, map[string]string{"config": "don't", "other": "can't"}},
+		{"apostrophe then quote", `p.i.s postop(echo it's done) needrqs preop(echo 'a')`, "p.i.s", []string{"needrqs"}, map[string]string{"postop": "echo it's done", "preop": "echo 'a'"}},
+		{"quote inside double quotes", `postop(tr -d "'" < x > y) p.i.s config(don't)`, "p.i.s", nil, map[string]string{"postop": `tr -d "'" < x > y`, "config": "don't"}},
+		{"escaped quote", `postop(echo \' x) p.i.s config(can't)`, "p.i.s", nil, map[string]string{"postop": `echo \' x`, "config": "can't"}},
+		{"unmatched quote after space", `postop(echo 'x) p.i.s config(a 'b)`, "p.i.s", nil, map[string]string{"postop": "echo 'x", "config": "a 'b"}},
+		{"unbalanced paren in quotes", `postop(echo ')') p.i.s`, "p.i.s", []string{"')"}, map[string]string{"postop": "echo '"}},
+		{"backslash paren", `postop(echo \) x) p.i.s`, "p.i.s", []string{"x)"}, map[string]string{"postop": `echo \`}},
+		{"unbalanced paren before a later quote", `postop(echo 'x ( ) p.i.s mach('y)`, "p.i.s", nil, map[string]string{"postop": "echo 'x ( ", "mach": "'y"}},
+		{"unbalanced paren in a lone quote pair", `p.i.s postop(' ( ) b(')`, "p.i.s", nil, map[string]string{"postop": "' ( ", "b": "'"}},
+		{"cosmoworlds style", `p.i.s exitop('(if [ -x a ]; then b; fi ) >/dev/null 2>&1')`, "p.i.s", nil, map[string]string{"exitop": "'(if [ -x a ]; then b; fi ) >/dev/null 2>&1'"}},
+		{"apostrophe", `p.i.s config(don't) needrqs`, "p.i.s", []string{"needrqs"}, map[string]string{"config": "don't"}},
 		{"quoted dotted after subsystem", `p.i.s exitop("cd $(dirname a.b.c)")`, "p.i.s", nil, map[string]string{"exitop": `"cd $(dirname a.b.c)"`}},
 	}
 	for _, c := range cases {
