@@ -52,8 +52,18 @@ type Record struct {
 	Target      string `json:"target,omitempty"`  // target as created
 	Mach        string `json:"mach,omitempty"`
 	Status      string `json:"status"`
+	Checksum    string `json:"checksum,omitempty"` // "mismatch" when the bytes read disagree with the .idb's sum(), "unchecked" when they could not all be read
+	SumWant     *int   `json:"sumWant,omitempty"`  // the .idb's sum(), with a mismatch
+	SumGot      *int   `json:"sumGot,omitempty"`   // the sum of the bytes read, with a mismatch
 	Error       string `json:"error,omitempty"`
 }
+
+// The Checksum of a file whose bytes disagree with its sum(), and of one
+// whose sum() could not be checked because the rest of its record did not read.
+const (
+	mismatch  = "mismatch"
+	unchecked = "unchecked"
+)
 
 // Record statuses. A planned entry is one a manifest-only run would
 // extract. A superseded entry was replaced by a later install set. An
@@ -116,7 +126,8 @@ func Run(ctx context.Context, w io.Writer, cfg *config.Config, names []string, o
 			}
 		}
 	}
-	tree, err := mediatree.Build(ctx, build, cfg.CacheDir, cfg.Credentials, logging.New(os.Stderr, logging.LevelInfo))
+	log := logging.New(os.Stderr, logging.LevelInfo)
+	tree, err := mediatree.Build(ctx, build, cfg.CacheDir, cfg.Credentials, log)
 	if err != nil {
 		return err
 	}
@@ -139,15 +150,11 @@ func Run(ctx context.Context, w io.Writer, cfg *config.Config, names []string, o
 		for _, s := range orders[name] {
 			dists = append(dists, open[s.Name])
 		}
-		n, err := extractSet(ctx, name, dists, outDir, opts)
+		n, err := extractSet(ctx, name, dists, outDir, opts, log)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
-		var counts []string
-		for _, s := range summary {
-			counts = append(counts, fmt.Sprintf("%d %s", n[s[0]], s[1]))
-		}
-		fmt.Fprintf(w, "%s: %s\n", name, strings.Join(counts, ", "))
+		fmt.Fprintf(w, "%s: %s\n", name, summaryLine(n))
 		if n[failed] > 0 {
 			bad = append(bad, name)
 		}
@@ -156,6 +163,25 @@ func Run(ctx context.Context, w io.Writer, cfg *config.Config, names []string, o
 		return fmt.Errorf("extraction had errors in %s; see the manifest", strings.Join(bad, ", "))
 	}
 	return nil
+}
+
+// summaryLine lists the counts of n, with checksum counts only when there are any.
+func summaryLine(n map[string]int) string {
+	var counts []string
+	for _, s := range summary {
+		counts = append(counts, fmt.Sprintf("%d %s", n[s[0]], s[1]))
+	}
+	if n[mismatch] > 0 {
+		s := "checksum mismatches"
+		if n[mismatch] == 1 {
+			s = "checksum mismatch"
+		}
+		counts = append(counts, fmt.Sprintf("%d %s", n[mismatch], s))
+	}
+	if n[unchecked] > 0 {
+		counts = append(counts, fmt.Sprintf("%d checksum unchecked", n[unchecked]))
+	}
+	return strings.Join(counts, ", ")
 }
 
 // dist is the open distribution directory of one install set.
@@ -194,6 +220,9 @@ type item struct {
 	e   *inst.Entry // nil for an unparsed line
 	rel string      // install path relative to the set root, cleaned
 	rec Record      // its status is set once the entry's fate is known
+
+	sum       *inst.ChecksumError // set when a read of its bytes disagreed with its sum()
+	unchecked bool                // set when its sum() could not be checked
 }
 
 func (it *item) settle(status, reason string) {
@@ -209,8 +238,8 @@ func (it *item) fail(err error) { it.settle(failed, err.Error()) }
 //
 // Records appear in set order, then product order, then .idb order, then
 // the product's unparsed lines. plan settles everything that needs no
-// archive data; writeAll does the rest.
-func extractSet(ctx context.Context, name string, dists []dist, outDir string, opts Options) (map[string]int, error) {
+// archive data; writeAll does the rest. The counts include "mismatch".
+func extractSet(ctx context.Context, name string, dists []dist, outDir string, opts Options, log *logging.Logger) (map[string]int, error) {
 	setDir := filepath.Join(outDir, name)
 	manPath := filepath.Join(outDir, name+".jsonl")
 	items := plan(dists, opts)
@@ -233,7 +262,7 @@ func extractSet(ctx context.Context, name string, dists []dist, outDir string, o
 			return nil, fmt.Errorf("extract: %w", err)
 		}
 		defer root.Close()
-		w := &writer{root: root, dists: dists, unpack: opts.Unpack, dirs: map[string]bool{}, unpacked: map[string]string{},
+		w := &writer{root: root, dists: dists, unpack: opts.Unpack, log: log, dirs: map[string]bool{}, unpacked: map[string]string{},
 			links: map[string]string{}}
 		if err := w.writeAll(ctx, pending); err != nil {
 			// The Mkdir above made setDir, so a rerun is not refused by it.
@@ -252,6 +281,9 @@ func extractSet(ctx context.Context, name string, dists []dist, outDir string, o
 	n := map[string]int{}
 	for _, it := range items {
 		n[it.rec.Status]++
+		if it.rec.Checksum != "" {
+			n[it.rec.Checksum]++
+		}
 		if err == nil {
 			err = enc.Encode(it.rec)
 		}

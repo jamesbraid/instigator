@@ -20,6 +20,7 @@ import (
 	"github.com/jamesbraid/instigator/inst"
 	"github.com/jamesbraid/instigator/internal/config"
 	"github.com/jamesbraid/instigator/internal/insttest"
+	"github.com/jamesbraid/instigator/internal/logging"
 )
 
 type ent = insttest.Entry
@@ -33,8 +34,14 @@ func h8(s string) string {
 // manifest and the status counts.
 func run(t *testing.T, opts Options, dists ...dist) (string, []Record, map[string]int) {
 	t.Helper()
+	return runLog(t, opts, nil, dists...)
+}
+
+// runLog is run with a logger.
+func runLog(t *testing.T, opts Options, log *logging.Logger, dists ...dist) (string, []Record, map[string]int) {
+	t.Helper()
 	out := t.TempDir()
-	res, err := extractSet(context.Background(), "set", dists, out, opts)
+	res, err := extractSet(context.Background(), "set", dists, out, opts, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,6 +566,180 @@ func TestRecordFields(t *testing.T) {
 	}
 }
 
+// A file that disagrees with its sum() is written, flagged, counted and
+// warned of once.
+func TestChecksumMismatchFlagged(t *testing.T) {
+	sw, so := insttest.Archive([2]string{"usr/good", "AAA"}, [2]string{"usr/bad", "AAB"})
+	idb := fmt.Sprintf("f 0644 root sys usr/good src p.sw.base size(3) sum(49265) off(%d)\n", so[0]) +
+		fmt.Sprintf("f 0644 root sys usr/bad src p.sw.base size(3) sum(49265) off(%d)\n", so[1])
+	d := openTest(t, "set", fstest.MapFS{"p": {Data: []byte("p")}, "p.idb": {Data: []byte(idb)}, "p.sw": {Data: sw}}, nil)
+	var logs strings.Builder
+	out, rs, res := runLog(t, Options{}, logging.New(&logs, logging.LevelInfo), d)
+	if res[written] != 2 || res[failed] != 0 || res[mismatch] != 1 {
+		t.Errorf("counts %v", res)
+	}
+	if rs[0].Checksum != "" || rs[0].SumWant != nil || rs[0].SumGot != nil {
+		t.Errorf("good record flagged: %+v", rs[0])
+	}
+	if r := rs[1]; r.Status != written || r.Checksum != mismatch || r.SumWant == nil || *r.SumWant != 49265 || r.SumGot == nil || *r.SumGot != 49266 {
+		t.Errorf("bad record: %+v", r)
+	}
+	for p, want := range map[string]string{"usr/good": "AAA", "usr/bad": "AAB"} {
+		if b, err := os.ReadFile(filepath.Join(out, "set", p)); err != nil || string(b) != want {
+			t.Errorf("%s = %q, %v; want %q", p, b, err, want)
+		}
+	}
+	if man, _ := os.ReadFile(filepath.Join(out, "set.jsonl")); !strings.Contains(string(man), `"status":"written","checksum":"mismatch","sumWant":49265,"sumGot":49266`) {
+		t.Errorf("manifest: %s", man)
+	}
+	if lines := strings.Split(strings.TrimSpace(logs.String()), "\n"); len(lines) != 1 || !strings.Contains(lines[0], "WARN") || !strings.Contains(lines[0], "usr/bad") {
+		t.Errorf("log: %q", logs.String())
+	}
+}
+
+// The check also covers a file installed pack-compressed that --unpack
+// decodes, where the decoder ends before the record does.
+func TestChecksumMismatchFlaggedUnpacked(t *testing.T) {
+	packed := string(insttest.Packed('A'))
+	sw, so := insttest.Archive([2]string{"usr/good.z", packed}, [2]string{"usr/bad.z", packed})
+	idb := fmt.Sprintf("f 0644 root sys usr/good.z src p.sw.base size(%d) sum(3497) off(%d)\n", len(packed), so[0]) +
+		fmt.Sprintf("f 0644 root sys usr/bad.z src p.sw.base size(%d) sum(3498) off(%d)\n", len(packed), so[1])
+	d := openTest(t, "set", fstest.MapFS{"p": {Data: []byte("p")}, "p.idb": {Data: []byte(idb)}, "p.sw": {Data: sw}}, nil)
+	var logs strings.Builder
+	out, rs, res := runLog(t, Options{Unpack: true}, logging.New(&logs, logging.LevelInfo), d)
+	if res[written] != 2 || res[mismatch] != 1 || rs[0].Checksum != "" || rs[1].Checksum != mismatch || strings.Count(logs.String(), "WARN") != 1 {
+		t.Errorf("counts %v, records %+v, log %q", res, rs, logs.String())
+	}
+	for _, p := range []string{"usr/good", "usr/bad"} {
+		if b, err := os.ReadFile(filepath.Join(out, "set", p)); err != nil || string(b) != "AAAA" {
+			t.Errorf("%s = %q, %v", p, b, err)
+		}
+	}
+}
+
+// failFS makes reads of archive images fail from offset at on, as a flaky
+// disc would.
+type failFS struct {
+	fs.FS
+	at int64
+}
+
+func (f failFS) Open(name string) (fs.File, error) {
+	file, err := f.FS.Open(name)
+	if err != nil || !strings.HasSuffix(name, ".sw") {
+		return file, err
+	}
+	return failFile{file, f.at}, nil
+}
+
+type failFile struct {
+	fs.File
+	at int64
+}
+
+func (f failFile) ReadAt(p []byte, off int64) (int, error) {
+	ra := f.File.(io.ReaderAt)
+	if off >= f.at {
+		return 0, errors.New("disc error")
+	}
+	if off+int64(len(p)) > f.at {
+		n, _ := ra.ReadAt(p[:f.at-off], off)
+		return n, errors.New("disc error")
+	}
+	return ra.ReadAt(p, off)
+}
+
+// A read error after --unpack has decoded a whole file leaves the file
+// written. With a sum() it is logged and the row says unchecked; without one nothing is read.
+func TestDrainErrorLeavesFileGood(t *testing.T) {
+	rec := string(insttest.Packed('A')) + strings.Repeat("\x00", 100000)
+	fsys := fstest.MapFS{}
+	for prod, attrs := range map[string]string{"nosum": "", "sum": " sum(3497)"} {
+		sw, so := insttest.Archive([2]string{"usr/" + prod + ".z", rec})
+		fsys[prod] = &fstest.MapFile{Data: []byte(prod)}
+		fsys[prod+".idb"] = &fstest.MapFile{Data: []byte(fmt.Sprintf("f 0644 root sys usr/%s.z src %s.sw.base size(%d) off(%d)%s\n", prod, prod, len(rec), so[0], attrs))}
+		fsys[prod+".sw"] = &fstest.MapFile{Data: sw}
+	}
+	var logs strings.Builder
+	out, rs, res := runLog(t, Options{Unpack: true}, logging.New(&logs, logging.LevelInfo),
+		openTest(t, "set", failFS{fsys, 13 + 2 + 10 + 70000}, nil))
+	if res[written] != 2 || res[failed] != 0 || res[mismatch] != 0 || res[unchecked] != 1 {
+		t.Errorf("counts %v, records %+v", res, rs)
+	}
+	for _, r := range rs {
+		if want := map[string]string{"nosum": "", "sum": unchecked}[r.Product]; r.Checksum != want || r.SumWant != nil || r.SumGot != nil {
+			t.Errorf("%s: %+v", r.Product, r)
+		}
+	}
+	for _, p := range []string{"usr/nosum", "usr/sum"} {
+		if b, err := os.ReadFile(filepath.Join(out, "set", p)); err != nil || string(b) != "AAAA" {
+			t.Errorf("%s = %q, %v", p, b, err)
+		}
+	}
+	if lines := strings.Split(strings.TrimSpace(logs.String()), "\n"); len(lines) != 1 || !strings.Contains(lines[0], "usr/sum.z: checksum not checked") {
+		t.Errorf("log: %q", logs.String())
+	}
+}
+
+// The sums are recorded even when the write fails after the bytes were read
+// in full: here the path is a directory, so the file is an error.
+func TestChecksumFlaggedOnFailedWrite(t *testing.T) {
+	sw, so := insttest.Archive([2]string{"usr/a", "AAB"})
+	idb := "d 0755 root sys usr/a src p.sw.base\n" +
+		fmt.Sprintf("f 0644 root sys usr/a src p.sw.base size(3) sum(49265) off(%d)\n", so[0])
+	d := openTest(t, "set", fstest.MapFS{"p": {Data: []byte("p")}, "p.idb": {Data: []byte(idb)}, "p.sw": {Data: sw}}, nil)
+	var logs strings.Builder
+	_, rs, res := runLog(t, Options{}, logging.New(&logs, logging.LevelInfo), d)
+	if res[failed] != 1 || res[mismatch] != 1 || rs[1].Status != failed || rs[1].Checksum != mismatch || strings.Count(logs.String(), "WARN") != 1 {
+		t.Errorf("counts %v, records %+v, log %q", res, rs, logs.String())
+	}
+}
+
+func TestSummaryLineChecksumCounts(t *testing.T) {
+	const base = "0 written, 0 duplicate, 0 variant, 0 planned, 0 superseded, 0 skipped, 0 errors, 0 unparsed"
+	for _, c := range []struct {
+		n    map[string]int
+		want string
+	}{
+		{nil, base},
+		{map[string]int{unchecked: 1}, base + ", 1 checksum unchecked"},
+		{map[string]int{mismatch: 2, unchecked: 3}, base + ", 2 checksum mismatches, 3 checksum unchecked"},
+	} {
+		if got := summaryLine(c.n); got != c.want {
+			t.Errorf("%v: %q, want %q", c.n, got, c.want)
+		}
+	}
+}
+
+// Run's summary line counts checksum mismatches, and leaves them out when
+// there are none.
+func TestSummaryCountsChecksumMismatches(t *testing.T) {
+	const counts = "a: %d written, 0 duplicate, 0 variant, 0 planned, 0 superseded, 0 skipped, 0 errors, 0 unparsed%s\n"
+	for _, c := range []struct {
+		sums []int
+		want string
+	}{
+		{[]int{49266}, fmt.Sprintf(counts, 1, "")},
+		{[]int{49265}, fmt.Sprintf(counts, 1, ", 1 checksum mismatch")},
+		{[]int{49265, 1}, fmt.Sprintf(counts, 2, ", 2 checksum mismatches")},
+	} {
+		sw, so := insttest.Archive([2]string{"usr/a", "AAB"}, [2]string{"usr/b", "AAB"})
+		idb := ""
+		for i, sum := range c.sums {
+			idb += fmt.Sprintf("f 0644 root sys usr/%c src p.sw.base size(3) sum(%d) off(%d)\n", 'a'+i, sum, so[i])
+		}
+		cfg := configOf(t, fstest.MapFS{"p": {Data: []byte("p")}, "p.idb": {Data: []byte(idb)}, "p.sw": {Data: sw}})
+		cfg.InstallSets[0].Name = "a"
+		var w strings.Builder
+		if err := Run(context.Background(), &w, cfg, nil, t.TempDir(), Options{}); err != nil {
+			t.Fatal(err)
+		}
+		if w.String() != c.want {
+			t.Errorf("sums %v: %q, want %q", c.sums, w.String(), c.want)
+		}
+	}
+}
+
 // Run refuses, before writing anything, options no run can use, output
 // that already exists for any selected set, and a distribution with no
 // products.
@@ -623,7 +804,7 @@ func TestStoppedSetIsRemoved(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := extractSet(ctx, "set", []dist{openTest(t, "set", fsys, nil)}, out, Options{}); !errors.Is(err, context.Canceled) {
+	if _, err := extractSet(ctx, "set", []dist{openTest(t, "set", fsys, nil)}, out, Options{}, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("extractSet = %v, want context.Canceled", err)
 	}
 	if _, err := os.Lstat(filepath.Join(out, "set")); !os.IsNotExist(err) {
@@ -660,7 +841,7 @@ func TestStopDuringLastEntryRemovesSet(t *testing.T) {
 	d := openTest(t, "set", fsys, nil)
 	fsys.armed = true
 	out := t.TempDir()
-	if _, err := extractSet(ctx, "set", []dist{d}, out, Options{}); !errors.Is(err, context.Canceled) {
+	if _, err := extractSet(ctx, "set", []dist{d}, out, Options{}, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("extractSet = %v, want context.Canceled", err)
 	}
 	for _, p := range []string{"set", "set.jsonl"} {

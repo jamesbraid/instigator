@@ -96,6 +96,8 @@ object per entry, in product then `.idb` order, with empty fields omitted:
 | `symlink`, `target` | link target as in the `.idb`, and as created |
 | `mach` | the `mach()` attribute |
 | `status` | `written`, `duplicate`, `variant`, `planned`, `superseded`, `skipped`, `error` or `unparsed` |
+| `checksum` | `mismatch` when the bytes read disagree with the `.idb`'s `sum()`, `unchecked` when the rest of the record could not be read to check it |
+| `sumWant`, `sumGot` | with `checksum`, the `.idb`'s `sum()` and the sum of the bytes read, before `--unpack` |
 | `error` | the reason, with the line number for `unparsed` |
 
 A path installed again with the same content is a `duplicate`. Anything else,
@@ -104,3 +106,17 @@ such as a per-machine copy, is a `variant` written beside it as
 `mach` or that name would exceed 255 bytes. An entry that cannot be extracted,
 for example because its archive's disc is not in the set, is an `error`. The
 run carries on and exits non-zero. Existing output is never overwritten.
+
+Extract compares each file's `sum()` with the BSD 16-bit checksum (what
+`sum -r` prints) of its installed bytes, taken after the archive's own
+compression is removed and before `--unpack`. A file that disagrees is still
+written, because shipped manifests are sometimes wrong. Its record carries
+`checksum`, `sumWant` and `sumGot` beside its normal status, the run logs one
+warning for it, and the set's summary line ends with `N checksum mismatches`
+(`1 checksum mismatch` for one). A file whose sum could not be checked, because
+reading the rest of its record failed after `--unpack` had decoded it, is still
+written, marked `unchecked`, and counted as `N checksum unchecked`. Neither
+changes the exit status.
+Only files whose bytes the run reads are checked, not `planned`,
+`superseded` or `skipped` entries. A `sum()` that is not a number below 65536
+is ignored.

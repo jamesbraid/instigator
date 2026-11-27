@@ -134,6 +134,8 @@ func walkOffsets(entries []Entry) {
 // with the archive's own compress(1) layer removed. A missing or unreadable
 // archive is an error for this entry only. Installed .z/.Z compression is
 // left in place; see Unwrap.
+//
+// With a sum() for e, a mismatch ends the reader with a *ChecksumError, not io.EOF.
 func (d *Dist) Open(product string, e Entry) (io.ReadCloser, error) {
 	a := d.archive(product + "." + e.Image())
 	if a.err != nil {
@@ -143,14 +145,18 @@ func (d *Dist) Open(product string, e Entry) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("inst: %s: %w", e.Path, err)
 	}
-	if e.CmpSize == 0 {
-		return io.NopCloser(rec), nil
+	var rc io.ReadCloser = io.NopCloser(rec)
+	if e.CmpSize != 0 {
+		z, err := unixcompress.NewReader(rec)
+		if err != nil {
+			return nil, fmt.Errorf("inst: %s: %w", e.Path, err)
+		}
+		rc = z
 	}
-	z, err := unixcompress.NewReader(rec)
-	if err != nil {
-		return nil, fmt.Errorf("inst: %s: %w", e.Path, err)
+	if want, ok := e.Sum(); ok {
+		rc = &sumReader{ReadCloser: rc, path: e.Path, want: want}
 	}
-	return z, nil
+	return rc, nil
 }
 
 // Close closes the archive files Open has used.

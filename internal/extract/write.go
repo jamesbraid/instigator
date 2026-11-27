@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/jamesbraid/instigator/inst"
+	"github.com/jamesbraid/instigator/internal/logging"
 )
 
 // writer carries out the writes plan left pending.
@@ -22,6 +23,7 @@ type writer struct {
 	root     *os.Root
 	dists    []dist
 	unpack   bool
+	log      *logging.Logger
 	dirs     map[string]bool   // directories this run wrote, by path relative to the set root
 	unpacked map[string]string // for Unpack: the suffix a written file lost, by install path
 	links    map[string]string // for Unpack: where each link points, by install path
@@ -224,6 +226,7 @@ func (w *writer) file(it *item) {
 			err = w.writeVariant(it, at, mode)
 		}
 	}
+	w.flagSum(it) // the bytes are known good or bad even if the write then failed
 	if err != nil {
 		it.fail(err)
 		return
@@ -235,6 +238,21 @@ func (w *writer) file(it *item) {
 	if status == written && name != it.rel {
 		w.unpacked[it.rel] = it.rel[len(name):]
 	}
+}
+
+// flagSum records a checksum disagreement, or a sum left unchecked, found
+// while reading the entry, and warns of a disagreement once.
+func (w *writer) flagSum(it *item) {
+	ce := it.sum
+	if ce == nil {
+		if it.unchecked {
+			it.rec.Checksum = unchecked
+		}
+		return
+	}
+	want, got := int(ce.Want), int(ce.Got)
+	it.rec.Checksum, it.rec.SumWant, it.rec.SumGot = mismatch, &want, &got
+	w.log.Warnf("extract: %s: checksum mismatch: bytes sum to %d, manifest says %d", it.rec.InstallPath, got, want)
 }
 
 // writeVariant writes the entry's data again, to the variant name at.
@@ -251,7 +269,11 @@ func (w *writer) writeVariant(it *item, at string, mode fs.FileMode) error {
 // open returns the installed bytes of a file entry and the path they go
 // to, which with Unpack loses a removed .z or .Z suffix.
 func (w *writer) open(it *item) (string, io.ReadCloser, error) {
+	it.sum, it.unchecked = nil, false // a variant's re-read decides afresh
 	rc, err := w.dists[it.set].Open(it.rec.Product, *it.e)
+	if err == nil {
+		rc = flagging{rc, it}
+	}
 	if err != nil || !w.unpack {
 		return it.rel, rc, err
 	}
@@ -260,10 +282,49 @@ func (w *writer) open(it *item) (string, io.ReadCloser, error) {
 		rc.Close()
 		return "", nil, err
 	}
+	if _, ok := it.e.Sum(); ok {
+		r = &drained{r: r, src: rc, it: it, log: w.log}
+	}
 	return name, struct {
 		io.Reader
 		io.Closer
 	}{r, rc}, nil
+}
+
+// flagging notes a checksum error at the end of an entry's bytes on the item
+// and ends them with io.EOF, so the file is written and checked all the same.
+type flagging struct {
+	io.ReadCloser
+	it *item
+}
+
+func (f flagging) Read(p []byte) (int, error) {
+	n, err := f.ReadCloser.Read(p)
+	if ce := new(inst.ChecksumError); errors.As(err, &ce) {
+		f.it.sum, err = ce, io.EOF
+	}
+	return n, err
+}
+
+// drained reads the rest of src when r ends, as the checksum is taken at src's EOF.
+// A read error there marks the sum unchecked, not the file failed.
+type drained struct {
+	r, src io.Reader
+	it     *item
+	log    *logging.Logger
+	done   bool
+}
+
+func (d *drained) Read(p []byte) (int, error) {
+	n, err := d.r.Read(p)
+	if err == io.EOF && !d.done {
+		d.done = true
+		if _, derr := io.Copy(io.Discard, d.src); derr != nil {
+			d.it.unchecked = true
+			d.log.Warnf("extract: %s: checksum not checked: %v", d.it.rec.InstallPath, derr)
+		}
+	}
+	return n, err
 }
 
 // claim decides where a file or link goes when it wants path rel. A free

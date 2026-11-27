@@ -6,6 +6,12 @@ ones. Entries for 0.5.1 and earlier were rewritten from the original GitHub rele
 
 ## Unreleased
 
+Features:
+- extract: files whose bytes disagree with their manifest's `sum()` checksum are flagged. The file is still written, because shipped manifests are sometimes wrong. Its manifest row gains `checksum`, `sumWant` and `sumGot` beside its status, the run logs a warning for it, and the set's summary line ends with `N checksum mismatches` when there are any. Before, the checksum was never compared. The sum is of the installed file, taken after the archive's own `compress` layer; `--unpack` does not change what is summed. A `sum()` that is not a number below 65536 is ignored. Details are in docs/extract.md.
+
+Changed:
+- inst: the reader `Dist.Open` returns ends with a `*ChecksumError` instead of `io.EOF` when the bytes disagree with the entry's `sum()`. The bytes are still all returned. `Entry.Sum` reports an entry's `sum()` when it is a decimal number below 65536, and false otherwise.
+
 Fixes:
 - serve: a stop while media are being fetched or extracted now abandons the work and removes its `extract-*` directory under the cache. Before, `serve` finished the extraction first, so a container runtime's SIGKILL a few seconds after the stop left the directory, often gigabytes, in the cache. Shutdown also finishes within one five-second drain window rather than up to three.
 - extract, check: Ctrl-C or SIGTERM during an archive extraction now stops it and removes its `extract-*` directory under the cache. Before, the signal killed the process and left the directory behind. A stopped `extract` also removes the set it was writing when stopped. Sets it had already finished stay, so a rerun that names them is still refused for existing output.
