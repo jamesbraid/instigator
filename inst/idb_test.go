@@ -216,3 +216,34 @@ func TestIOError(t *testing.T) {
 		t.Fatal("want error")
 	}
 }
+
+func TestQuotedPaths(t *testing.T) {
+	for _, c := range []struct{ name, line, path, src string }{
+		{"spaces", `f 0644 root sys "usr/a b/c d.rst" "install/usr/a b/c d.rst" p.sw.eoe sum(1) size(66) off(13)`,
+			"usr/a b/c d.rst", "install/usr/a b/c d.rst"},
+		{"no spaces", `f 0644 root sys "usr/a/c.rst" "install/usr/a/c.rst" p.sw.eoe sum(1) size(66) off(13)`,
+			"usr/a/c.rst", "install/usr/a/c.rst"},
+		{"quoted path, plain source", `f 0644 root sys "usr/a b" src p.sw.eoe size(66) off(13)`, "usr/a b", "src"},
+	} {
+		e := parseOne(t, c.line)
+		if e.Path != c.path || e.Source != c.src || e.Subsystem != "p.sw.eoe" || e.Size != 66 || e.Offset != 13 {
+			t.Errorf("%s: %+v", c.name, e)
+		}
+	}
+	// A CR between fields separates them, as it did before quotes were read.
+	if e := parseOne(t, "f 0644 root sys a\rxs p.sw.eoe"); e.Path != "a" || e.Source != "xs" || e.Subsystem != "p.sw.eoe" {
+		t.Errorf("CR between fields: %+v", e)
+	}
+	for _, sp := range []string{"\r", "\v", "\f"} { // the tail splits on the same space as the head
+		if e := parseOne(t, "f 0644 root sys u/x u/x"+sp+"p.i.s size(1)"); e.Subsystem != "p.i.s" || e.Size != 1 {
+			t.Errorf("%q before the tail: %+v", sp, e)
+		}
+	}
+	// A quote with no partner, and an empty pair, are ordinary words.
+	if e := parseOne(t, `f 0644 root sys "a b p.i.s`); e.Path != `"a` {
+		t.Errorf("unclosed quote: %+v", e)
+	}
+	if e := parseOne(t, `f 0644 root sys "" "src" p.sw.base size(1)`); e.Path != `""` || e.Source != "src" {
+		t.Errorf("empty quotes: %+v", e)
+	}
+}

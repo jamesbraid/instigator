@@ -87,7 +87,7 @@ object per entry, in product then `.idb` order, with empty fields omitted:
 | Field | Meaning |
 | --- | --- |
 | `path` | where the entry was written, relative to `<set>/` |
-| `installPath` | the path as written in the `.idb` |
+| `installPath` | the path as written in the `.idb`, without the quotes around a path with spaces |
 | `type`, `mode`, `owner`, `group` | from the `.idb` |
 | `product`, `subsystem` | owning product and subsystem |
 | `layer` | source layer holding a file's archive, or else the product's `.idb` |

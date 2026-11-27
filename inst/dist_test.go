@@ -289,3 +289,23 @@ func TestBadArchive(t *testing.T) {
 		}
 	}
 }
+
+// A record is named by the install path without the quotes the manifest
+// writes a path with spaces in.
+func TestQuotedPathOpens(t *testing.T) {
+	sw, so := insttest.Archive([2]string{"usr/a b", "AAA"}, [2]string{"usr/c", "CC"}, [2]string{"usr/f", "F"})
+	idb := fmt.Sprintf("f 0644 root sys \"usr/a b\" \"install/usr/a b\" p.sw.base size(3) off(%d)\n", so[0]) +
+		fmt.Sprintf("f 0644 root sys \"usr/c\" \"install/usr/c\" p.sw.base size(2) off(%d)\n", so[1]) +
+		"f 0644 root sys usr/f src p.sw.base size(1)\n"
+	d := open(t, fstest.MapFS{"p.idb": {Data: []byte(idb)}, "p.sw": {Data: sw}})
+	for i, want := range []string{"AAA", "CC", "F"} {
+		e := d.Products[0].Entries[i]
+		r, err := d.Open("p", e)
+		if err != nil {
+			t.Fatalf("%s: %v", e.Path, err)
+		}
+		if got := readAll(t, r); got != want {
+			t.Errorf("%s = %q, want %q", e.Path, got, want)
+		}
+	}
+}

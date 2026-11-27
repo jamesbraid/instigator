@@ -17,6 +17,7 @@ Fixes:
 - dump: a file whose write fails, or that Ctrl-C or SIGTERM interrupts, is removed instead of left truncated under its real name, and a stop now ends the dump between 64 KiB chunks. A symlink already at a file's path is replaced instead of followed, so its target is never truncated.
 - extract: a manifest whose lines end in a bare carriage return, as Discreet Smoke 5.0's do, is read as one entry per line. Before, the whole file read as a single entry and the files of the product were left out of the output with nothing reported.
 - extract: a manifest attribute whose shell command holds a `)` inside single quotes, such as `exitop('( if ... fi )')` in nekoware packages, is read whole. Before, the value stopped at that `)` and a stray `')` showed up as a flag of the entry.
+- extract: files whose install or source path is written in double quotes, as nekoware writes one that contains a space, are read under their real name. Before, they failed a record-name check: 25 of the nekoware cmake 3.3.0 package's 1,942 files, the ones whose paths contain a space, were reported as errors.
 
 ## 0.6.0 - 2026-11-24
 

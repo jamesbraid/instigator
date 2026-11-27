@@ -38,7 +38,7 @@ type Options struct {
 // Record is one manifest line. Field order here is the JSON field order.
 type Record struct {
 	Path        string `json:"path,omitempty"` // as written, relative to the set root; empty when nothing was
-	InstallPath string `json:"installPath"`    // as in the .idb
+	InstallPath string `json:"installPath"`    // as in the .idb, without the quotes of a path with spaces
 	Type        string `json:"type,omitempty"`
 	Mode        string `json:"mode,omitempty"` // octal, as in the .idb
 	Owner       string `json:"owner,omitempty"`

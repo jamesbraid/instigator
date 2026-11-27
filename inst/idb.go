@@ -23,8 +23,8 @@ type Entry struct {
 	Mode      uint32 // parsed from octal
 	Owner     string
 	Group     string
-	Path      string // install path, as written
-	Source    string // build-tree source path
+	Path      string // install path, without the quotes a path with spaces is written in
+	Source    string // build-tree source path, likewise
 	Subsystem string // product.image.subsystem
 
 	// Offset is where the entry's archive record starts: off(), or for a
@@ -117,7 +117,7 @@ func parseLine(text string) (*Entry, string) {
 	if trim == "" || trim[0] == '#' {
 		return nil, ""
 	}
-	f := strings.Fields(trim)
+	f, tail := splitHead(trim)
 	if len(f) < 6 {
 		return nil, fmt.Sprintf("want at least 6 fields, got %d", len(f))
 	}
@@ -132,18 +132,6 @@ func parseLine(text string) (*Entry, string) {
 		Type: f[0][0], Mode: uint32(mode),
 		Owner: f[2], Group: f[3], Path: f[4], Source: f[5],
 		Offset: -1, Attrs: map[string]string{},
-	}
-	// Re-find the tail in the original text: attribute values may contain
-	// spaces, so it cannot be rebuilt from Fields.
-	tail := trim
-	for i := 0; i < 6; i++ {
-		tail = strings.TrimLeft(tail, " \t")
-		j := strings.IndexAny(tail, " \t")
-		if j < 0 {
-			tail = ""
-			break
-		}
-		tail = tail[j:]
 	}
 	var words []string
 	if reason := scanTail(tail, e.Attrs, &words); reason != "" {
@@ -165,6 +153,32 @@ func parseLine(text string) (*Entry, string) {
 	e.Symlink, e.Mach = e.Attrs["symval"], e.Attrs["mach"]
 	e.Subsystem, e.Flags = splitSubsystem(words)
 	return e, ""
+}
+
+// splitHead returns the first six fields of a line and the text after them.
+// A double-quoted field loses its quotes; an unclosed quote or "" does not.
+func splitHead(line string) ([]string, string) {
+	var f []string
+	for len(f) < 6 {
+		line = strings.TrimLeft(line, space)
+		if line == "" {
+			break
+		}
+		n := strings.IndexAny(line, space)
+		if n < 0 {
+			n = len(line)
+		}
+		if line[0] == '"' {
+			if q := strings.IndexByte(line[1:], '"'); q > 0 {
+				if e := q + 2; e == len(line) || strings.IndexByte(space, line[e]) >= 0 {
+					f, line = append(f, line[1:e-1]), line[e:]
+					continue
+				}
+			}
+		}
+		f, line = append(f, line[:n]), line[n:]
+	}
+	return f, line
 }
 
 // closingParen returns the index of the ')' ending an attribute value, or -1.
@@ -218,7 +232,7 @@ func quoteEnd(s string) int {
 // returns a reason when the tail cannot be split.
 func scanTail(tail string, attrs map[string]string, words *[]string) string {
 	for i := 0; i < len(tail); {
-		if c := tail[i]; c == ' ' || c == '\t' {
+		if isSpace(tail[i]) {
 			i++
 			continue
 		}
@@ -247,7 +261,7 @@ func scanTail(tail string, attrs map[string]string, words *[]string) string {
 			}
 		}
 		k := i
-		for k < len(tail) && tail[k] != ' ' && tail[k] != '\t' {
+		for k < len(tail) && !isSpace(tail[k]) {
 			k++
 		}
 		*words = append(*words, tail[i:k])
@@ -255,6 +269,11 @@ func scanTail(tail string, attrs map[string]string, words *[]string) string {
 	}
 	return ""
 }
+
+// space is what separates the words of a manifest line.
+const space = " \t\v\f\r"
+
+func isSpace(c byte) bool { return strings.IndexByte(space, c) >= 0 }
 
 func isWord(c byte) bool {
 	return c == '_' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
