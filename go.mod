@@ -5,11 +5,12 @@ go 1.27.1
 require (
 	github.com/cavaliergopher/grab/v3 v3.0.1
 	github.com/coreos/go-systemd/v22 v22.7.0
+	github.com/gofrs/flock v0.13.2
 	github.com/hashicorp/go-extract v1.1.5
 	github.com/snabb/httpreaderat v1.0.4
 	github.com/urfave/cli/v3 v3.11.0
 	golang.org/x/net v0.58.0
-	golang.org/x/sys v0.47.0
+	golang.org/x/sys v0.49.0
 	gopkg.in/yaml.v3 v3.0.1
 	gvisor.dev/gvisor v0.0.0-20260916072518-be2bc9cda014
 	mvdan.cc/sh/v3 v3.13.1

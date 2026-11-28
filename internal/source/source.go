@@ -207,10 +207,10 @@ func (r *Resolver) resolveExtractedArchive(ctx context.Context, archive, base st
 		if err != nil {
 			return vfs.Resolved{}, err
 		}
-		root, err := os.OpenRoot(tmp)
+		root, err := os.OpenRoot(tmp.name)
 		if err != nil {
-			os.RemoveAll(tmp)
-			return vfs.Resolved{}, fmt.Errorf("source: open %s: %w", tmp, err)
+			tmp.remove()
+			return vfs.Resolved{}, fmt.Errorf("source: open %s: %w", tmp.name, err)
 		}
 		return vfs.Resolved{FS: root.FS(), Kind: vfs.OriginDirectory, Closer: cleanup(root, tmp)}, nil
 	}
@@ -224,9 +224,9 @@ func (r *Resolver) resolveExtractedArchive(ctx context.Context, archive, base st
 	if err != nil {
 		return vfs.Resolved{}, err
 	}
-	disc, err := vfs.OpenImage(filepath.Join(tmp, name))
+	disc, err := vfs.OpenImage(filepath.Join(tmp.name, name))
 	if err != nil {
-		os.RemoveAll(tmp)
+		tmp.remove()
 		return vfs.Resolved{}, fmt.Errorf("source: %w", err)
 	}
 	return vfs.Resolved{FS: disc.FSys(), Kind: vfs.OriginImage, Closer: cleanup(disc, tmp)}, nil
@@ -237,19 +237,24 @@ func (r *Resolver) resolveExtractedArchive(ctx context.Context, archive, base st
 // unpacked in place; otherwise it is a single-file .gz decompressed to
 // outName within the directory (never untarred, so a .image.gz stays one
 // image). The caller opens the result and removes the directory when done.
-func (r *Resolver) extract(ctx context.Context, archive, outName string) (string, error) {
-	tmp, err := os.MkdirTemp(r.cacheDir, "extract-*")
+func (r *Resolver) extract(ctx context.Context, archive, outName string) (*cacheEntry, error) {
+	tmp, err := newCacheEntry(r.cacheDir, "extract", "tree")
+	if err == nil {
+		if err = os.Mkdir(tmp.name, 0o755); err != nil {
+			tmp.remove()
+		}
+	}
 	if err != nil {
-		return "", fmt.Errorf("source: create extract dir: %w", err)
+		return nil, fmt.Errorf("source: create extract dir: %w", err)
 	}
 	f, err := os.Open(archive)
 	if err != nil {
-		os.RemoveAll(tmp)
-		return "", fmt.Errorf("source: open archive %s: %w", archive, err)
+		tmp.remove()
+		return nil, fmt.Errorf("source: open archive %s: %w", archive, err)
 	}
 	defer f.Close()
 
-	dst := tmp
+	dst := tmp.name
 	opts := []extract.ConfigOption{
 		extract.WithCreateDestination(true),
 		extract.WithMaxInputSize(maxExtractBytes),
@@ -261,17 +266,17 @@ func (r *Resolver) extract(ctx context.Context, archive, outName string) (string
 		extract.WithDenySymlinkExtraction(false),
 	}
 	if outName != "" {
-		dst = filepath.Join(tmp, outName)
+		dst = filepath.Join(tmp.name, outName)
 		opts = append(opts, extract.WithNoUntarAfterDecompression(true))
 	}
 	if err := extract.Unpack(ctx, dst, f, extract.NewConfig(opts...)); err != nil {
-		os.RemoveAll(tmp)
-		return "", fmt.Errorf("source: extract %s: %w", filepath.Base(archive), err)
+		tmp.remove()
+		return nil, fmt.Errorf("source: extract %s: %w", filepath.Base(archive), err)
 	}
 	if outName == "" {
-		if err := unpackUnrecognizedTar(ctx, tmp, opts); err != nil {
-			os.RemoveAll(tmp)
-			return "", fmt.Errorf("source: extract %s: %w", filepath.Base(archive), err)
+		if err := unpackUnrecognizedTar(ctx, tmp.name, opts); err != nil {
+			tmp.remove()
+			return nil, fmt.Errorf("source: extract %s: %w", filepath.Base(archive), err)
 		}
 	}
 	return tmp, nil
@@ -372,10 +377,10 @@ func (r *Resolver) download(ctx context.Context, ref, dst string) error {
 // cleanup returns a closer that closes c and then removes tmp, so a fresh
 // extraction is discarded when the resolved filesystem is closed - there is
 // no extracted-tree cache, only the fetched archive persists.
-func cleanup(c io.Closer, tmp string) io.Closer {
+func cleanup(c io.Closer, tmp *cacheEntry) io.Closer {
 	return closerFunc(func() error {
 		err := c.Close()
-		if rmErr := os.RemoveAll(tmp); rmErr != nil && err == nil {
+		if rmErr := tmp.remove(); rmErr != nil && err == nil {
 			err = rmErr
 		}
 		return err

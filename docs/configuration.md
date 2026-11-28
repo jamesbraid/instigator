@@ -100,6 +100,15 @@ bytes an install touches. `credentials:` supply HTTP Basic auth over HTTPS for
 the matching host. A `${VAR}` password is read from the environment. Downloads
 are cached under `cache_dir:` (default: the user cache directory) and reused
 across runs. Each run extracts the archive into a fresh temporary directory.
+One left by a run that was killed is removed by a later run that starts
+once it is over a minute old; each run checks the `cache_dir` once, when it
+first creates a temporary directory there. Those made by
+Instigator 0.6.0 or earlier have no lock and are kept: remove them by hand,
+with no Instigator running. Instigators on several hosts can share a
+`cache_dir` only if its file locks reach the server. On an NFS mount with
+`nolock`, `local_lock=flock` or `local_lock=all`, locks only exclude
+processes on the same host, so one host's Instigator could remove a
+directory another host is using.
 
 The example also shows client filtering, service toggles, and the low TFTP
 transfer-port range required by SGI PROMs. Keep that range when editing it.
