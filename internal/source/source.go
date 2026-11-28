@@ -253,6 +253,7 @@ func (r *Resolver) extract(ctx context.Context, archive, outName string) (*cache
 		return nil, fmt.Errorf("source: open archive %s: %w", archive, err)
 	}
 	defer f.Close()
+	defer closeOnDone(ctx, f)()
 
 	dst := tmp.name
 	opts := []extract.ConfigOption{
@@ -269,15 +270,16 @@ func (r *Resolver) extract(ctx context.Context, archive, outName string) (*cache
 		dst = filepath.Join(tmp.name, outName)
 		opts = append(opts, extract.WithNoUntarAfterDecompression(true))
 	}
-	if err := extract.Unpack(ctx, dst, f, extract.NewConfig(opts...)); err != nil {
-		tmp.remove()
-		return nil, fmt.Errorf("source: extract %s: %w", filepath.Base(archive), err)
+	err = extract.Unpack(ctx, dst, f, extract.NewConfig(opts...))
+	if err == nil && outName == "" {
+		err = unpackUnrecognizedTar(ctx, tmp.name, opts)
 	}
-	if outName == "" {
-		if err := unpackUnrecognizedTar(ctx, tmp.name, opts); err != nil {
-			tmp.remove()
-			return nil, fmt.Errorf("source: extract %s: %w", filepath.Base(archive), err)
+	if err != nil {
+		tmp.remove()
+		if ctx.Err() != nil {
+			err = ctx.Err()
 		}
+		return nil, fmt.Errorf("source: extract %s: %w", filepath.Base(archive), err)
 	}
 	return tmp, nil
 }
@@ -299,6 +301,7 @@ func unpackUnrecognizedTar(ctx context.Context, dir string, opts []extract.Confi
 		return err
 	}
 	defer f.Close()
+	defer closeOnDone(ctx, f)()
 	if _, err := tar.NewReader(f).Next(); err != nil && err != io.EOF {
 		return fmt.Errorf("decompressed tar %s: %w", entries[0].Name(), err)
 	}
@@ -372,6 +375,12 @@ func (r *Resolver) download(ctx context.Context, ref, dst string) error {
 		return fmt.Errorf("source: fetch %s: %w", SafeURL(ref), unwrapURLErr(err))
 	}
 	return nil
+}
+
+// closeOnDone closes f once ctx is done, failing the one long copy go-extract
+// makes per entry. f stays an *os.File: go-extract needs its name for a V7 .tar.
+func closeOnDone(ctx context.Context, f *os.File) (stop func() bool) {
+	return context.AfterFunc(ctx, func() { f.Close() })
 }
 
 // cleanup returns a closer that closes c and then removes tmp, so a fresh
