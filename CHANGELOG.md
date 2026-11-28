@@ -13,6 +13,7 @@ Fixes:
 - source: a stop now interrupts the decompression of a bare `.gz` image or of one large file in an archive. Before, the stop waited for that file to finish, which for a disc image could take longer than the few seconds a container runtime allows before SIGKILL.
 - serve: a stop, or the emulator disconnecting, now aborts reads from a remote image straight away. Before, a tftp transfer or rsh read waiting on a stalled media server held shutdown for the whole five-second drain, and the run then failed with `shutdown drained incompletely`.
 - qemunet: on Linux, `--network-socket PATH` now replaces a socket a killed run left at PATH. Before, `serve` and `share` failed with `address already in use` until the file was removed by hand. A socket something still listens on, or a file that is not a socket, is still refused. On macOS and other systems, which refuse connections to a busy live socket too, a leftover socket still has to be removed by hand.
+- source: an archive download now goes to its own locked `download-*` directory at the top of the cache and is renamed into place only once complete, so a new download never resumes an earlier run's partial file, two runs fetching the same URL into one cache no longer write over each other, and the sweep removes a download a killed run left. Before, an interrupted download sat under the cache name, and the next run resumed it with a range request; if the file on the server had been replaced in between, the cache kept a spliced, corrupt archive for good.
 
 ## 0.6.0 - 2026-11-24
 

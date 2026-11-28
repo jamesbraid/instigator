@@ -18,7 +18,7 @@ import (
 const lockName = ".instigator-lock"
 
 // entryKinds prefix the temporary entries at the cache root that are swept.
-var entryKinds = []string{"extract-", "fallback-"}
+var entryKinds = []string{"extract-", "fallback-", "download-"}
 
 // liveEntries maps this process's entries to their locks. On NFS flock is a
 // per-process lock, which would not stop a process sweeping its own.
@@ -63,8 +63,8 @@ var tryLock = func(path string) (fileLock, error) {
 	return l, nil
 }
 
-// cacheEntry is a temporary extract-* or fallback-* directory at the cache
-// root, holding its lock file and the payload at name.
+// cacheEntry is a temporary extract-*, fallback-* or download-* directory at
+// the cache root, holding its lock file and the payload at name.
 type cacheEntry struct {
 	dir, name string
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -357,19 +359,54 @@ func (r *Resolver) cacheDest(rawURL, base string) string {
 	return filepath.Join(r.cacheDir, hex.EncodeToString(sum[:])[:16], base)
 }
 
-// download fetches ref into dst via grab: a complete dst already on disk is
-// reused rather than re-fetched (grab's skip/resume is the fetch cache).
-// Credentials are attached to the request out of band; the URL is never echoed
-// into an error with its userinfo intact.
+// download reuses a dst the server reports at the same size, or fetches ref
+// whole into a locked download-* entry and renames it to dst, never partial.
 func (r *Resolver) download(ctx context.Context, ref, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return fmt.Errorf("source: create cache dir: %w", err)
 	}
+	if _, err := os.Stat(dst); err == nil {
+		// Fetch afresh only when the server disagrees with the cached copy.
+		err := r.fetch(ctx, ref, dst, false)
+		if err == nil || !errors.Is(err, errNotCached) && !errors.Is(err, grab.ErrBadLength) {
+			return err
+		}
+	}
+	// The cache root, not os.TempDir, so the rename stays on one filesystem.
+	part, err := newCacheEntry(filepath.Dir(filepath.Dir(dst)), "download", "data")
+	if err != nil {
+		return fmt.Errorf("source: create download file: %w", err)
+	}
+	defer part.remove()
+	if err := r.fetch(ctx, ref, part.name, true); err != nil {
+		return err
+	}
+	if err := os.Rename(part.name, dst); err != nil {
+		// Windows refuses to replace a file another run has open.
+		if _, serr := os.Stat(dst); serr == nil && runtime.GOOS == "windows" {
+			return fmt.Errorf("source: cached copy of %s is in use by another run; retry when it finishes", SafeURL(ref))
+		}
+		return fmt.Errorf("source: fetch %s: %w", SafeURL(ref), err)
+	}
+	return nil
+}
+
+// errNotCached stops grab from writing into a cached file it would resume.
+var errNotCached = errors.New("cached copy differs from the server's")
+
+// fetch runs one grab request into dst. fresh downloads the whole file over
+// whatever is at dst; otherwise dst is only checked against the server.
+func (r *Resolver) fetch(ctx context.Context, ref, dst string, fresh bool) error {
 	req, err := grab.NewRequest(dst, ref)
 	if err != nil {
 		return fmt.Errorf("source: fetch %s: build request: %w", SafeURL(ref), unwrapURLErr(err))
 	}
 	req = req.WithContext(ctx)
+	if fresh {
+		req.NoResume = true
+	} else {
+		req.BeforeCopy = func(*grab.Response) error { return errNotCached }
+	}
 	r.creds.apply(req.HTTPRequest)
 	if err := r.grab.Do(req).Err(); err != nil {
 		return fmt.Errorf("source: fetch %s: %w", SafeURL(ref), unwrapURLErr(err))
