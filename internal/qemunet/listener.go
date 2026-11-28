@@ -1,10 +1,14 @@
 package qemunet
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
+	"runtime"
 	"strconv"
+	"syscall"
 )
 
 // DefaultServerMAC is Instigator's stable Ethernet address on a private
@@ -25,10 +29,28 @@ type Listener struct {
 // a bad endpoint is reported at startup rather than mid-install.
 func Listen(path string, cfg Config) (*Listener, error) {
 	ln, err := net.Listen("unix", path)
+	if runtime.GOOS == "linux" && errors.Is(err, syscall.EADDRINUSE) && removeStaleSocket(path) {
+		ln, err = net.Listen("unix", path)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("qemunet: listen %s: %w", path, err)
 	}
 	return &Listener{ln: ln, cfg: cfg}, nil
+}
+
+// removeStaleSocket removes the socket at path if connecting is refused, which
+// only Linux guarantees means nothing listens: BSDs also refuse a full backlog.
+func removeStaleSocket(path string) bool {
+	fi, err := os.Lstat(path)
+	if err != nil || fi.Mode()&os.ModeSocket == 0 {
+		return false
+	}
+	c, err := net.Dial("unix", path)
+	if err == nil {
+		c.Close()
+		return false
+	}
+	return errors.Is(err, syscall.ECONNREFUSED) && os.Remove(path) == nil
 }
 
 // ListenTCP accepts one QEMU stream connection on a loopback address.

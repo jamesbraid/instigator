@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -109,6 +110,55 @@ func TestUnixListenerCanReopenAfterClose(t *testing.T) {
 		t.Fatalf("reopen after Close: %v", err)
 	}
 	defer second.Close()
+}
+
+// A socket left by a killed run must not block the next start, but a live
+// one, or a file that is not a socket, is never removed.
+func TestUnixListenerReplacesOnlyAStaleSocket(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("stale sockets are replaced only on Linux")
+	}
+	cfg := Config{ServerIP: netip.AddrFrom4(testSrvIP), PrefixLen: 24, MAC: net.HardwareAddr([]byte(testSrvMAC))}
+	stale := shortSocketPath(t)
+	ln, err := net.Listen("unix", stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.(*net.UnixListener).SetUnlinkOnClose(false)
+	ln.Close()
+	l, err := Listen(stale, cfg)
+	if err != nil {
+		t.Fatalf("Listen over a stale socket: %v", err)
+	}
+	l.Close()
+
+	live := shortSocketPath(t)
+	held, err := net.Listen("unix", live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if l, err := Listen(live, cfg); err == nil {
+		l.Close()
+		t.Fatal("Listen took over a socket that is still listening")
+	}
+	if c, err := net.Dial("unix", live); err != nil {
+		t.Fatalf("the live socket no longer accepts: %v", err)
+	} else {
+		c.Close()
+	}
+
+	plain := shortSocketPath(t)
+	if err := os.WriteFile(plain, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if l, err := Listen(plain, cfg); err == nil {
+		l.Close()
+		t.Fatal("Listen replaced a regular file")
+	}
+	if b, err := os.ReadFile(plain); err != nil || string(b) != "keep" {
+		t.Fatalf("regular file = %q, %v; want it untouched", b, err)
+	}
 }
 
 func TestListenTCPRejectsNonLoopback(t *testing.T) {
