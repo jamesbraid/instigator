@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -67,7 +68,7 @@ func TestExtractRealMedia(t *testing.T) {
 
 	// A manifest-only run of every manual page reads no archive.
 	out := filepath.Join(dir, "plan")
-	if err := extractCommand(io.Discard, []string{conf, out}, []string{"set"}, "", "",
+	if err := extractCommand(context.Background(), io.Discard, []string{conf, out}, []string{"set"}, "", "",
 		extract.Options{ManifestOnly: true, Subsystems: []string{"*.man.*"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +79,7 @@ func TestExtractRealMedia(t *testing.T) {
 	}
 
 	out = filepath.Join(dir, "out")
-	if err := extractCommand(io.Discard, []string{conf, out}, []string{"set"}, "", "", extract.Options{Unpack: true,
+	if err := extractCommand(context.Background(), io.Discard, []string{conf, out}, []string{"set"}, "", "", extract.Options{Unpack: true,
 		Paths: []string{"usr/include", "var/sysgen", "usr/share/catman", "usr/adm", "usr/spool", "usr/lib/cron",
 			"var/adm", "var/spool", "var/tmp", "etc/cron.d"}}); err != nil {
 		t.Fatal(err)

@@ -1,9 +1,11 @@
 package extract
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -32,7 +34,7 @@ func h8(s string) string {
 func run(t *testing.T, opts Options, dists ...dist) (string, []Record, map[string]int) {
 	t.Helper()
 	out := t.TempDir()
-	res, err := extractSet("set", dists, out, opts)
+	res, err := extractSet(context.Background(), "set", dists, out, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -584,7 +586,7 @@ func TestRunRefuses(t *testing.T) {
 				}
 				want = 1
 			}
-			if err := Run(io.Discard, configOf(t, c.dists...), nil, out, c.opts); err == nil {
+			if err := Run(context.Background(), io.Discard, configOf(t, c.dists...), nil, out, c.opts); err == nil {
 				t.Error("accepted")
 			}
 			if ents, _ := os.ReadDir(out); len(ents) != want {
@@ -606,4 +608,64 @@ func (o *openLog) Open(name string) (fs.File, error) {
 	o.opened[name] = true
 	o.mu.Unlock()
 	return o.FS.Open(name)
+}
+
+// A stopped extraction removes the set it began, so a rerun is not refused
+// for existing output, and leaves what was already in the output directory.
+func TestStoppedSetIsRemoved(t *testing.T) {
+	fsys := insttest.Dist(map[string][]ent{"eoe": {
+		{Mode: "0444", Path: "usr/page", Sub: "eoe.man.base", Data: "page"},
+	}})
+	out := t.TempDir()
+	keep := filepath.Join(out, "other")
+	if err := os.WriteFile(keep, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := extractSet(ctx, "set", []dist{openTest(t, "set", fsys, nil)}, out, Options{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("extractSet = %v, want context.Canceled", err)
+	}
+	if _, err := os.Lstat(filepath.Join(out, "set")); !os.IsNotExist(err) {
+		t.Fatalf("set directory after the stop: %v, want it removed", err)
+	}
+	if _, err := os.Lstat(keep); err != nil {
+		t.Fatalf("existing output: %v, want it kept", err)
+	}
+}
+
+// cancelOnOpen cancels once armed and a file is opened: the stop lands while
+// the last entry is being written.
+type cancelOnOpen struct {
+	fs.FS
+	armed  bool
+	cancel func()
+}
+
+func (c *cancelOnOpen) Open(name string) (fs.File, error) {
+	if c.armed {
+		c.cancel()
+	}
+	return c.FS.Open(name)
+}
+
+// A stop during the last entry still counts: the set is removed, not kept
+// with a manifest.
+func TestStopDuringLastEntryRemovesSet(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fsys := &cancelOnOpen{FS: insttest.Dist(map[string][]ent{"eoe": {
+		{Mode: "0444", Path: "usr/page", Sub: "eoe.man.base", Data: "page"},
+	}}), cancel: cancel}
+	d := openTest(t, "set", fsys, nil)
+	fsys.armed = true
+	out := t.TempDir()
+	if _, err := extractSet(ctx, "set", []dist{d}, out, Options{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("extractSet = %v, want context.Canceled", err)
+	}
+	for _, p := range []string{"set", "set.jsonl"} {
+		if _, err := os.Lstat(filepath.Join(out, p)); !os.IsNotExist(err) {
+			t.Fatalf("%s after the stop: %v, want it absent", p, err)
+		}
+	}
 }

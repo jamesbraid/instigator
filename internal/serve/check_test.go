@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,18 +32,18 @@ func TestCheckShallowProbesRemoteSources(t *testing.T) {
 	cfg := addonConfig(t)
 	cfg.CacheDir = t.TempDir()
 	cfg.InstallSets[len(cfg.InstallSets)-1].Layers = []config.Layer{{Name: "rad4", Source: srv.URL + "/rad4.image", Dist: "dist"}}
-	if err := CheckShallow(cfg); err != nil {
+	if err := CheckShallow(context.Background(), cfg); err != nil {
 		t.Fatalf("shallow check rejected a reachable source: %v", err)
 	}
 	if n := gets.Load(); n != 0 {
 		t.Errorf("shallow check sent %d GETs", n)
 	}
-	if err := Check(cfg); err == nil {
+	if err := Check(context.Background(), cfg); err == nil {
 		t.Fatal("full check accepted a source that is no disc image")
 	}
 
 	cfg.InstallSets[len(cfg.InstallSets)-1].Layers[0].Source = srv.URL + "/gone.image"
-	if err := CheckShallow(cfg); err == nil || !strings.Contains(err.Error(), srv.URL+"/gone.image") {
+	if err := CheckShallow(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), srv.URL+"/gone.image") {
 		t.Fatalf("shallow check accepted or did not name a missing source: %v", err)
 	}
 }

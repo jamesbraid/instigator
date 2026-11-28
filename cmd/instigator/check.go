@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,7 +12,7 @@ import (
 
 // runCheck validates a configuration. Remote media are only probed unless
 // full asks for the assembly serve performs at start.
-func runCheck(path string, full bool) error {
+func runCheck(ctx context.Context, path string, full bool) error {
 	var data []byte
 	var err error
 	if path == "-" {
@@ -31,7 +32,7 @@ func runCheck(path string, full bool) error {
 		return err
 	}
 	if full {
-		return serve.Check(cfg)
+		return serve.Check(ctx, cfg)
 	}
-	return serve.CheckShallow(cfg)
+	return serve.CheckShallow(ctx, cfg)
 }

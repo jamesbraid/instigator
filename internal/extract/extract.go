@@ -80,7 +80,7 @@ var summary = [][2]string{{written, "written"}, {duplicate, "duplicate"}, {varia
 // Every selected set is attempted; the error then names those that recorded
 // a failed entry. Invalid options, existing output for any selected set and
 // a distribution with no products are refused before anything is written.
-func Run(w io.Writer, cfg *config.Config, names []string, outDir string, opts Options) error {
+func Run(ctx context.Context, w io.Writer, cfg *config.Config, names []string, outDir string, opts Options) error {
 	for _, g := range opts.Subsystems {
 		if _, err := path.Match(g, ""); err != nil {
 			return fmt.Errorf("extract: subsystem pattern %q: %w", g, err)
@@ -116,7 +116,7 @@ func Run(w io.Writer, cfg *config.Config, names []string, outDir string, opts Op
 			}
 		}
 	}
-	tree, err := mediatree.Build(context.Background(), build, cfg.CacheDir, cfg.Credentials, logging.New(os.Stderr, logging.LevelInfo))
+	tree, err := mediatree.Build(ctx, build, cfg.CacheDir, cfg.Credentials, logging.New(os.Stderr, logging.LevelInfo))
 	if err != nil {
 		return err
 	}
@@ -139,7 +139,7 @@ func Run(w io.Writer, cfg *config.Config, names []string, outDir string, opts Op
 		for _, s := range orders[name] {
 			dists = append(dists, open[s.Name])
 		}
-		n, err := extractSet(name, dists, outDir, opts)
+		n, err := extractSet(ctx, name, dists, outDir, opts)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
@@ -210,7 +210,7 @@ func (it *item) fail(err error) { it.settle(failed, err.Error()) }
 // Records appear in set order, then product order, then .idb order, then
 // the product's unparsed lines. plan settles everything that needs no
 // archive data; writeAll does the rest.
-func extractSet(name string, dists []dist, outDir string, opts Options) (map[string]int, error) {
+func extractSet(ctx context.Context, name string, dists []dist, outDir string, opts Options) (map[string]int, error) {
 	setDir := filepath.Join(outDir, name)
 	manPath := filepath.Join(outDir, name+".jsonl")
 	items := plan(dists, opts)
@@ -235,7 +235,12 @@ func extractSet(name string, dists []dist, outDir string, opts Options) (map[str
 		defer root.Close()
 		w := &writer{root: root, dists: dists, unpack: opts.Unpack, dirs: map[string]bool{}, unpacked: map[string]string{},
 			links: map[string]string{}}
-		w.writeAll(pending)
+		if err := w.writeAll(ctx, pending); err != nil {
+			// The Mkdir above made setDir, so a rerun is not refused by it.
+			root.Close()
+			os.RemoveAll(setDir)
+			return nil, err
+		}
 	}
 	f, err := os.OpenFile(manPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {

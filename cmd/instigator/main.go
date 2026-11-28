@@ -6,7 +6,9 @@ package main
 import (
 	"context"
 	"os"
+	"os/signal"
 	"runtime/debug"
+	"syscall"
 
 	"github.com/jamesbraid/instigator/internal/extract"
 	"github.com/jamesbraid/instigator/internal/logging"
@@ -26,8 +28,10 @@ func newRoot() *cli.Command {
 				Flags: []cli.Flag{
 					&cli.BoolFlag{Name: "full", Usage: "also read remote media and assemble every set, as serve does"},
 				},
-				Action: func(_ context.Context, cmd *cli.Command) error {
-					return runCheck(cmd.StringArgs("config")[0], cmd.Bool("full"))
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					ctx, stop := stopContext(ctx)
+					defer stop()
+					return runCheck(ctx, cmd.StringArgs("config")[0], cmd.Bool("full"))
 				},
 			},
 			{
@@ -130,8 +134,10 @@ func newRoot() *cli.Command {
 					&cli.BoolFlag{Name: "unpack", Usage: "also remove the installed .z (pack) and .Z (compress) layers"},
 					&cli.BoolFlag{Name: "manifest-only", Usage: "write only the manifest, planned from the .idb files without reading any archive"},
 				},
-				Action: func(_ context.Context, cmd *cli.Command) error {
-					return extractCommand(cmd.Root().Writer, cmd.StringArgs("args"), cmd.StringSlice("set"), cmd.String("dist"), cmd.String("name"),
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					ctx, stop := stopContext(ctx)
+					defer stop()
+					return extractCommand(ctx, cmd.Root().Writer, cmd.StringArgs("args"), cmd.StringSlice("set"), cmd.String("dist"), cmd.String("name"),
 						extract.Options{Paths: cmd.StringSlice("path"), Subsystems: cmd.StringSlice("subsystem"),
 							Unpack: cmd.Bool("unpack"), ManifestOnly: cmd.Bool("manifest-only")})
 				},
@@ -169,6 +175,15 @@ func newRoot() *cli.Command {
 	}
 	noSplit(root)
 	return root
+}
+
+// stopContext is cancelled by SIGINT or SIGTERM, so a command that extracts
+// media removes its work under the cache instead of dying with it in place.
+func stopContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	// Stop catching after the first signal, so a second kills a slow cleanup.
+	context.AfterFunc(ctx, stop)
+	return ctx, stop
 }
 
 func main() {

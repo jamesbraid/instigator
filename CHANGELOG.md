@@ -8,6 +8,7 @@ ones. Entries for 0.5.1 and earlier were rewritten from the original GitHub rele
 
 Fixes:
 - serve: a stop while media are being fetched or extracted now abandons the work and removes its `extract-*` directory under the cache. Before, `serve` finished the extraction first, so a container runtime's SIGKILL a few seconds after the stop left the directory, often gigabytes, in the cache. Shutdown also finishes within one five-second drain window rather than up to three.
+- extract, check: Ctrl-C or SIGTERM during an archive extraction now stops it and removes its `extract-*` directory under the cache. Before, the signal killed the process and left the directory behind. A stopped `extract` also removes the set it was writing when stopped. Sets it had already finished stay, so a rerun that names them is still refused for existing output.
 
 ## 0.6.0 - 2026-11-24
 

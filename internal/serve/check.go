@@ -28,7 +28,7 @@ const (
 // exist, and each remote source probed for reachability without reading its
 // body; its contents, collisions and product selections are left to Check
 // or to serve. Every unreachable source is reported, not only the first.
-func CheckShallow(cfg *config.Config) error {
+func CheckShallow(ctx context.Context, cfg *config.Config) error {
 	var local []config.InstallSet
 	var remote []string
 	unopened := map[string]bool{}
@@ -62,11 +62,11 @@ func CheckShallow(cfg *config.Config) error {
 		}
 	}
 
-	if err := probeSources(mediatree.NewResolver(context.Background(), cfg.CacheDir, cfg.Credentials, nil), remote); err != nil {
+	if err := probeSources(ctx, mediatree.NewResolver(ctx, cfg.CacheDir, cfg.Credentials, nil), remote); err != nil {
 		return err
 	}
 
-	tree, err := mediatree.Build(context.Background(), local, cfg.CacheDir, cfg.Credentials, nil)
+	tree, err := mediatree.Build(ctx, local, cfg.CacheDir, cfg.Credentials, nil)
 	if err != nil {
 		return err
 	}
@@ -83,7 +83,7 @@ func CheckShallow(cfg *config.Config) error {
 
 // probeSources probes every reference concurrently and joins the failures
 // in configuration order.
-func probeSources(r *source.Resolver, refs []string) error {
+func probeSources(ctx context.Context, r *source.Resolver, refs []string) error {
 	errs := make([]error, len(refs))
 	sem := make(chan struct{}, probeParallel)
 	var wg sync.WaitGroup
@@ -91,7 +91,7 @@ func probeSources(r *source.Resolver, refs []string) error {
 		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+			ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 			defer cancel()
 			_, errs[i] = r.Probe(ctx, ref)
 		})

@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -49,7 +50,7 @@ type held struct {
 // With Unpack, a link whose target loses its suffix follows it: the suffix
 // comes off the target, and off the link's own name when that ends in the
 // same suffix. This applies through chains of links.
-func (w *writer) writeAll(pending []*item) {
+func (w *writer) writeAll(ctx context.Context, pending []*item) error {
 	parents := map[string]bool{}
 	for _, it := range pending {
 		for d := path.Dir(it.rel); d != "." && !parents[d]; d = path.Dir(d) {
@@ -73,8 +74,12 @@ func (w *writer) writeAll(pending []*item) {
 		}
 	}
 	for _, it := range slices.Concat(first, rest, last) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		w.write(it)
 	}
+	return ctx.Err()
 }
 
 func (w *writer) write(it *item) {

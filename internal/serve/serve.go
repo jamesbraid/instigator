@@ -411,8 +411,8 @@ func checkSelections(tree *vfs.Tree, script, pass string, selections, sets []str
 // Check opens every source, assembles the tree and generated files, and
 // verifies named script selections before closing without binding ports.
 // CheckShallow is the cheaper check for remote media.
-func Check(cfg *config.Config) error {
-	tree, _, err := buildTree(context.Background(), cfg, nil)
+func Check(ctx context.Context, cfg *config.Config) error {
+	tree, _, err := buildTree(ctx, cfg, nil)
 	if err != nil {
 		return err
 	}

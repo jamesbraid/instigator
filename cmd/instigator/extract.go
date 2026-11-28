@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -15,7 +16,7 @@ import (
 // source ending in .yaml or .yml is a config file, whose sets (all, or
 // those named by sets) are extracted. Any other sources are disc images or
 // directories, the layers of one set in the order given.
-func extractCommand(w io.Writer, args, sets []string, dist, name string, opts extract.Options) error {
+func extractCommand(ctx context.Context, w io.Writer, args, sets []string, dist, name string, opts extract.Options) error {
 	if len(args) < 2 {
 		return fmt.Errorf("extract: need a config file or at least one image or directory, then an output directory")
 	}
@@ -32,7 +33,7 @@ func extractCommand(w io.Writer, args, sets []string, dist, name string, opts ex
 		if err != nil {
 			return err
 		}
-		return extract.Run(w, cfg, sets, outDir, opts)
+		return extract.Run(ctx, w, cfg, sets, outDir, opts)
 	}
 	if len(sets) > 0 {
 		return fmt.Errorf("extract: --set needs a config file; with images or directories everything given is one install set (use --name to name it)")
@@ -41,7 +42,7 @@ func extractCommand(w io.Writer, args, sets []string, dist, name string, opts ex
 	if err != nil {
 		return err
 	}
-	return extract.Run(w, &config.Config{InstallSets: []config.InstallSet{set}}, nil, outDir, opts)
+	return extract.Run(ctx, w, &config.Config{InstallSets: []config.InstallSet{set}}, nil, outDir, opts)
 }
 
 func isConfigArg(p string) bool {

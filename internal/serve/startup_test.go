@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -392,13 +393,13 @@ func TestCheckRejectsArchiveWithoutSelectedProduct(t *testing.T) {
 		}},
 	})
 	cfg.InstallScripts = []config.InstallScript{{Name: "addon-rad4", Install: []string{"rad4x"}}}
-	if err := Check(cfg); err == nil || !strings.Contains(err.Error(), "rad4x") {
+	if err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "rad4x") {
 		t.Fatalf("check accepted a distribution with no selected product: %v", err)
 	}
 
 	cfg.InstallSets[len(cfg.InstallSets)-1].Layers[0].Source = distImage(t, dir, "products.image", "rad4x.sw")
 	cfg.InstallScripts[0].Install = []string{"rad4x.sw.driver"}
-	if err := Check(cfg); err != nil {
+	if err := Check(context.Background(), cfg); err != nil {
 		t.Fatalf("check rejected the selected product: %v", err)
 	}
 }
@@ -428,7 +429,7 @@ func TestCheckMatchesSelectedProductType(t *testing.T) {
 				}},
 			})
 			cfg.InstallScripts = []config.InstallScript{{Name: "addon-rad4", Install: []string{tc.selection}}}
-			err := Check(cfg)
+			err := Check(context.Background(), cfg)
 			if tc.wantError && err == nil {
 				t.Fatalf("Check accepted %q with only %q", tc.selection, tc.file)
 			}
@@ -595,16 +596,16 @@ func TestPostInstallFollowsTheLastGo(t *testing.T) {
 
 func TestCheckLimitsEachPassToTheSetsItOpens(t *testing.T) {
 	cfg := addonConfig(t)
-	if err := Check(cfg); err != nil {
+	if err := Check(context.Background(), cfg); err != nil {
 		t.Fatalf("check rejected the add-on in its second pass: %v", err)
 	}
 	cfg.InstallScripts[0].Then.Install = []string{"apps.sw.base"}
-	if err := Check(cfg); err == nil || !strings.Contains(err.Error(), "then selects \"apps.sw.base\"") {
+	if err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "then selects \"apps.sw.base\"") {
 		t.Fatalf("check accepted a second-pass product outside its add-on sets: %v", err)
 	}
 	cfg.InstallScripts[0].Then.Install = []string{"rad4x.sw.driver"}
 	cfg.InstallScripts[0].Install = []string{"rad4x.sw.driver"}
-	if err := Check(cfg); err == nil || !strings.Contains(err.Error(), "rad4x.sw.driver") {
+	if err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "rad4x.sw.driver") {
 		t.Fatalf("check accepted a first-pass add-on product: %v", err)
 	}
 }

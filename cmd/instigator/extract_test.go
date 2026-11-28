@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -93,7 +94,7 @@ func TestExtractConfig(t *testing.T) {
 
 	out := filepath.Join(t.TempDir(), "out")
 	var w bytes.Buffer
-	if err := extractCommand(&w, []string{cfg, out}, []string{"alpha"}, "", "", extract.Options{Unpack: true}); err != nil {
+	if err := extractCommand(context.Background(), &w, []string{cfg, out}, []string{"alpha"}, "", "", extract.Options{Unpack: true}); err != nil {
 		t.Fatalf("%v\n%s", err, w.String())
 	}
 	// --unpack removes the installed pack layer, and the archive's own
@@ -111,7 +112,7 @@ func TestExtractConfig(t *testing.T) {
 	// With no --set every set runs. beta lacks the man layer, so its man
 	// entry fails: the run still writes both sets, then reports beta.
 	out = t.TempDir()
-	err := extractCommand(io.Discard, []string{cfg, out}, nil, "", "", extract.Options{})
+	err := extractCommand(context.Background(), io.Discard, []string{cfg, out}, nil, "", "", extract.Options{})
 	if err == nil || !strings.Contains(err.Error(), "beta") || strings.Contains(err.Error(), "alpha") {
 		t.Errorf("err = %v, want one naming beta only", err)
 	}
@@ -131,7 +132,7 @@ func TestExtractDirect(t *testing.T) {
 		insttest.Dist(map[string][]insttest.Entry{"p2": {{Path: "usr/b", Sub: "p2.sw.base", Data: "beta"}}}))
 	out := t.TempDir()
 	var w bytes.Buffer
-	if err := extractCommand(&w, []string{filepath.Dir(one), filepath.Dir(two), out}, nil, "", "", extract.Options{Paths: []string{"/usr/b"}}); err != nil {
+	if err := extractCommand(context.Background(), &w, []string{filepath.Dir(one), filepath.Dir(two), out}, nil, "", "", extract.Options{Paths: []string{"/usr/b"}}); err != nil {
 		t.Fatalf("%v\n%s", err, w.String())
 	}
 	checkFiles(t, filepath.Join(out, "disc"), map[string]string{"usr/a": "!", "usr/b": "beta"})
@@ -142,7 +143,7 @@ func TestExtractDirect(t *testing.T) {
 	// --dist . reads products at the source root, as in an unpacked
 	// tardist; --name names the output.
 	out = t.TempDir()
-	if err := extractCommand(io.Discard, []string{one, out}, nil, ".", "mine", extract.Options{}); err != nil {
+	if err := extractCommand(context.Background(), io.Discard, []string{one, out}, nil, ".", "mine", extract.Options{}); err != nil {
 		t.Fatal(err)
 	}
 	checkFiles(t, filepath.Join(out, "mine"), map[string]string{"usr/a": "alpha"})
@@ -166,7 +167,7 @@ func TestExtractAfter(t *testing.T) {
 `, filepath.Dir(base), filepath.Dir(over)))
 	out := filepath.Join(root, "out")
 	var w bytes.Buffer
-	if err := extractCommand(&w, []string{cfg, out}, []string{"over"}, "", "", extract.Options{}); err != nil {
+	if err := extractCommand(context.Background(), &w, []string{cfg, out}, []string{"over"}, "", "", extract.Options{}); err != nil {
 		t.Fatalf("%v\n%s", err, w.String())
 	}
 	if w.String() != "over: 2 written, 0 duplicate, 0 variant, 0 planned, 2 superseded, 0 skipped, 0 errors, 0 unparsed\n" {
@@ -206,7 +207,7 @@ func TestExtractRefuses(t *testing.T) {
 	}
 	for _, c := range cases {
 		out := filepath.Join(t.TempDir(), "out")
-		err := extractCommand(io.Discard, append(c.srcs, out), c.sets, c.dist, c.nm, extract.Options{})
+		err := extractCommand(context.Background(), io.Discard, append(c.srcs, out), c.sets, c.dist, c.nm, extract.Options{})
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: err = %v, want mention of %q", c.name, err, c.want)
 		}
