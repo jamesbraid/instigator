@@ -1,6 +1,9 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -27,7 +30,7 @@ func TestDumpFile(t *testing.T) {
 	outdir := filepath.Join(t.TempDir(), "out")
 
 	var sb strings.Builder
-	if err := runDump(&sb, imgPath, "/greeting", outdir); err != nil {
+	if err := runDump(context.Background(), &sb, imgPath, "/greeting", outdir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -61,7 +64,7 @@ func TestDumpDirRecursive(t *testing.T) {
 	outdir := filepath.Join(t.TempDir(), "out")
 
 	var sb strings.Builder
-	if err := runDump(&sb, imgPath, "/", outdir); err != nil {
+	if err := runDump(context.Background(), &sb, imgPath, "/", outdir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -100,7 +103,7 @@ func TestDumpSymlink(t *testing.T) {
 	outdir := filepath.Join(t.TempDir(), "out")
 
 	var sb strings.Builder
-	if err := runDump(&sb, imgPath, "/", outdir); err != nil {
+	if err := runDump(context.Background(), &sb, imgPath, "/", outdir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -132,7 +135,7 @@ func TestDumpSymlinkFailureContinues(t *testing.T) {
 	}
 
 	var sb strings.Builder
-	if err := runDump(&sb, imgPath, "/", outdir); err != nil {
+	if err := runDump(context.Background(), &sb, imgPath, "/", outdir); err != nil {
 		t.Fatalf("runDump aborted on symlink failure: %v", err)
 	}
 
@@ -163,7 +166,7 @@ func TestDumpRejectsUnsafeEntryNames(t *testing.T) {
 	outdir := filepath.Join(base, "out")
 
 	var sb strings.Builder
-	if err := runDump(&sb, imgPath, "/", outdir); err != nil {
+	if err := runDump(context.Background(), &sb, imgPath, "/", outdir); err != nil {
 		t.Fatal(err)
 	}
 
@@ -179,5 +182,54 @@ func TestDumpRejectsUnsafeEntryNames(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name() != "good.txt" {
 		t.Fatalf("outdir contents = %v, want only good.txt", entries)
+	}
+}
+
+// A dump stopped partway must not leave a truncated file under the real name.
+func TestDumpStoppedLeavesNoPartialFile(t *testing.T) {
+	img := efstest.New()
+	f := img.AddFile(0o644, []byte("hello world"))
+	img.SetRoot(map[string]uint32{"greeting": f})
+	imgPath := writeDumpImage(t, img)
+	outdir := filepath.Join(t.TempDir(), "out")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := runDump(ctx, io.Discard, imgPath, "/greeting", outdir); !errors.Is(err, context.Canceled) {
+		t.Fatalf("runDump = %v, want context.Canceled", err)
+	}
+	if _, err := os.Lstat(filepath.Join(outdir, "greeting")); !os.IsNotExist(err) {
+		t.Fatalf("greeting after a stopped dump: %v, want it absent", err)
+	}
+}
+
+// A symlink already where a file goes is replaced, so a stopped dump never
+// truncates the file it pointed at.
+func TestDumpStoppedLeavesSymlinkTargetIntact(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	img := efstest.New()
+	f := img.AddFile(0o644, []byte("hello world"))
+	img.SetRoot(map[string]uint32{"greeting": f})
+	imgPath := writeDumpImage(t, img)
+	outdir := filepath.Join(t.TempDir(), "out")
+	if err := os.Mkdir(outdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "precious")
+	if err := os.WriteFile(target, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(outdir, "greeting")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := runDump(ctx, io.Discard, imgPath, "/greeting", outdir); !errors.Is(err, context.Canceled) {
+		t.Fatalf("runDump = %v, want context.Canceled", err)
+	}
+	if b, err := os.ReadFile(target); err != nil || string(b) != "keep" {
+		t.Fatalf("symlink target = %q, %v; want it untouched", b, err)
 	}
 }

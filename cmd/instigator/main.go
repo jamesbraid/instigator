@@ -150,8 +150,10 @@ func newRoot() *cli.Command {
 					&cli.StringArgs{Name: "src", Min: 1, Max: 1},
 					&cli.StringArgs{Name: "outdir", Min: 1, Max: 1},
 				},
-				Action: func(_ context.Context, cmd *cli.Command) error {
-					return runDump(cmd.Root().Writer, cmd.StringArgs("image")[0], cmd.StringArgs("src")[0], cmd.StringArgs("outdir")[0])
+				Action: func(ctx context.Context, cmd *cli.Command) error {
+					ctx, stop := stopContext(ctx)
+					defer stop()
+					return runDump(ctx, cmd.Root().Writer, cmd.StringArgs("image")[0], cmd.StringArgs("src")[0], cmd.StringArgs("outdir")[0])
 				},
 			},
 		},
@@ -178,7 +180,7 @@ func newRoot() *cli.Command {
 }
 
 // stopContext is cancelled by SIGINT or SIGTERM, so a command that extracts
-// media removes its work under the cache instead of dying with it in place.
+// or writes files removes its partial work instead of dying with it in place.
 func stopContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	// Stop catching after the first signal, so a second kills a slow cleanup.

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +16,7 @@ import (
 
 // runDump extracts image's srcPath tree to outdir on the host - the
 // last-resort fallback for sites where serving over rsh is difficult.
-func runDump(w io.Writer, image, srcPath, outdir string) error {
+func runDump(ctx context.Context, w io.Writer, image, srcPath, outdir string) error {
 	d, err := vfs.OpenImage(image)
 	if err != nil {
 		return err
@@ -28,7 +31,7 @@ func runDump(w io.Writer, image, srcPath, outdir string) error {
 		return err
 	}
 
-	ex := &dumper{fs: d.FS()}
+	ex := &dumper{ctx: ctx, fs: d.FS()}
 	target := outdir
 	if !node.IsDir() {
 		// outdir names the directory to extract into; a single file or
@@ -48,6 +51,7 @@ func runDump(w io.Writer, image, srcPath, outdir string) error {
 // dumper walks an EFS subtree onto the host filesystem, tallying the
 // regular files and bytes it writes.
 type dumper struct {
+	ctx   context.Context // a stop ends the dump between chunks
 	fs    *efs.FS
 	files int
 	bytes int64
@@ -97,15 +101,21 @@ func (ex *dumper) extractDir(node *efs.Inode, dst string) error {
 }
 
 func (ex *dumper) extractFile(node *efs.Inode, dst string) error {
-	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o666)
+	// Replace whatever is there: opening a symlink would truncate its target.
+	if err := os.Remove(dst); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o666)
 	if err != nil {
 		return err
 	}
-	if err := ex.copyContent(f, node); err != nil {
-		f.Close()
-		return err
+	err = ex.copyContent(f, node)
+	if cerr := f.Close(); err == nil {
+		err = cerr
 	}
-	if err := f.Close(); err != nil {
+	if err != nil {
+		// A truncated file under its real name would pass for the original.
+		os.Remove(dst)
 		return err
 	}
 	ex.files++
@@ -118,6 +128,9 @@ func (ex *dumper) copyContent(f *os.File, node *efs.Inode) error {
 	buf := make([]byte, 64*1024)
 	var off int64
 	for {
+		if err := ex.ctx.Err(); err != nil {
+			return err
+		}
 		n, err := ex.fs.ReadAt(node, buf, off)
 		if n > 0 {
 			if _, werr := f.Write(buf[:n]); werr != nil {
