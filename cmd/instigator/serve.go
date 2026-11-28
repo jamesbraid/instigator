@@ -175,13 +175,19 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 	if err != nil {
 		return err
 	}
+	// Cancel first: a media read stalled on a remote server would otherwise
+	// hold the drain, and the extraction's removal, for the whole window.
+	closeServers := func(reason string) error {
+		cancel()
+		return s.CloseWithReason(reason)
+	}
 
 	logger.Infof("serving; stop with SIGINT/SIGTERM")
 	// Whoever set NOTIFY_SOCKET waits forever if this never arrives. In
 	// private-network mode it was already sent so the machine could connect.
 	if !readinessSent {
 		if _, err := sdnotify.SdNotify(false, sdnotify.SdNotifyReady); err != nil {
-			s.Close()
+			closeServers("clean")
 			return fmt.Errorf("reporting readiness: %w", err)
 		}
 	}
@@ -191,9 +197,9 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 			logger.Infof("shutting down")
 		case <-privateNet.Done():
 			reason = "guest_disconnected"
-			return errors.Join(disconnected(privateNet, logger), s.CloseWithReason("disconnected"))
+			return errors.Join(disconnected(privateNet, logger), closeServers("disconnected"))
 		case err := <-shareErr:
-			return errors.Join(err, s.Close())
+			return errors.Join(err, closeServers("clean"))
 		}
 	} else {
 		<-stop
@@ -201,7 +207,7 @@ func runUntilSignal(configPath string, verbose bool, captureDir, networkSocket, 
 	}
 	// Close drains and finalizes the capture, returning an error if the
 	// capture came out incomplete, so a run that cannot be trusted says so.
-	return s.Close()
+	return closeServers("clean")
 }
 
 // disconnected is the command's result when the private network ends: the
